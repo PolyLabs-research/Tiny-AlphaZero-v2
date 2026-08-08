@@ -310,7 +310,7 @@ passed**; tag `phase1-closed` present on `0c0cebd`.
 | A1 tag closure point | ✅ `phase1-closed` on `0c0cebd`, tree clean |
 | A2 checkpoint SHA audit | ✅ all three read `unknown`; helper had 2 defects, both fixed, 4 tests |
 | A3 top-k into `compute_metrics` | ✅ one implementation; eval reproduces the BLOCKED table exactly |
-| A4 anchor identity | ✅ `runs/ANCHORS.sha256` verifies — ⚠️ NAS copy **deferred**, no mount exists |
+| A4 anchor identity | ✅ `runs/ANCHORS.sha256` verifies; second copy on `disk2` verified — ⚠️ NAS copy **deferred**, no mount exists |
 | A5 remote | ⚠️ **deferred** — `gh` not installed; commands printed below, nothing pushed |
 | A6 benchmark record | ✅ 5 rows backfilled and parse; stale `--compile` version string fixed |
 | A7 readiness gate | ✅ this section |
@@ -367,9 +367,18 @@ lost, the Phase 2 ladder loses its anchor permanently.
 cifs/nfs/smb mounts; nothing in `/etc/fstab`. Mounted volumes are `/media/michael/disk2`
 (1.9T local NVMe, `nvme0n1p5`), `/media/michael/SCARLETT` (160 K), and `/mnt/roms` —
 none is the Jetson share. Per the brief, Samba credentials were **not** configured.
-Awaiting Tom. **The anchor currently exists only on `nvme1n1` — the same device as the
-OS and the repo.** A second copy on `disk2` would at least survive a single-device
-failure and needs no credentials.
+Awaiting Tom for the offsite copy.
+
+**Interim second copy made** (Tom's call, 2026-08-08) —
+`/media/michael/disk2/tinyalphazero-v2-anchors/phase1_anchor.pt`, on `nvme0n1`, a
+different physical device from the repo's `nvme1n1`. Digest verified identical:
+
+```
+276cfea67ed0c2578712c31edea9b7a75e5b1337cc67ae7f1326382b067ab5b1
+```
+
+This survives a single-device failure but is **still not offsite** — same machine, same
+room. The NAS copy remains open.
 
 ### A5 — remote
 
