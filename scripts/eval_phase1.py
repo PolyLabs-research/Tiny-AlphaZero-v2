@@ -19,8 +19,8 @@ from pathlib import Path
 
 import torch
 
-from tinyalphazero.data import Phase1Dataset, assert_dataset_mode
-from tinyalphazero.train import compute_metrics, load_checkpoint, unpack_legal_mask
+from tinyalphazero.data import assert_dataset_mode
+from tinyalphazero.train import MATE1_TOPK, compute_metrics, load_checkpoint
 
 # §5 acceptance gates, as revised by BLOCKED-2026-08-06-phase1-gates.md.
 # The two unmasked-top-1 proxies were retired (not lowered) after diagnosis showed
@@ -37,25 +37,6 @@ RETIRED = {
     "mate1_solve_rate": "retired 2026-08-06 (was ≥ 0.90)",
     "top1_exact_rate": "informational",
 }
-
-
-@torch.no_grad()
-def mate1_topk_masked(net, mate1_dir: Path, device, ks=(1, 3, 8, 16), bs: int = 256) -> dict[int, float]:
-    """Masked top-k coverage of the mating move over the FULL anchor set.
-
-    Full-set (not sampled) so the gated number carries no sampling noise; this is
-    the same computation as scripts/diagnose_phase1.py's mate_topk.
-    """
-    ds = Phase1Dataset(mate1_dir)
-    n = len(ds)
-    tokens = torch.stack([ds[i]["tokens"] for i in range(n)])
-    legals = torch.stack([ds[i]["legals"] for i in range(n)])
-    target = torch.tensor([int(ds[i]["from_sq"]) * 64 + int(ds[i]["to_sq"]) for i in range(n)])
-
-    pol = torch.cat([net(tokens[i:i + bs].to(device)).policy_ft.float().cpu() for i in range(0, n, bs)])
-    pol = pol.reshape(n, 4096).masked_fill(~unpack_legal_mask(legals).reshape(n, 4096), float("-inf"))
-    order = pol.argsort(dim=1, descending=True)
-    return {k: (order[:, :k] == target[:, None]).any(1).float().mean().item() for k in ks}
 
 
 def main() -> None:
@@ -90,11 +71,6 @@ def main() -> None:
         n_mate1=args.n_mate1,
     )
 
-    topk: dict[int, float] = {}
-    if args.mate1 is not None:
-        topk = mate1_topk_masked(net, args.mate1, device)
-        metrics["mate1_top8_masked"] = topk[8]
-
     # ---- Print acceptance table ----
     print("\n" + "=" * 72)
     print(f"{'Metric':<28} {'Value':>10}  {'Gate':>12}  {'Pass':>6}")
@@ -118,9 +94,10 @@ def main() -> None:
     for key, note in RETIRED.items():
         if key in metrics:
             print(f"  {key:<26} {metrics[key]:10.4f}  {note}")
-    for k in sorted(topk):
-        if k not in (1, 8):  # k=1 is mate1_solve_rate above; k=8 is gated
-            print(f"  {f'mate1_top{k}_masked':<26} {topk[k]:10.4f}  informational")
+    for k in MATE1_TOPK:
+        key = f"mate1_top{k}_masked"
+        if k not in (1, 8) and key in metrics:  # k=1 is mate1_solve_rate above; k=8 is gated
+            print(f"  {key:<26} {metrics[key]:10.4f}  informational")
 
     print("=" * 72)
 

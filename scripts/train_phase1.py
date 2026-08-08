@@ -297,10 +297,11 @@ def main() -> None:
         print(
             f"Epoch {epoch} | loss={mean_epoch_loss:.4f} "
             f"(policy={mean_losses['policy_loss']:.4f}) | "
-            f"top1_legal={metrics['top1_legal_rate']:.4f} | "
-            f"mate1_solve={metrics['mate1_solve_rate']:.4f} | "
+            f"mate1_top8={metrics['mate1_top8_masked']:.4f} | "  # gated (BLOCKED-2026-08-06)
             f"auc={metrics['legality_auc']:.4f} | "
-            f"wdl_anchor={metrics['wdl_anchor_mass']:.4f}"
+            f"wdl_anchor={metrics['wdl_anchor_mass']:.4f} | "
+            f"top1_legal={metrics['top1_legal_rate']:.4f}ⁱ | "
+            f"mate1_solve={metrics['mate1_solve_rate']:.4f}ⁱ"
             + (f" | skipped={epoch_skipped}" if epoch_skipped else "")
         )
 

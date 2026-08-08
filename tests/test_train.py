@@ -23,6 +23,7 @@ from tinyalphazero.data import (
 from tinyalphazero.encoding import encode_board, encode_move, legal_moves_packed
 from tinyalphazero.model import ChessNet
 from tinyalphazero.train import (
+    MATE1_TOPK,
     WeightedPhaseDataset,
     _binary_auc,
     _legality_loss,
@@ -543,6 +544,37 @@ def test_compute_metrics_smoke() -> None:
         "mate1_solve_rate",
         "legality_auc",
         "wdl_anchor_mass",
+        *(f"mate1_top{k}_masked" for k in MATE1_TOPK),
     }
     assert expected_keys.issubset(metrics.keys())
     assert 0.0 <= metrics["top1_legal_rate"] <= 1.0
+
+
+def test_mate1_topk_is_monotone_and_solve_rate_is_the_k1_slice() -> None:
+    """The gated metric family must be internally consistent.
+
+    top-k coverage is non-decreasing in k, and mate1_solve_rate is the k=1 slice
+    *by construction* (both derive from one rank) — so the campaign log and the
+    gate table can never drift apart the way they did before consolidation.
+    """
+    rng = np.random.default_rng(0)
+    games = list(generate_random_games(20, rng))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir = Path(tmp) / "data"
+        write_dataset(iter(games), data_dir)
+
+        net = ChessNet(_mini_cfg())
+        metrics = compute_metrics(
+            net,
+            data_dir,
+            device=torch.device("cpu"),
+            mate1_dir=None,
+            n_random=50,
+            n_mate1=32,
+        )
+
+    rates = [metrics[f"mate1_top{k}_masked"] for k in MATE1_TOPK]
+    assert rates == sorted(rates), f"top-k coverage must be non-decreasing in k: {rates}"
+    assert metrics["mate1_solve_rate"] == metrics["mate1_top1_masked"]
+    assert all(0.0 <= r <= 1.0 for r in rates)

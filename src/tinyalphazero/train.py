@@ -278,6 +278,11 @@ def _binary_auc(scores: np.ndarray, labels: np.ndarray) -> float:
     return float((rank_sum - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg))
 
 
+# Masked top-k coverage of the mating move. k=8 is the gated one as of
+# BLOCKED-2026-08-06-phase1-gates.md; the rest are reported for shape.
+MATE1_TOPK = (1, 3, 8, 16)
+
+
 @torch.no_grad()
 def compute_metrics(
     net: ChessNet,
@@ -345,7 +350,6 @@ def compute_metrics(
         legality_auc = _binary_auc(all_scores, all_labels)
 
     # ---- mate-in-1 metrics ----
-    mate1_solve_rate = float("nan")
     wdl_anchor_mass = float("nan")
 
     if mate1_dir is not None and Path(mate1_dir).exists():
@@ -374,7 +378,7 @@ def compute_metrics(
         m1_idxs = np.arange(len(mate1_ds))
         n_m1 = len(m1_idxs)
 
-    solved = 0
+    topk_hits = dict.fromkeys(MATE1_TOPK, 0)
     wdl_win_mass_total = 0.0
 
     for i in m1_idxs:
@@ -394,22 +398,30 @@ def compute_metrics(
         else:
             masked_logits = policy.reshape(4096)
 
-        top1 = masked_logits.argmax().item()
-        solved += int(top1 == from_sq * 64 + to_sq)
+        # Rank of the mating move among legal moves, then derive every k at once.
+        # rank == 0 is exactly the old top-1 solve, so mate1_solve_rate stays
+        # identical to the k=1 slice by construction rather than by convention.
+        target = from_sq * 64 + to_sq
+        rank = int((masked_logits > masked_logits[target]).sum().item())
+        for k in MATE1_TOPK:
+            topk_hits[k] += int(rank < k)
 
         # WDL mass on correct class (win = index 2 for outcome=+1)
         wdl_probs = torch.softmax(out.value_wdl[0], dim=-1)
         wdl_win_mass_total += wdl_probs[2].item()
 
-    mate1_solve_rate = solved / n_m1 if n_m1 > 0 else float("nan")
+    topk_rates = {
+        k: (topk_hits[k] / n_m1 if n_m1 > 0 else float("nan")) for k in MATE1_TOPK
+    }
     wdl_anchor_mass = wdl_win_mass_total / n_m1 if n_m1 > 0 else float("nan")
 
     return {
         "top1_legal_rate": top1_legal_rate,
         "top1_exact_rate": top1_exact_rate,
-        "mate1_solve_rate": mate1_solve_rate,
+        "mate1_solve_rate": topk_rates[1],
         "legality_auc": legality_auc,
         "wdl_anchor_mass": wdl_anchor_mass,
+        **{f"mate1_top{k}_masked": topk_rates[k] for k in MATE1_TOPK},
     }
 
 
