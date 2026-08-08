@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import re
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -11,6 +13,7 @@ import numpy as np
 import pytest
 import torch
 
+from tinyalphazero import train as train_mod
 from tinyalphazero.config import Config, ModelConfig, TrainConfig
 from tinyalphazero.data import (
     Phase1Dataset,
@@ -384,6 +387,59 @@ def test_checkpoint_meta_fields() -> None:
     assert "git_sha" in meta
     assert meta["step"] == 100
     assert meta["phase"] == "1"
+
+
+def test_git_sha_returns_short_sha(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Success branch: decode and strip whatever git prints."""
+    monkeypatch.setattr(train_mod.subprocess, "check_output", lambda *a, **k: b"abc1234\n")
+    assert train_mod._git_sha() == "abc1234"
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        FileNotFoundError("git"),  # git binary not installed
+        subprocess.CalledProcessError(128, "git"),  # not a repository / no commits
+    ],
+    ids=["git-missing", "not-a-repo"],
+)
+def test_git_sha_sentinel_when_unavailable(
+    monkeypatch: pytest.MonkeyPatch, exc: Exception
+) -> None:
+    """Absence must be an explicit sentinel — never an exception, never silence."""
+
+    def _raise(*_a: object, **_k: object) -> bytes:
+        raise exc
+
+    monkeypatch.setattr(train_mod.subprocess, "check_output", _raise)
+    assert train_mod._git_sha() == train_mod.NO_GIT_SENTINEL == "no-git"
+
+
+def test_git_sha_is_cwd_independent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: the SHA must describe *this source tree*, not the launch directory.
+
+    The cwd-relative version returned a different answer (or another repo's SHA
+    entirely) depending on where training was started from.
+    """
+    from_repo = train_mod._git_sha()
+    monkeypatch.chdir(tmp_path)
+    assert train_mod._git_sha() == from_repo
+
+
+def test_checkpoint_records_resolved_sha() -> None:
+    """A saved checkpoint carries either a real SHA or the sentinel — never 'unknown'."""
+    model_cfg = _mini_cfg()
+    cfg = _make_full_config(model_cfg)
+    net = ChessNet(model_cfg)
+    optimizer = torch.optim.AdamW(net.parameters())
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "ckpt.pt"
+        save_checkpoint(path, net, optimizer, cfg, step=1, phase="1")
+        _, meta = load_checkpoint(path)
+
+    sha = meta["git_sha"]
+    assert sha == train_mod.NO_GIT_SENTINEL or re.fullmatch(r"[0-9a-f]{7,40}", sha), sha
 
 
 def test_checkpoint_shape_mismatch_raises() -> None:

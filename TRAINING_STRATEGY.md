@@ -27,6 +27,8 @@ This is the **campaign document**: which runs exist, why each was launched, the 
 
 **Measurement basis.** All rows are `scripts/eval_phase1.py` against the frozen held-out sets (`eval_rand` n_random=2000; `eval_mate1_1k` full 1,000 anchors) — *not* the in-training eval, which samples 1000/200 and reads a point or two higher on the noisy metrics. Round `b`'s row is the re-baselined measurement from round `c`'s pre-flight step 3 (it read 0.967 / 0.480 / 0.685 on the retired 500-anchor set and the smaller in-training sample); rounds are only comparable on the same basis, per rule 4.
 
+**Provenance.** Runs a–c predate the repository — provenance for those rounds is the campaign rows + dataset `meta.json` `argv`, not checkpoint SHA (all three read `git_sha='unknown'`; see PROGRESS.md "Readiness 2026-08-06"). SHA embedding is live from `phase1-closed` onward.
+
 **Gates as of 2026-08-06** (`BLOCKED-2026-08-06-phase1-gates.md`): gated = `legality_auc` ≥0.995, `wdl_anchor_mass` ≥0.80, **`mate1_top8_masked` ≥0.97** (new). `top1_legal_rate` (was ≥0.99) and `mate1_solve_rate` (was ≥0.90, = masked top-1) are retired to informational, marked ᵢ. The new gate is not a rubber stamp: `b` scores 0.820 on it, `c` 0.980.
 
 ### Round `phase1_a` — invalid (all gates missed)

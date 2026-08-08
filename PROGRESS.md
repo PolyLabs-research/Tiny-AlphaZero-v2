@@ -1,11 +1,13 @@
 # TinyAlphaZero v2 — Build Progress
 
-## Status: Chunk 4 code fixed after the `runs/phase1_a` failure; full re-run not yet launched
+## Status: Phase 1 CLOSED (2026-08-06, tag `phase1-closed`); Chunk 5 is next
 
-Chunks 0–4 are implemented (102 tests passing, lint clean). Chunk 4 is **not signed
-off**: the first real Phase 1 run failed all four §5 gates, was root-caused, and the
-fixes are in — but the corrected full run has not been executed. Chunks 5–12 are not
-started. See "Phase 1 post-mortem" below before touching training code.
+Chunks 0–4 are **done and signed off**. Phase 1 closed on `runs/phase1_anchor.pt`
+(= `runs/phase1_c/final.pt`, step 56,484) after three rounds; two of the four original
+§5 gates were retired to informational rather than lowered — reasoning in
+`BLOCKED-2026-08-06-phase1-gates.md`, campaign log in `TRAINING_STRATEGY.md`. Chunks
+5–12 are not started. See "Phase 1 post-mortem" below before touching training code,
+and "Readiness 2026-08-06" at the end for the close-out audit.
 
 ---
 
@@ -298,4 +300,39 @@ is expected.
 
 ---
 
-## Next: complete the Phase 1 re-run, then Chunk 5 — Array-tree MCTS
+## Readiness 2026-08-06 — Phase 1 close-out audit
+
+### A2 — checkpoint git-SHA audit (verbatim)
+
+```
+runs/phase1_b/final.pt       git_sha='unknown'   step=28008 phase=1
+runs/phase1_c/final.pt       git_sha='unknown'   step=56484 phase=1
+runs/phase1_anchor.pt        git_sha='unknown'   step=56484 phase=1
+```
+
+All three carry the literal string `unknown`: chunks 0–4 ran with no `.git`, so no run
+in the campaign has a real SHA. Provenance for rounds a–c is the campaign rows plus
+dataset `meta.json` `argv`, not the checkpoint field.
+
+`_git_sha()` had **two** defects, both fixed:
+
+1. Sentinel was `"unknown"`, not the specified explicit `"no-git"`.
+2. **It was cwd-dependent.** `git rev-parse` ran in the process working directory, so a
+   run launched from inside a *different* repository would have silently stamped that
+   repository's SHA onto the checkpoint. A wrong provenance record is worse than an
+   absent one — nothing downstream can distinguish them. Now anchored to the package
+   source tree via `git -C <repo_root>`.
+
+Verified after fix — same answer from both locations, where it previously disagreed:
+
+```
+in-repo : '0c0cebd'
+from /tmp: '0c0cebd'     (was 'unknown')
+```
+
+Tests added (4): success path, both unavailability branches (git binary missing /
+not-a-repo) returning `NO_GIT_SENTINEL`, and a cwd-independence regression test.
+
+---
+
+## Next: Chunk 5 — Array-tree MCTS

@@ -418,10 +418,23 @@ def compute_metrics(
 # ---------------------------------------------------------------------------
 
 
+NO_GIT_SENTINEL = "no-git"
+
+
 def _git_sha() -> str:
+    """Short HEAD SHA of the repository this package lives in, or ``"no-git"``.
+
+    Anchored to the source tree (``git -C <repo_root>``), not the process cwd.
+    The cwd-relative version silently stamped whatever repo the run happened to
+    be launched from — and a *wrong* provenance record is worse than an absent
+    one, because nothing downstream can tell the two apart. Absence is explicit.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
     try:
         return subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
+            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL,
         ).decode().strip()
-    except Exception:  # noqa: BLE001
-        return "unknown"
+    except (OSError, subprocess.SubprocessError):
+        # git absent, not a repository, or no commits yet — all mean "no provenance".
+        return NO_GIT_SENTINEL
