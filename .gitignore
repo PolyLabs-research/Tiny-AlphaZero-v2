@@ -6,6 +6,7 @@ runs/**
 !runs/**/
 !runs/**/metrics.jsonl
 !runs/**/meta.json
+!runs/ANCHORS.sha256
 
 # Root-scoped: a bare `data/` would also swallow runs/data/ as a directory ignore,
 # and git cannot descend into an ignored directory to reach the negations above.
