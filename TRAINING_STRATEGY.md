@@ -2,7 +2,7 @@
 
 This is the **campaign document**: which runs exist, why each was launched, the exact call that launched it, what it produced, and what gets launched next. `HOW_TO_TRAIN.md` explains *how the machinery works*; this file records *what we are doing with it and why*. One round = one entry here, written **before** the run starts (pre-registered expectations) and completed after it ends (results + decision).
 
-**Current status:** **Phase 1 CLOSED** on `runs/phase1_anchor.pt` (= `runs/phase1_c/final.pt`, step 56,484), 2026-08-06. Three of four original gates met; the two unmasked-top-1 gates were retired as mismeasuring proxies via `BLOCKED-2026-08-06-phase1-gates.md`, not lowered. Next: Chunk 5 (array-tree MCTS), then `p2_a`.
+**Current status:** **Phase 1 REOPENED — round `d` in flight.** The 2026-08-06 closure was reopened on 2026-08-08 via its own return condition 1: the chunk 6 mate-in-2 gate scored 77.0% < 95% with `runs/phase1_anchor.pt`. Decision (Tom): fix the model, the gate does not move — `BLOCKED-2026-08-08-mate2-gate.md`. Round `d` targets the measured binding constraint, prior rank coverage of mate-in-2 key moves.
 
 ---
 
@@ -24,6 +24,7 @@ This is the **campaign document**: which runs exist, why each was launched, the 
 | `phase1_a` | Jul 3–4 | 39,135 | 0.000 | 0.065 | 0.981 | 0.034 | invalid run — see post-mortem |
 | `phase1_b` | Aug 4 | 28,008 | 0.953 | 0.527 | **0.9998 ✓** | 0.683 | learning; schedule + anchor signal insufficient |
 | `phase1_c` | Aug 6 | 56,484 | 0.976ᵢ | 0.802ᵢ | **1.000 ✓** | **0.892 ✓** | Phase 1 CLOSED — BLOCKED-2026-08-06 (ᵢ = retired→informational) |
+| `phase1_d` | — | ~19,000 | *inf* | *inf* | *predict ≥0.995* | *predict ≥0.80* | planned — reopening; new gate `mate2_top16_coverage` ≥0.95 |
 
 **Measurement basis.** All rows are `scripts/eval_phase1.py` against the frozen held-out sets (`eval_rand` n_random=2000; `eval_mate1_1k` full 1,000 anchors) — *not* the in-training eval, which samples 1000/200 and reads a point or two higher on the noisy metrics. Round `b`'s row is the re-baselined measurement from round `c`'s pre-flight step 3 (it read 0.967 / 0.480 / 0.685 on the retired 500-anchor set and the smaller in-training sample); rounds are only comparable on the same basis, per rule 4.
 
@@ -134,6 +135,75 @@ Against pre-registration: `wdl_anchor` hit (0.892 ≥ 0.80 — 2× mix + 5× anc
 **Decision taken:** none of the pre-registered branches — the plateau was neither "still rising" nor a capacity limit, so it went to the `BLOCKED.md` conversation rule 5 reserves. Outcome: **Phase 1 CLOSED**, `runs/phase1_c/final.pt` copied to **`runs/phase1_anchor.pt`** (frozen ladder anchor, spec §8). The two unmasked-top-1 gates were retired to informational and replaced by `mate1_top8_masked` ≥ 0.97 — downstream consumption is legality-masked only (spec §6), and chunk 5's own gate requires 100% mate-in-1 at 16 sims *with a uniform stub evaluator*, so top-1 was never load-bearing for anchor correctness. Full argument, revised acceptance basis, and the three return conditions that reopen this: `BLOCKED-2026-08-06-phase1-gates.md`. `scripts/eval_phase1.py` updated to gate on the revised set and report the retired metrics.
 
 **Carried forward (write-up note):** a 6.5M-param model on pure random play drives *geometric* legality toward zero and was still falling 40% per two epochs at the end, while *check-legality* — the one global constraint in the rules — sits as a static ~1.6% tail the factorized head cannot absorb, even though a linear probe on the same trunk reads legality at AUC 1.0. The information is present; the head's inductive bias can't route it. This is the §4.2 attention-bias escalation's trigger condition, should Phase 2 ever need it.
+
+---
+
+### Round `phase1_d` — planned: mate-in-2 anchor coverage (REOPENING)
+
+**Why this round exists.** The 2026-08-06 closure was reopened via its own return condition 1:
+the chunk 6 gate `mate-in-2 ≥ 95% @128 sims` scored **77.0%** with `runs/phase1_anchor.pt`.
+Diagnosis (`BLOCKED-2026-08-08-mate2-gate.md`): search is at its ceiling — **95.4% solved
+*given* the forcing move was in Gumbel's considered set** — but the prior only puts it there
+75.5% of the time (network `top16` rank coverage 83%). Gumbel's top-m by `g + logits` is the
+Phase 2 root mechanism, so this is a property the pipeline consumes directly, not a proxy.
+The gate does not move; the model gets fixed.
+
+**Intent (one line):** raise the prior's rank coverage of mate-in-2 key moves so Gumbel's
+considered set contains them — 83% top-16 → target ≥ 95%.
+
+**Deltas vs `c` (recorded per rule 2):** new `mate_in_2` anchor set (50K) at mix 0.07;
+mate-in-1 mix 0.10 → 0.08; **warm restart** from `runs/phase1_anchor.pt` via `--init-weights`
+(model weights only — fresh optimizer, fresh schedule) rather than training from scratch;
+constant LR 1e-4 (no cosine) for 2 epochs. Attribution is deliberately impure: this is a
+targeted repair of one measured deficiency, not a clean single-lever comparison, and the
+gate that judges it (`mate2_top16_coverage`) did not exist for rounds a–c.
+
+**Pre-flight:** mode audit over all six data dirs; `test_no_suite_contamination` green
+(zero overlap between anchor sets and {suite, both held-out eval sets}); 300-step timing
+slice with `--init-weights` (expect ≈564 ms/step → ≈3 h for ≈19K steps); delete `runs/_timing_d`.
+
+**Config** — `configs/phase1_d.yaml`:
+
+```yaml
+train:
+  phase1_epochs: 2
+  phase1_lr: 1.0e-4
+  phase1_lr_end: 1.0e-4
+  phase1_mate1_mix: 0.08
+  phase1_mate2_mix: 0.07
+```
+
+**The run:**
+
+```bash
+TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 VIRTUAL_ENV=.venv .venv/bin/python scripts/train_phase1.py \
+    --data runs/data/phase1 --mate1 runs/data/mate1_100k --mate2 runs/data/mate2_50k \
+    --eval-data runs/data/eval_rand --eval-mate1 runs/data/eval_mate1_1k --eval-mate2 runs/data/eval_mate2_1k \
+    --config configs/phase1_d.yaml --init-weights runs/phase1_anchor.pt \
+    --out runs/phase1_d --epochs 2 --seed 42
+```
+
+**Pre-registered expectations (written before launch, rule 3).**
+
+*Gated:* `mate2_top16_coverage ≥ 0.95` (new, held-out); `mate1_top8_masked ≥ 0.97`
+(no-regress); `legality_auc ≥ 0.995`; `wdl_anchor_mass ≥ 0.80` — note this **may rise**
+simply because the anchor mixture now carries more outcome-+1 positions; that is expected
+arithmetic, not evidence of improvement, and must not be read as one.
+*Informational:* `mate2_solve_rate` (top-1), `top1_legal_rate`, `mate1_solve_rate`.
+*Operative re-gate:* chunk 6 mate-in-2 ≥ 0.95 at 128 sims with the new checkpoint — this is
+the number that actually decides the round; `mate2_top16_coverage` is its held-out proxy and
+the two are expected to agree. If they disagree, the disagreement is the finding.
+*Stability:* non-finite-gradient skips < 10.
+
+**Decision rules (write the outcome into the log, then act):**
+- **All pass** → re-close: `runs/phase1_anchor.pt` ← `phase1_d/final.pt`; append the v2 digest
+  to `runs/ANCHORS.sha256` keeping the dated v1 line; merge `round-d` → `main`; annotated tag
+  `phase1-closed-r2`; amend both BLOCKED docs to closed; row + result block here.
+- **`mate2_top16` or the chunk 6 re-gate lands 0.90–0.95** → exactly one escalation, single
+  lever: `phase1_epochs: 3` *or* mixes 0.10/0.10 — **not both**. Re-gate.
+- **< 0.90 after that escalation** → stop. Update `BLOCKED-2026-08-08` with the evidence that
+  supervised anchoring cannot buy this coverage at this scale, and hand the gate conversation
+  back. Do not iterate further.
 
 ---
 

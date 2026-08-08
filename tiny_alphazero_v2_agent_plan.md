@@ -304,7 +304,7 @@ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_1.epd --sims 16
 **DONE-WHEN:**
 ```bash
 pytest tests/test_mcts.py -q
-python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_2.epd --sims 128 --ckpt runs/phase1_a/final.pt   # ≥ 95%
+python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_2.epd --sims 128 --ckpt runs/phase1_anchor.pt   # ≥ 95%
 ```
 
 ---
@@ -361,7 +361,7 @@ python benchmarks/bench_selfplay.py --games 32 --sims 16 --device cpu   # runs t
 **DONE-WHEN:**
 ```bash
 pytest tests/test_selfplay.py tests/test_replay.py -q
-python -m tinyalphazero.selfplay --ckpt runs/phase1_a/final.pt --games 8 --sims 16 --out runs/sp_smoke --device cpu
+python -m tinyalphazero.selfplay --ckpt runs/phase1_anchor.pt --games 8 --sims 16 --out runs/sp_smoke --device cpu
 python -c "from tinyalphazero.replay import ReplayBuffer; b=ReplayBuffer.open('runs/sp_smoke/replay'); print(len(b))"
 ```
 

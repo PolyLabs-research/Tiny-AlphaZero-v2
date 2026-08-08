@@ -1,6 +1,13 @@
 # BLOCKED — Phase 1 acceptance gates `top1_legal_rate` and `mate1_solve_rate`
 
-**Date:** 2026-08-06 · **Rounds consumed:** phase1_b, phase1_c · **Status:** RESOLVED — gates revised, Phase 1 closed on `runs/phase1_c/final.pt`
+**Date:** 2026-08-06 · **Rounds consumed:** phase1_b, phase1_c · **Status:** **REOPENED
+2026-08-08 via return condition 1** (chunk 6 mate-in-2 gate: 77.0% < 95% with this
+checkpoint). Re-closure pending round `d`. See `BLOCKED-2026-08-08-mate2-gate.md`.
+
+The revised acceptance basis below stands — nothing here was wrong about *mate-in-1*, which
+still scores 100/100 at 16 sims with no network at all. What it did not cover is that a
+mate-in-2 first move must be **considered** by Gumbel's top-m before search can work on it,
+and consideration is the policy prior's job. Round `d` targets that coverage directly.
 
 ## What blocked
 
