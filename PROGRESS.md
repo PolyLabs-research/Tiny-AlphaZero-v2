@@ -419,4 +419,78 @@ was removed from it — a dated, SHA-stamped record is worthless if it is not ve
 
 ---
 
-## Next: Chunk 5 — Array-tree MCTS
+## Chunk 5 — Array-tree MCTS, synchronous single game ✅ (branch `chunk-05-mcts`, 2026-08-08)
+
+Created `src/tinyalphazero/mcts/{tree,search}.py`, `scripts/generate_suites.py`,
+`tests/test_mcts.py`, `tests/suites/mate_in_{1,2}.epd`. All four §6.4 gates pass.
+
+### Gate results (verbatim)
+
+```
+$ pytest tests/test_mcts.py -q
+23 passed in 1.79s
+
+$ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_1.epd --sims 16 --stub
+mate_in_1.epd: 100/100 solved at 16 sims (100.0%)
+exit=0
+
+$ pytest -q
+131 passed, 36 warnings in 56.83s
+
+$ ruff check src/ tests/ scripts/
+All checks passed!
+```
+
+| Gate | Result |
+|---|---|
+| 1. Mate-in-1, 16 sims, stub evaluator | **100/100** |
+| 2. Invariant fuzz (`1 + ΣN(root) == sims+1`, `vloss == 0`, `W` finite) | pass, 85 random positions × {1,7,32} sims |
+| 3. Pinned visit counts, 64 sims | pass, 2 positions |
+| 4. `Board.copy` ban | pass, incl. the suite path |
+
+### The design decision that makes gate 1 meaningful
+
+The mate-in-1 suite has **min 23, median 43, max 64 legal moves**. PUCT with uniform
+priors visits one fresh root edge per simulation, so at 16 sims a lazily-expanding
+search touches under 40% of root edges and *cannot* see the mate — it would be
+measuring branching factor, not search. Measured directly: with terminal detection
+deferred to first traversal, the gate scored **49/100**.
+
+So expansion resolves each child's terminal status eagerly (one push/pop per legal
+move), and `_select_edge` uses that exact value in place of the completed-Q estimate
+where it exists. Mates are then found on simulation 1 — `test_mate_in_1_is_found_on_the_first_simulation`
+pins that. Cost is O(branching) push/pops per expansion; chunk 5 is explicitly
+correctness-before-speed and chunk 7 can revisit after profiling.
+`test_mate_in_1_suite_positions_exceed_the_sim_budget` asserts min branching > 16 so
+the gate can never quietly become passable-by-accident.
+
+### The pinned-visit gate needed two positions, not one
+
+Under a uniform-policy zero-value stub, a 47-move midgame position at 64 sims produces
+visit counts that are **all 1s and 2s** — correct behaviour (there is no signal to
+concentrate on) but a weak canary that most math changes would not move. Added a
+second pin: `6k1/5ppp/8/8/8/8/5PPP/R5K1 w` where `Ra8#` is a proven win, concentrating
+**45 of 64 visits** with Q=+1.0. That vector moves if terminal detection, terminal-value
+propagation, the backup sign, completed-Q, or `c_puct` changes. Both are asserted; the
+near-uniformity of the first is itself asserted, so signal leaking into it also fails.
+
+### Pre-existing flaky test, found and fixed
+
+`test_train_step_loss_decreases[False]` failed once in four full-suite runs, then passed
+5/5 in isolation. Cause: it seeded the *batch* but not the *model init*, so it consumed
+whatever global torch RNG state preceding tests left behind — adding any test earlier in
+the file could flip it, which is what the A2/A3 additions did. Margin measured over 10
+inits: policy-CE ratio **5.6×–25.6× unmasked** vs **12.7×–39.8× masked** against a 4×
+gate, so the unmasked path sits close enough to lose occasionally. Fixed with
+`torch.manual_seed(0)`; **the 4× threshold is unchanged** — only the uncontrolled
+variable was removed. Verified 131 passed × 4 consecutive full runs.
+
+### Not done in this chunk (by instruction)
+
+Chunk 6 was not started. `runs/phase1_anchor.pt` is untouched — every gate above runs
+against the stub evaluator, and the network is first consumed by chunk 6's mate-in-2
+gate. The branch is **not merged**; it awaits the chunks 5–7 review checkpoint.
+
+---
+
+## Next: Chunk 6 — Gumbel root selection
