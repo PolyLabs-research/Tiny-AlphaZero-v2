@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from tinyalphazero.config import MCTSConfig
+from tinyalphazero.mcts.gumbel import allocate_within_phase, halving_phase_budgets
 from tinyalphazero.mcts.search import (
     Search,
     load_epd,
@@ -33,8 +34,22 @@ MIDGAME_FEN = "r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P1B2/2PBPN2/PP1N1PPP/R2Q1RK1 w - - 
 TACTICAL_FEN = "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1"
 
 
+def _puct_cfg() -> MCTSConfig:
+    """Chunk 5 sections below test *PUCT* selection specifically.
+
+    MCTSConfig.root_mode defaults to "gumbel" (the self-play default), so these
+    must pin the mode explicitly -- otherwise adding chunk 6's dispatch silently
+    changes what they measure, which is exactly what it did: the pinned visit
+    vectors are PUCT artefacts and mean nothing under Sequential Halving.
+    """
+    cfg = MCTSConfig()
+    cfg.root_mode = "puct"
+    cfg.dirichlet_frac = 0.0  # deterministic: the pins are exact-value regressions
+    return cfg
+
+
 def _search(cfg: MCTSConfig | None = None) -> Search:
-    return Search(uniform_stub_evaluator, cfg)
+    return Search(uniform_stub_evaluator, cfg if cfg is not None else _puct_cfg())
 
 
 def _random_boards(n: int, seed: int, max_plies: int = 80) -> Iterator[chess.Board]:
@@ -573,3 +588,196 @@ def _delivers_mate(board: chess.Board, mv: chess.Move) -> bool:
     out = board.is_checkmate()
     board.pop()
     return out
+
+
+# ---------------------------------------------------------------------------
+# 9. Chunk 6 — Gumbel root selection and Sequential Halving (spec §6.2)
+# ---------------------------------------------------------------------------
+
+ANCHOR = Path("runs/phase1_anchor.pt")
+requires_anchor = pytest.mark.skipif(
+    not ANCHOR.exists(), reason="runs/phase1_anchor.pt not present (untracked, 75 MB)"
+)
+
+
+def _gumbel_cfg(**kw) -> MCTSConfig:
+    cfg = MCTSConfig()
+    cfg.root_mode = "gumbel"
+    for k, v in kw.items():
+        setattr(cfg, k, v)
+    return cfg
+
+
+@pytest.mark.parametrize(
+    ("n", "m"), [(48, 16), (128, 16), (16, 16), (50, 16), (48, 8), (64, 32), (200, 16), (7, 4)]
+)
+def test_halving_phase_budgets_total_exactly_the_budget(n: int, m: int) -> None:
+    """Sequential Halving must spend the budget exactly — no more, no less."""
+    budgets = halving_phase_budgets(n, m)
+    assert sum(budgets) == n, f"n={n} m={m}: {budgets} sums to {sum(budgets)}"
+    assert all(b >= 0 for b in budgets)
+
+
+def test_halving_worked_example_matches_the_docstring() -> None:
+    """n=48, m=16 → [16, 8, 12, 12]. Pinned so the documented example stays true."""
+    assert halving_phase_budgets(48, 16) == [16, 8, 12, 12]
+
+
+@pytest.mark.parametrize(("budget", "k"), [(12, 16), (12, 8), (13, 2), (7, 3), (0, 4)])
+def test_allocate_within_phase_sums_to_phase_budget(budget: int, k: int) -> None:
+    alloc = allocate_within_phase(budget, k)
+    assert sum(alloc) == budget
+    assert len(alloc) == k
+
+
+@pytest.mark.parametrize(("sims", "m"), [(48, 16), (128, 16), (32, 8)])
+def test_gumbel_simulations_total_exactly_the_budget(sims: int, m: int) -> None:
+    """GATE: simulations == budget exactly.
+
+    Chunk 5 ratified that terminal hits *consume* budget, so this is the
+    identity that holds unconditionally. Evaluator calls are a different
+    quantity — see the next test — and asserting "leaf evaluations == budget"
+    would silently be asserting the absence of terminal positions.
+    """
+    search = Search(uniform_stub_evaluator, _gumbel_cfg(gumbel_m=m), np.random.default_rng(0))
+    for board in _random_boards(12, seed=41):
+        result = search.run(board, None, sims)
+        if len(result.visits) == 0:
+            continue
+        assert result.sims_run == sims
+        assert int(result.visits.sum()) == sims
+
+
+def test_evaluations_equal_budget_only_without_terminals() -> None:
+    """Evaluator calls <= simulations, strictly less when terminals short-circuit."""
+    search = Search(uniform_stub_evaluator, _gumbel_cfg(), np.random.default_rng(0))
+
+    # Quiet midgame: no terminal inside a 48-sim horizon.
+    quiet = search.run(chess.Board(MIDGAME_FEN), None, 48)
+    assert quiet.evaluations == quiet.sims_run + 1, "root expansion plus one per sim"
+
+    # Mate-in-1 position: the mating edge is terminal, so sims that take it
+    # never reach the evaluator.
+    board = chess.Board()
+    board.set_epd(load_epd(MATE_IN_1)[0][0])
+    tactical = search.run(board, None, 48)
+    assert tactical.evaluations < tactical.sims_run + 1
+    assert tactical.sims_run == 48
+
+
+def test_gate_gumbel_mate_in_1_at_48_sims_stub() -> None:
+    """GATE: Gumbel at 48 sims still solves mate-in-1 100% with the stub."""
+    solved, total, failed = run_suite(
+        MATE_IN_1, sims=48, evaluate_fn=uniform_stub_evaluator,
+        cfg=_gumbel_cfg(), mate_in=1, rng=np.random.default_rng(0),
+    )
+    assert solved == total == 100, f"{solved}/{total}; failed {failed[:8]}"
+
+
+def test_proven_wins_are_never_dropped_from_the_considered_set() -> None:
+    """Top-m by g+logits is a random subset under uniform priors.
+
+    Without force-include the mate-in-1 suite scores 46/100 at 48 sims, because
+    the mating move simply is not among the 16 considered actions on a median-43
+    move position. An exactly-known win must not be discarded for noise.
+    """
+    board = chess.Board()
+    board.set_epd(load_epd(MATE_IN_1)[0][0])
+    search = Search(uniform_stub_evaluator, _gumbel_cfg(), np.random.default_rng(0))
+    result = search.run(board, None, 48)
+    board.push(result.best_move())
+    assert board.is_checkmate()
+    board.pop()
+
+
+def test_improved_policy_is_a_distribution_over_legal_actions() -> None:
+    search = Search(uniform_stub_evaluator, _gumbel_cfg(), np.random.default_rng(0))
+    for board in _random_boards(15, seed=42):
+        result = search.run(board, None, 48)
+        if len(result.visits) == 0:
+            continue
+        probs = result.improved_policy_probs
+        assert probs is not None
+        assert probs.shape == result.visits.shape
+        assert probs.sum() == pytest.approx(1.0, abs=1e-5)
+        assert (probs >= 0).all()
+
+        legal = {(m.from_square * 64 + m.to_square) for m in board.legal_moves}
+        sparse = result.improved_policy()
+        assert len(sparse) == len(probs)
+        for move_ft, _promo, p in sparse:
+            assert move_ft in legal, "improved_policy must be zero off the legal set"
+            assert p >= 0
+
+
+def test_improved_policy_concentrates_on_a_proven_mate() -> None:
+    """σ(completed_q) must carry the *exact* terminal value (review question 3).
+
+    With the estimate instead of the truth the target stays diffuse, and the
+    network would be taught that a proven win is worth about as much as a quiet
+    move — a degradation that never raises, because the softmax still looks
+    perfectly well-formed.
+    """
+    board = chess.Board()
+    board.set_epd(load_epd(MATE_IN_1)[0][0])
+    search = Search(uniform_stub_evaluator, _gumbel_cfg(), np.random.default_rng(0))
+    result = search.run(board, None, 48)
+
+    mating = [
+        i for i, mv in enumerate(result.moves()) if _delivers_mate(board, mv)
+    ]
+    assert mating
+    mass = float(result.improved_policy_probs[mating].sum())
+    assert mass > 0.9, f"improved policy put only {mass:.3f} on the mate"
+
+
+def test_root_completed_q_prefers_exact_over_estimate() -> None:
+    """Review question 3, at the unit level."""
+    board = chess.Board()
+    board.set_epd(load_epd(MATE_IN_1)[0][0])
+    search = Search(uniform_stub_evaluator, _gumbel_cfg(), np.random.default_rng(0))
+    tree, root, _ = search.run_tree(board, None, 0)
+    q = search._root_completed_q(tree, root)
+
+    sl = tree.edge_slice(root)
+    terminal_wins = np.where(tree.terminal[sl] & (-tree.terminal_value[sl] >= 1.0))[0]
+    assert len(terminal_wins) > 0
+    assert np.allclose(q[terminal_wins], 1.0), (
+        f"a mate must read exactly +1 before any simulation has run, got {q[terminal_wins]}"
+    )
+
+
+def test_puct_ablation_mode_still_runs_and_gates() -> None:
+    """PUCT + Dirichlet is retained as the control condition (spec §6.2)."""
+    cfg = MCTSConfig()
+    cfg.root_mode = "puct"
+    solved, total, _ = run_suite(
+        MATE_IN_1, sims=16, evaluate_fn=uniform_stub_evaluator,
+        cfg=cfg, mate_in=1, rng=np.random.default_rng(0),
+    )
+    assert solved == total == 100, f"PUCT control regressed: {solved}/{total}"
+
+    result = Search(uniform_stub_evaluator, cfg, np.random.default_rng(0)).run(
+        chess.Board(MIDGAME_FEN), None, 32
+    )
+    assert result.improved_policy_probs is None, "improved_policy is gumbel-only"
+    assert int(result.visits.sum()) == 32
+
+
+def test_unknown_root_mode_raises() -> None:
+    cfg = MCTSConfig()
+    cfg.root_mode = "greedy"
+    with pytest.raises(ValueError, match="unknown root_mode"):
+        Search(uniform_stub_evaluator, cfg).run(chess.Board(), None, 4)
+
+
+def test_solver_marks_a_forced_mate_proven() -> None:
+    """A refuted reply set makes the parent edge proven, not merely well-scored."""
+    board = chess.Board()
+    board.set_epd(load_epd(MATE_IN_2)[0][0])
+    search = Search(uniform_stub_evaluator, _gumbel_cfg(), np.random.default_rng(0))
+    tree, root, _ = search.run_tree(board, None, 256)
+    sl = tree.edge_slice(root)
+    assert tree.proven[sl].any() or tree.terminal[sl].any(), (
+        "256 sims on a mate-in-2 should prove at least one edge"
+    )

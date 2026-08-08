@@ -564,4 +564,68 @@ gate. The branch is **not merged**; it awaits the chunks 5–7 review checkpoint
 
 ---
 
-## Next: Chunk 6 — Gumbel root selection
+## Chunk 6 — Gumbel root selection ⚠️ BLOCKED (branch `chunk-06-gumbel`, 2026-08-08)
+
+Implemented in full: `mcts/gumbel.py`, Gumbel top-m + Sequential Halving, `improved_policy`,
+PUCT+Dirichlet ablation control, `--ckpt` network evaluator. **185 tests pass, ruff clean.**
+
+### Gate results (verbatim)
+
+```
+$ pytest tests/test_mcts.py -q
+66 passed in 5.51s
+
+$ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_1.epd --sims 16 --stub
+mate_in_1.epd: 100/100 solved at 16 sims (100.0%) | eval=stub root=gumbel | gate >= 100%
+
+$ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_1.epd --sims 48 --stub
+mate_in_1.epd: 100/100 solved at 48 sims (100.0%) | eval=stub root=gumbel | gate >= 100%
+
+$ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_2.epd --sims 128 --ckpt runs/phase1_anchor.pt
+mate_in_2.epd: 154/200 solved at 128 sims (77.0%) | eval=runs/phase1_anchor.pt root=gumbel | gate >= 95%
+
+$ pytest -q
+185 passed, 36 warnings in 59.91s
+```
+
+| Gate | Result |
+|---|---|
+| Gumbel mate-in-1, 48 sims, stub | **100/100** |
+| Sequential Halving exact budget, 8 (n,m) combos | pass |
+| `improved_policy` well-formed; >0.9 on a proven mate | pass |
+| PUCT ablation control still 100/100 | pass |
+| **mate-in-2 ≥95% @128 sims with the anchor** | **77.0% — FAILS** |
+
+**BLOCKED after 3 fix attempts: `BLOCKED-2026-08-08-mate2-gate.md`.** Chunk 7 not started.
+
+### This fires a return condition of the Phase 1 closure
+
+`BLOCKED-2026-08-06` named "mate-in-2 < 95% @128 sims with this checkpoint" as return
+condition 1. It has fired. The mate-in-1 half did not (100/100, stub, no network).
+
+Diagnosis order was search-first as instructed. Stub 30.5% → anchor 77.0%, and the decisive
+split: **95.4% solved *given* the forcing move was in the considered set**, which is only
+75.5% of the time at m=16. Search is at the gate; *consideration* is not. Gumbel takes top-m
+by `g + logits`, so a move the prior ranks below ~16th is never simulated — network prior
+`top16 = 83%` on these positions is a hard ceiling on a 95% gate.
+
+Neither knob rescues it: m ∈ {16,24,32,48,128} → 76/73.5/80/81/81%; sims ∈ {128,256,512,1024}
+→ 81.7/81.7/91.7/86.7% (60-position subset). Full evidence and the three attempts in the
+BLOCKED doc.
+
+The tension is real: the Phase 1 retirement argued mate-in-1 is "search's job", which holds
+(100% with no network). It does not extend to mate-in-2, where the first move must be
+*considered*, and consideration is the policy prior's job — the exact quality Phase 1 stopped
+gating. Both decisions are defensible alone; this gate is where they collide.
+
+### Three chunk-5 tests were silently re-pointed and had to be pinned
+
+`MCTSConfig.root_mode` defaults to `"gumbel"`, and chunk 6 added dispatch on it — so the
+chunk 5 pinned-visit and backup tests, written against PUCT, began measuring Sequential
+Halving instead. They now set `root_mode="puct"` explicitly (and `dirichlet_frac=0` for
+determinism). Worth noting as a pattern: adding a dispatch on a defaulted config field
+silently changes what every existing test of the old path measures.
+
+---
+
+## Next: chunk 6 gate decision (see BLOCKED-2026-08-08), then Chunk 7

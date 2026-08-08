@@ -23,6 +23,7 @@ import numpy as np
 
 from tinyalphazero.config import MCTSConfig
 from tinyalphazero.encoding import decode_board, encode_board
+from tinyalphazero.mcts import gumbel
 from tinyalphazero.mcts.tree import Tree
 
 # evaluate_fn(tokens (72,)) -> (policy_ft (64,64) probs already legal-masked, value float)
@@ -34,6 +35,11 @@ RepetitionsFn = Callable[[chess.Board], int]
 # Draw-claim thresholds (spec §6.3: "50-move and threefold via claim checks").
 FIFTY_MOVE_PLIES = 100
 THREEFOLD_COUNT = 3
+
+# Separates immediate mates from deeper proven wins, which both sit at q=+1.
+# Must exceed the g+logits spread (Gumbel noise is O(1), logits O(10)) so the
+# tiebreak is decided by mate distance rather than by noise.
+IMMEDIATE_WIN_BONUS = 1e3
 
 
 # --- repetition counting ----------------------------------------------------
@@ -73,6 +79,11 @@ class RootResult:
     q: np.ndarray  # float32 (n_edges,) root side-to-move perspective
     prior: np.ndarray  # float32 (n_edges,)
     sims_run: int
+    # Gumbel additions (chunk 6). ``chosen`` is the acting move's edge index;
+    # under PUCT mode it is the most-visited edge.
+    improved_policy_probs: np.ndarray | None = None  # float32 (n_edges,)
+    chosen: int = -1
+    evaluations: int = 0  # evaluator calls — < sims_run when terminals short-circuit
 
     def moves(self) -> list[chess.Move]:
         from tinyalphazero.encoding import decode_move
@@ -83,14 +94,62 @@ class RootResult:
         ]
 
     def best_move(self) -> chess.Move:
-        """Most-visited root move, ties broken by Q then by index (deterministic)."""
+        """The acting move.
+
+        Under Gumbel this is the argmax of ``g + logits + σ(q̂)`` over survivors,
+        which is *not* in general the most-visited action — Sequential Halving
+        spends its budget to discriminate, not to vote.
+        """
         if len(self.visits) == 0:
             raise ValueError("no root edges — position is terminal")
+        if self.chosen >= 0:
+            return self.moves()[self.chosen]
         best = max(
             range(len(self.visits)),
             key=lambda i: (int(self.visits[i]), float(self.q[i]), -i),
         )
         return self.moves()[best]
+
+    def improved_policy(self) -> list[tuple[int, int, float]]:
+        """Sparse ``(move_ft, promo, prob)`` policy target over all legal actions."""
+        if self.improved_policy_probs is None:
+            raise ValueError("improved_policy is only produced in gumbel root mode")
+        return [
+            (int(ft), int(pr), float(p))
+            for ft, pr, p in zip(
+                self.move_ft, self.promo, self.improved_policy_probs, strict=True
+            )
+        ]
+
+
+def network_evaluator(ckpt_path: str | Path, device: str | None = None) -> EvaluateFn:
+    """Build an ``evaluate_fn`` backed by a trained checkpoint.
+
+    Returns legal-masked policy probabilities and a scalar value in the
+    side-to-move perspective (``P(win) - P(loss)``), matching the sign
+    convention the tree backs up.
+    """
+    import torch
+
+    from tinyalphazero.encoding import legal_mask_ft
+    from tinyalphazero.model import masked_policy, value_scalar
+    from tinyalphazero.train import load_checkpoint
+
+    dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    net, _meta = load_checkpoint(ckpt_path, device=dev)
+    net.eval()
+
+    @torch.no_grad()
+    def evaluate(tokens: np.ndarray) -> tuple[np.ndarray, float]:
+        board = decode_board(tokens)
+        t = torch.from_numpy(np.ascontiguousarray(tokens, dtype=np.int64)).unsqueeze(0).to(dev)
+        out = net(t)
+        mask = torch.from_numpy(legal_mask_ft(board)).unsqueeze(0).to(dev)
+        probs = masked_policy(out.policy_ft, mask)[0].reshape(64, 64).float().cpu().numpy()
+        value = float(value_scalar(out.value_wdl)[0].item())
+        return probs, value
+
+    return evaluate
 
 
 def uniform_stub_evaluator(tokens: np.ndarray) -> tuple[np.ndarray, float]:
@@ -113,9 +172,42 @@ def uniform_stub_evaluator(tokens: np.ndarray) -> tuple[np.ndarray, float]:
 class Search:
     """Synchronous PUCT search over an array tree."""
 
-    def __init__(self, evaluate_fn: EvaluateFn, cfg: MCTSConfig | None = None) -> None:
+    def __init__(
+        self,
+        evaluate_fn: EvaluateFn,
+        cfg: MCTSConfig | None = None,
+        rng: np.random.Generator | None = None,
+    ) -> None:
         self.evaluate_fn = evaluate_fn
         self.cfg = cfg if cfg is not None else MCTSConfig()
+        self.rng = rng if rng is not None else np.random.default_rng(0)
+        self._evaluations = 0
+
+    # -- root value completion (spec §6.2) --------------------------------
+
+    def _root_completed_q(self, tree: Tree, root: int) -> np.ndarray:
+        """Per-root-action q̂ from the root side-to-move perspective.
+
+        Three cases, in priority order:
+
+        1. **Terminal** — the exact value, negated into this node's perspective.
+        2. **Visited** — the running average ``W/N``.
+        3. **Unvisited** — completed-Q, i.e. the root's own value estimate.
+
+        Case 1 must come first and must be applied *here*, not only in
+        ``_select_edge``. Gumbel consumes this vector twice — inside σ(q̂) for
+        the acting argmax and inside the improved-policy target — and a mate
+        scored by estimate on one path while non-root selection uses the exact
+        value on another is an inconsistency that never raises: it just yields a
+        policy target that teaches the network a proven win is worth ~0.
+        """
+        sl = tree.edge_slice(root)
+        n = tree.N[sl].astype(np.float32)
+        q = np.where(n > 0, tree.W[sl] / np.maximum(n, 1.0), tree.node_q(root))
+        has_exact, exact = tree.exact_value(sl)
+        if has_exact.any():
+            q = np.where(has_exact, -exact, q)
+        return q.astype(np.float32)
 
     # -- terminal handling ----------------------------------------------
 
@@ -158,6 +250,7 @@ class Search:
         """
         tokens = encode_board(board, _prior_occurrences(board, path_reps, base_reps))
         policy, value = self.evaluate_fn(tokens)
+        self._evaluations += 1
 
         edges: list[tuple[int, int, float]] = []
         terminal_flags: list[tuple[bool, float]] = []
@@ -187,6 +280,15 @@ class Search:
         sl = tree.edge_slice(node)
         tree.terminal[sl] = [t for t, _ in terminal_flags]
         tree.terminal_value[sl] = [v for _, v in terminal_flags]
+
+        # If expansion just revealed that the side to move has a mate available,
+        # this node's value is exactly +1 — it is not an estimate. Returning the
+        # evaluator's guess instead dilutes the parent's Q with a number we know
+        # to be wrong, and costs an extra simulation per line before the win
+        # registers. Same principle as _select_edge: prefer truth to estimate.
+        for is_term, tv in terminal_flags:
+            if is_term and -tv >= 1.0:
+                return node, 1.0
         return node, float(value)
 
     # -- selection -------------------------------------------------------
@@ -209,9 +311,9 @@ class Search:
         # the search would rediscover a proven mate by sampling, which at small
         # sim budgets it simply cannot do: the mate-in-1 suite has a median of 43
         # legal moves, so 16 simulations touch under 40% of the root edges.
-        term = tree.terminal[sl]
-        if term.any():
-            q = np.where(term, -tree.terminal_value[sl], q)
+        has_exact, exact = tree.exact_value(sl)
+        if has_exact.any():
+            q = np.where(has_exact, -exact, q)
         u = self.cfg.c_puct * prior * np.sqrt(max(float(n.sum()), 1.0)) / (1.0 + n)
         return int(np.argmax(q + u)) + sl.start
 
@@ -225,11 +327,22 @@ class Search:
     ) -> RootResult:
         """Run ``num_sims`` simulations from ``board`` and return root statistics.
 
-        ``board`` is mutated during the search but is restored exactly: every
-        ``push`` is matched by a ``pop``. No ``copy()`` is taken anywhere.
+        Dispatches on ``cfg.root_mode``: ``"gumbel"`` (default) or ``"puct"``
+        (the ablation control). ``board`` is mutated during the search but is
+        restored exactly: every ``push`` is matched by a ``pop``. No ``copy()``
+        is taken anywhere.
         """
+        if self.cfg.root_mode == "gumbel":
+            return self.run_gumbel(board, repetitions_fn, num_sims)
+        if self.cfg.root_mode != "puct":
+            raise ValueError(f"unknown root_mode {self.cfg.root_mode!r}; use gumbel|puct")
         tree, root, sims_run = self.run_tree(board, repetitions_fn, num_sims)
         root_slice = tree.edge_slice(root)
+        return self._root_result(tree, root, root_slice, sims_run)
+
+    def _root_result(
+        self, tree: Tree, root: int, root_slice: slice, sims_run: int
+    ) -> RootResult:
         return RootResult(
             move_ft=tree.move_ft[root_slice].copy(),
             promo=tree.promo[root_slice].copy(),
@@ -241,7 +354,169 @@ class Search:
             ).astype(np.float32),
             prior=tree.prior[root_slice].copy(),
             sims_run=sims_run,
+            evaluations=self._evaluations,
         )
+
+    def run_gumbel(
+        self,
+        board: chess.Board,
+        repetitions_fn: RepetitionsFn | None = None,
+        num_sims: int | None = None,
+    ) -> RootResult:
+        """Gumbel top-m root selection with Sequential Halving (spec §6.2).
+
+        Budget accounting, stated explicitly because chunk 5 ratified that
+        terminal hits consume budget: **simulations** always total exactly
+        ``num_sims``; **evaluator calls** are ``<= num_sims``, strictly less
+        whenever a scheduled simulation lands on a terminal edge and
+        short-circuits without touching the network. A test asserting
+        "leaf evaluations == budget" would be asserting the absence of
+        terminals, so ``RootResult.evaluations`` is reported separately.
+        """
+        num_sims = self.cfg.sims if num_sims is None else num_sims
+        tree, root, _ = self.run_tree(board, repetitions_fn, 0)
+        sl = tree.edge_slice(root)
+        n_actions = int(tree.num_edges[root])
+        if n_actions == 0:
+            return self._root_result(tree, root, sl, 0)
+
+        logits = gumbel.prior_logits(tree.prior[sl])
+        g = gumbel.gumbel_noise(self.rng, n_actions)
+
+        # Considered set: top-m by g + logits, but a *proven win* is never
+        # dropped for noise — see _force_include_proven_wins.
+        m = min(self.cfg.gumbel_m, n_actions, max(num_sims, 1))
+        order = np.argsort(-(g + logits), kind="stable")
+        considered = list(order[:m])
+        considered = self._force_include_proven_wins(tree, root, considered, g + logits)
+
+        base_reps: RepetitionsFn = (
+            repetitions_fn if repetitions_fn is not None else (lambda _b: 0)
+        )
+        path_reps: Counter = Counter()
+        path_reps[board._transposition_key()] += 1
+
+        sims_run = 0
+        survivors = considered
+        for budget in gumbel.halving_phase_budgets(num_sims, len(considered)):
+            if budget <= 0 or not survivors:
+                continue
+            for local, visits in enumerate(
+                gumbel.allocate_within_phase(budget, len(survivors))
+            ):
+                for _ in range(visits):
+                    self._simulate(
+                        tree, root, board, path_reps, base_reps,
+                        forced_edge=sl.start + int(survivors[local]),
+                    )
+                    sims_run += 1
+            if len(survivors) > 1:
+                scores = self._gumbel_scores(tree, root, g, logits)
+                survivors = sorted(survivors, key=lambda a: -scores[a])[
+                    : max(1, (len(survivors) + 1) // 2)
+                ]
+
+        result = self._root_result(tree, root, sl, sims_run)
+        completed_q = self._root_completed_q(tree, root)
+        max_n = int(tree.N[sl].max()) if n_actions else 0
+        result.improved_policy_probs = gumbel.improved_policy(
+            logits, completed_q, max_n, self.cfg
+        )
+        final_scores = self._gumbel_scores(tree, root, g, logits)
+        result.chosen = int(max(survivors, key=lambda a: final_scores[a]))
+        return result
+
+    def _force_include_proven_wins(
+        self, tree: Tree, root: int, considered: list[int], rank_score: np.ndarray
+    ) -> list[int]:
+        """Ensure exactly-known wins are in the considered set.
+
+        Measured, not assumed: with uniform stub priors, top-m by ``g + logits``
+        is a uniform random m-subset, so on the mate-in-1 suite (median 43 legal
+        moves, m=16) the mating move is simply not considered most of the time.
+        Built as specified first, the plan's "Gumbel at 48 sims still solves
+        mate-in-1 100%" gate scored **46/100**; with this it scores 100/100.
+        Discarding a proven win in favour of a sampled estimate makes the search
+        strictly weaker than its own knowledge.
+
+        Swaps rather than appends, so ``len(considered)`` is unchanged and the
+        halving schedule's budget arithmetic still lands exactly on num_sims.
+        """
+        sl = tree.edge_slice(root)
+        wins = [
+            i
+            for i in range(int(tree.num_edges[root]))
+            if tree.terminal[sl.start + i] and -tree.terminal_value[sl.start + i] >= 1.0
+        ]
+        missing = [w for w in wins if w not in considered]
+        if not missing:
+            return considered
+
+        out = list(considered)
+        # Evict the weakest considered actions that are not themselves wins.
+        evictable = sorted(
+            (a for a in out if a not in wins), key=lambda a: rank_score[a]
+        )
+        for win, victim in zip(missing, evictable, strict=False):
+            out[out.index(victim)] = win
+        for win in missing[len(evictable) :]:
+            if win not in out:
+                out.append(win)
+        return out
+
+    def _solve_edge(self, tree: Tree, e: int) -> None:
+        """Backward induction on ``e``'s child (MCTS-Solver, Winands et al. 2008).
+
+        Two rules, both exact:
+
+        * child's mover has *any* winning move  → child is a win for them;
+        * *every* child move is already solved   → child's value is the best of them.
+
+        Averaged statistics cannot express either fact. A mate-in-2 whose whole
+        reply set has been refuted still shows Q well under 1 after backup, so
+        Sequential Halving can eliminate a line that is *proven* won — which is
+        what the 76% plateau was. Marking it proven makes the value permanent
+        and immune to elimination.
+
+        Kept separate from ``terminal`` so an immediate mate still outranks a
+        longer forced one (see ``IMMEDIATE_WIN_BONUS``).
+        """
+        c = int(tree.child[e])
+        if c < 0 or tree.terminal[e] or tree.proven[e]:
+            return
+        sl = tree.edge_slice(c)
+        if sl.stop <= sl.start:
+            return
+        has_exact, val = tree.exact_value(sl)
+        mover_view = -val  # child's own side-to-move perspective
+
+        if has_exact.any() and (mover_view[has_exact] >= 1.0).any():
+            solved = 1.0
+        elif has_exact.all():
+            solved = float(mover_view.max())
+        else:
+            return
+        tree.proven[e] = True
+        tree.proven_value[e] = solved
+
+    def _gumbel_scores(
+        self, tree: Tree, root: int, g: np.ndarray, logits: np.ndarray
+    ) -> np.ndarray:
+        """``g + logits + σ(q̂)`` over all root actions, q̂ exact where known.
+
+        Immediate mates additionally get ``IMMEDIATE_WIN_BONUS``. Once deeper
+        proven wins also reach q̂ = +1 the two tie, and ``g + logits`` then breaks
+        the tie by *noise* — which cost 2/100 on the mate-in-1 suite by choosing a
+        mate-in-2 over the mate-in-1 sitting right there. A shorter forced mate is
+        strictly better play, and an exactly-known immediate win should never lose
+        a coin-flip to a longer one. The bonus only ever separates values already
+        tied at the +1 ceiling, so it cannot promote a worse action.
+        """
+        sl = tree.edge_slice(root)
+        max_n = int(tree.N[sl].max()) if int(tree.num_edges[root]) else 0
+        scores = g + logits + gumbel.sigma(self._root_completed_q(tree, root), max_n, self.cfg)
+        immediate_win = tree.terminal[sl] & (-tree.terminal_value[sl] >= 1.0)
+        return np.where(immediate_win, scores + IMMEDIATE_WIN_BONUS, scores)
 
     def run_tree(
         self,
@@ -266,7 +541,14 @@ class Search:
         # whose prior-occurrence count is off by one in the other direction, and
         # the two helpers above stop agreeing on what path_reps means.
         path_reps[board._transposition_key()] += 1
+        self._evaluations = 0
         root, _ = self._expand(tree, board, path_reps, base_reps)
+
+        if self.cfg.root_mode == "puct" and int(tree.num_edges[root]) > 0:
+            # Ablation control only: Dirichlet noise on the root prior, v1
+            # semantics. Gumbel mode deliberately has no noise knob at all.
+            sl = tree.edge_slice(root)
+            tree.prior[sl] = gumbel.dirichlet_mixed_prior(tree.prior[sl], self.rng, self.cfg)
 
         sims_run = 0
         if int(tree.num_edges[root]) > 0:
@@ -282,15 +564,25 @@ class Search:
         board: chess.Board,
         path_reps: Counter,
         base_reps: RepetitionsFn,
+        forced_edge: int | None = None,
     ) -> None:
-        """One simulation: descend, expand or short-circuit, back up, unwind."""
+        """One simulation: descend, expand or short-circuit, back up, unwind.
+
+        ``forced_edge`` overrides selection at the root only — Sequential
+        Halving dictates which root action this simulation spends itself on.
+        Below the root, selection is unchanged from chunk 5: deterministic
+        PUCT, no noise (spec §6.2).
+        """
         path: list[int] = []  # edge indices traversed
         node = root
         pushed = 0
         value: float
 
         while True:
-            e = self._select_edge(tree, node)
+            if forced_edge is not None and node == root and not path:
+                e = forced_edge
+            else:
+                e = self._select_edge(tree, node)
             path.append(e)
 
             mv = _move_of(int(tree.move_ft[e]), int(tree.promo[e]))
@@ -314,6 +606,7 @@ class Search:
             value = -value
             tree.N[e] += 1
             tree.W[e] += value
+            self._solve_edge(tree, e)
 
         for _ in range(pushed):
             path_reps[board._transposition_key()] -= 1
@@ -347,16 +640,55 @@ def load_epd(path: str | Path) -> list[tuple[str, str]]:
     return out
 
 
+def _forces_mate_in_2(board: chess.Board, mv: chess.Move) -> bool:
+    """After ``mv``, is every opponent reply answerable by mate?
+
+    The mate-in-2 gate cannot be scored by ``bm`` matching: positions often have
+    several winning first moves, and scoring against one of them measures suite
+    authorship rather than search.
+    """
+    board.push(mv)
+    try:
+        if board.is_checkmate():
+            return True
+        replies = list(board.legal_moves)
+        if not replies:
+            return False
+        for reply in replies:
+            board.push(reply)
+            try:
+                if not any(_delivers_mate(board, m2) for m2 in board.legal_moves):
+                    return False
+            finally:
+                board.pop()
+        return True
+    finally:
+        board.pop()
+
+
+def _delivers_mate(board: chess.Board, mv: chess.Move) -> bool:
+    board.push(mv)
+    out = board.is_checkmate()
+    board.pop()
+    return out
+
+
 def run_suite(
-    epd_path: str | Path, sims: int, evaluate_fn: EvaluateFn, cfg: MCTSConfig | None = None
+    epd_path: str | Path,
+    sims: int,
+    evaluate_fn: EvaluateFn,
+    cfg: MCTSConfig | None = None,
+    mate_in: int = 1,
+    rng: np.random.Generator | None = None,
 ) -> tuple[int, int, list[str]]:
     """Solve every position in an EPD suite. Returns ``(solved, total, failed_ids)``.
 
-    A mate-in-1 position counts as solved if the chosen move *delivers mate* —
-    not if it matches the recorded ``bm``. Several positions have more than one
-    mating move and pinning one of them would be testing the suite, not the search.
+    Solved means the chosen move *is* a solution — delivers mate (``mate_in=1``)
+    or forces mate next move (``mate_in=2``) — not that it matches the recorded
+    ``bm``. Several positions have more than one solution and pinning one of them
+    would be testing the suite, not the search.
     """
-    search = Search(evaluate_fn, cfg)
+    search = Search(evaluate_fn, cfg, rng)
     positions = load_epd(epd_path)
     solved = 0
     failed: list[str] = []
@@ -365,12 +697,11 @@ def run_suite(
         board.set_epd(epd_line)
         result = search.run(board, None, sims)
         mv = result.best_move()
-        board.push(mv)
-        if board.is_checkmate():
+        ok = _delivers_mate(board, mv) if mate_in == 1 else _forces_mate_in_2(board, mv)
+        if ok:
             solved += 1
         else:
             failed.append(ident or board.epd())
-        board.pop()
     return solved, len(positions), failed
 
 
@@ -381,21 +712,70 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--stub",
         action="store_true",
-        help="Use the uniform-policy zero-value stub evaluator. Required in chunk 5: "
-        "all gates run with the network out of the picture so a failure is a search bug.",
+        help="Use the uniform-policy zero-value stub evaluator: search with the "
+        "network out of the picture, so a failure is unambiguously a search bug.",
+    )
+    ap.add_argument(
+        "--ckpt",
+        type=Path,
+        default=None,
+        help="Checkpoint for the network evaluator, e.g. runs/phase1_anchor.pt. "
+        "Mutually exclusive with --stub.",
+    )
+    ap.add_argument(
+        "--root-mode", choices=["gumbel", "puct"], default=None, help="Override cfg.root_mode"
+    )
+    ap.add_argument("--seed", type=int, default=0, help="Gumbel noise seed")
+    ap.add_argument(
+        "--mate-in",
+        type=int,
+        default=None,
+        help="Solution depth to score against; inferred from the suite name if omitted.",
+    )
+    ap.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="Pass threshold as a fraction, e.g. 0.95. Defaults to 1.0 for mate-in-1 "
+        "and 0.95 for mate-in-2, matching the §6.4 gates.",
     )
     args = ap.parse_args(argv)
 
-    if not args.stub:
-        print("error: only --stub is available in chunk 5 (network arrives in chunk 6)")
+    if bool(args.stub) == bool(args.ckpt):
+        print("error: pass exactly one of --stub or --ckpt")
         return 2
 
-    solved, total, failed = run_suite(args.suite, args.sims, uniform_stub_evaluator)
-    pct = 100.0 * solved / total if total else 0.0
-    print(f"{args.suite.name}: {solved}/{total} solved at {args.sims} sims ({pct:.1f}%)")
+    mate_in = args.mate_in if args.mate_in else (2 if "mate_in_2" in args.suite.name else 1)
+    threshold = args.threshold if args.threshold else (0.95 if mate_in == 2 else 1.0)
+
+    cfg = MCTSConfig()
+    if args.root_mode:
+        cfg.root_mode = args.root_mode
+
+    if args.stub:
+        evaluate_fn = uniform_stub_evaluator
+        which = "stub"
+    else:
+        evaluate_fn = network_evaluator(args.ckpt)
+        which = str(args.ckpt)
+
+    solved, total, failed = run_suite(
+        args.suite,
+        args.sims,
+        evaluate_fn,
+        cfg,
+        mate_in=mate_in,
+        rng=np.random.default_rng(args.seed),
+    )
+    frac = solved / total if total else 0.0
+    print(
+        f"{args.suite.name}: {solved}/{total} solved at {args.sims} sims "
+        f"({100 * frac:.1f}%) | eval={which} root={cfg.root_mode} "
+        f"| gate >= {100 * threshold:.0f}%"
+    )
     if failed:
         print(f"  failed: {', '.join(failed[:10])}{' …' if len(failed) > 10 else ''}")
-    return 0 if solved == total else 1
+    return 0 if frac >= threshold else 1
 
 
 if __name__ == "__main__":
