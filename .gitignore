@@ -24,7 +24,6 @@ build/
 .venv/
 uv.lock
 *.ipynb_checkpoints/
-benchmarks/results.jsonl
 
 # Review bundles zipped for external review (regenerable)
 *.zip

@@ -100,9 +100,10 @@ def main() -> None:
     parser.add_argument(
         "--compile",
         action="store_true",
-        help="torch.compile the model. BROKEN on ROCm/gfx1151 as of torch 2.12.1+cu130: "
-        "produces non-finite gradients on ~95%% of steps and the run aborts. Retest on "
-        "newer ROCm before using.",
+        help="torch.compile the model. BROKEN on ROCm/gfx1151 as measured on "
+        "torch 2.12.1+rocm7.2 (HIP 7.2.53211): produces non-finite gradients on ~95%% "
+        "of steps and the run aborts. Retest when the ROCm/HIP build changes — compare "
+        "torch.__version__ and torch.version.hip against those, not the date.",
     )
     parser.add_argument("--out", required=True, type=Path, help="Output run directory")
     parser.add_argument("--epochs", type=int, default=None, help="Override phase1_epochs")

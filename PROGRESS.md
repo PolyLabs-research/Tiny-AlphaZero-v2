@@ -302,6 +302,24 @@ is expected.
 
 ## Readiness 2026-08-06 — Phase 1 close-out audit
 
+**Gate:** `pytest -q` → **108 passed**; `ruff check src/ tests/ scripts/` → **All checks
+passed**; tag `phase1-closed` present on `0c0cebd`.
+
+| Task | Status |
+|---|---|
+| A1 tag closure point | ✅ `phase1-closed` on `0c0cebd`, tree clean |
+| A2 checkpoint SHA audit | ✅ all three read `unknown`; helper had 2 defects, both fixed, 4 tests |
+| A3 top-k into `compute_metrics` | ✅ one implementation; eval reproduces the BLOCKED table exactly |
+| A4 anchor identity | ✅ `runs/ANCHORS.sha256` verifies — ⚠️ NAS copy **deferred**, no mount exists |
+| A5 remote | ⚠️ **deferred** — `gh` not installed; commands printed below, nothing pushed |
+| A6 benchmark record | ✅ 5 rows backfilled and parse; stale `--compile` version string fixed |
+| A7 readiness gate | ✅ this section |
+
+**Two open items carry real risk and both need Tom:** the anchor exists only on the same
+physical device as the OS and the repo (A4), and there is no remote (A5). Neither is
+fixable from inside this session without credentials.
+
+
 ### A2 — checkpoint git-SHA audit (verbatim)
 
 ```
@@ -332,6 +350,63 @@ from /tmp: '0c0cebd'     (was 'unknown')
 
 Tests added (4): success path, both unavailability branches (git binary missing /
 not-a-repo) returning `NO_GIT_SENTINEL`, and a cwd-independence regression test.
+
+### A4 — anchor identity and durability
+
+```
+276cfea67ed0c2578712c31edea9b7a75e5b1337cc67ae7f1326382b067ab5b1  runs/phase1_anchor.pt
+```
+
+`runs/ANCHORS.sha256` committed; `sha256sum -c runs/ANCHORS.sha256` → OK. The digest is
+identical to `runs/phase1_c/final.pt`, confirming the anchor is a byte-exact copy and
+not a re-save. The bytes stay untracked (75 MB); their *identity* is versioned. ROCm
+nondeterminism means these bytes are **not** reproducible from the seed — if they are
+lost, the Phase 2 ladder loses its anchor permanently.
+
+**NAS copy: DEFERRED — no mount exists.** `mount | grep -i 8tb` → no match; no
+cifs/nfs/smb mounts; nothing in `/etc/fstab`. Mounted volumes are `/media/michael/disk2`
+(1.9T local NVMe, `nvme0n1p5`), `/media/michael/SCARLETT` (160 K), and `/mnt/roms` —
+none is the Jetson share. Per the brief, Samba credentials were **not** configured.
+Awaiting Tom. **The anchor currently exists only on `nvme1n1` — the same device as the
+OS and the repo.** A second copy on `disk2` would at least survive a single-device
+failure and needs no credentials.
+
+### A5 — remote
+
+**DEFERRED — `gh` is not installed** (`gh: command not found`), so there is no
+authenticated account to confirm against. Nothing was pushed. Manual commands for Tom:
+
+```bash
+# after: sudo apt install gh   (or https://cli.github.com)
+gh auth login
+gh repo create Tiny-AlphaZero-v2 --private --source=. --remote=origin
+git push -u origin main --tags
+git ls-remote origin        # expect refs/tags/phase1-closed
+```
+
+### A6 — benchmark record
+
+`benchmarks/results.jsonl` did not exist; backfilled with 5 dated rows from
+TRAINING_STRATEGY.md, each stamped with the stack (`torch 2.12.1+rocm7.2`, HIP
+7.2.53211) and flagged `"backfilled": true` — the `git_sha` on those rows is the
+backfill commit, not the measurement commit, since the measurements predate the repo.
+
+| config | result |
+|---|---|
+| eager, batch 1024 | 870 ms/step (1,177 samples/s) — baseline |
+| eager + experimental SDPA | **564 ms/step, 1.54×, 0 NaN skips over 56,484 steps** |
+| `torch.compile` | 100% non-finite gradients — unusable |
+| eager, batch 2048 | 1,098 samples/s — *below* the 1024 baseline; a cliff, not a win |
+| loader isolation | synthetic 870 vs real 902 ms — ~3.5% overhead, GPU-bound |
+
+The experimental-SDPA row is the one that matters: it is both the fastest configuration
+and the one with stability demonstrated at full scale, and it is what round `c` ran
+under. `--compile` help text corrected — it cited `2.12.1+cu130`, a CUDA wheel that is
+not what is installed; now cites the real ROCm build so "retest on newer ROCm" is
+actionable by comparing `torch.__version__` / `torch.version.hip`.
+
+`benchmarks/results.jsonl` was in `.gitignore`; removed, for the same reason `BLOCKED.md`
+was removed from it — a dated, SHA-stamped record is worthless if it is not versioned.
 
 ---
 
