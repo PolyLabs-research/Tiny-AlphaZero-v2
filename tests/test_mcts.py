@@ -373,6 +373,88 @@ def test_in_search_repetition_counts_on_top_of_game_history() -> None:
     assert int(result_with_history.visits.sum()) == 32
 
 
+def _repetition_oracle_mismatches(
+    board: chess.Board, sims: int, base_reps: object = None
+) -> list[tuple[int, int, str]]:
+    """Run a search, checking every expansion's repetition token against python-chess.
+
+    The oracle is sound because the search pushes onto the *live* board, so its
+    move stack carries ground truth — for FEN-rooted positions (empty history)
+    and full-history self-play boards alike. It is only valid when the history
+    lives in the move stack, i.e. ``repetitions_fn`` contributes 0; a non-zero
+    ``repetitions_fn`` describes occurrences python-chess cannot see.
+    """
+    import tinyalphazero.mcts.search as search_mod
+    from tinyalphazero.encoding import _repetitions_from_board
+    from tinyalphazero.encoding import encode_board as real_encode
+
+    bad: list[tuple[int, int, str]] = []
+
+    def probe(b: chess.Board, reps: int, _sink: list = bad) -> np.ndarray:
+        truth = _repetitions_from_board(b)
+        if min(reps, 2) != truth:
+            _sink.append((reps, truth, b.fen()))
+        return real_encode(b, reps)
+
+    original = search_mod.encode_board
+    search_mod.encode_board = probe  # type: ignore[assignment]
+    try:
+        _search().run(board, base_reps, sims)  # type: ignore[arg-type]
+    finally:
+        search_mod.encode_board = original  # type: ignore[assignment]
+    return bad
+
+
+# Shuffle-heavy positions: sparse material, few captures, so search paths
+# revisit positions constantly and the repetition counter is exercised hard.
+SHUFFLE_FENS = [
+    "7k/8/8/8/8/8/8/K6R w - - 0 1",  # rook + kings
+    "8/8/8/4k3/8/8/4K3/4R3 w - - 0 1",  # rook endgame, open board
+    "8/8/4k3/8/8/4K3/8/6Q1 w - - 0 1",  # queen + kings
+    "8/5k2/8/8/8/8/5K2/6N1 w - - 0 1",  # knight: no mate, pure shuffling
+    "4k3/8/8/8/8/8/8/4K2R b K - 0 1",  # black to move, castling rights live
+    "8/8/8/3k4/8/3K4/8/3B4 w - - 40 60",  # high halfmove clock: near 50-move
+    "6k1/6p1/8/8/8/8/6P1/6K1 w - - 0 1",  # blocked pawns, shuffle-forced
+]
+
+
+@pytest.mark.parametrize("fen", SHUFFLE_FENS)
+@pytest.mark.parametrize("sims", [16, 64])
+def test_repetition_token_fuzz_shuffle_heavy(fen: str, sims: int) -> None:
+    """GATE: the repetition token must equal python-chess's prior count. Always.
+
+    This is the gate that was missing when the off-by-one shipped — the stub
+    ignores the token, so no existing gate could observe it, and the first
+    diagnosable symptom would have been vague value-miscalibration at M3, by
+    which point §12.1's escalation (add history frames) would have been applied
+    to a bug and made nothing better.
+    """
+    bad = _repetition_oracle_mismatches(chess.Board(fen), sims)
+    assert not bad, f"{fen} @{sims} sims: {len(bad)} bad tokens, first={bad[0]}"
+
+
+def test_repetition_token_fuzz_with_real_move_history() -> None:
+    """Same gate on boards carrying genuine history, as in self-play.
+
+    A FEN-rooted board starts with an empty move stack; a self-play board does
+    not, and the prior-occurrence count then spans both the pre-search history
+    and the in-search path. Both must agree with the oracle.
+    """
+    rng = np.random.default_rng(23)
+    board = chess.Board()
+    checked = 0
+    for ply in range(60):
+        if board.is_game_over():
+            break
+        if ply >= 8 and ply % 4 == 0:
+            bad = _repetition_oracle_mismatches(board, 24)
+            assert not bad, f"ply {ply}: {len(bad)} bad tokens, first={bad[0]}"
+            checked += 1
+        moves = list(board.legal_moves)
+        board.push(moves[int(rng.integers(len(moves)))])
+    assert checked >= 8, f"fuzz did not exercise enough history depth ({checked})"
+
+
 def test_repetition_token_matches_python_chess_at_every_expansion() -> None:
     """The repetition token fed to the evaluator must be the *prior* count.
 

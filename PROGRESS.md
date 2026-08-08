@@ -428,14 +428,14 @@ Created `src/tinyalphazero/mcts/{tree,search}.py`, `scripts/generate_suites.py`,
 
 ```
 $ pytest tests/test_mcts.py -q
-25 passed in 1.91s
+40 passed in 2.07s
 
 $ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_1.epd --sims 16 --stub
 mate_in_1.epd: 100/100 solved at 16 sims (100.0%)
 exit=0
 
 $ pytest -q
-144 passed, 36 warnings in 56.37s
+159 passed, 36 warnings in 57.21s
 
 $ ruff check src/ tests/ scripts/
 All checks passed!
@@ -506,8 +506,20 @@ that return to the root position, which previously under-counted.
 
 Verified with python-chess as an independent oracle (the search pushes onto the live
 board, so `_repetitions_from_board` sees the true path): **0 mismatches over 207
-expansions** across three positions, from 44/45 wrong before. Pinned as
-`test_repetition_token_matches_python_chess_at_every_expansion`.
+expansions** across three positions, from 44/45 wrong before.
+
+**The oracle is now a permanent gate, not a one-time check** — "no gate could have caught
+this" must not stay true. `test_repetition_token_fuzz_shuffle_heavy` fuzzes 7
+shuffle-heavy positions (sparse material, few captures, so paths revisit constantly)
+× {16, 64} sims, and `test_repetition_token_fuzz_with_real_move_history` runs the same
+assertion on boards carrying genuine history, since a self-play board's prior-occurrence
+count spans both the pre-search stack and the in-search path. Mutation-tested: with the
+off-by-one reintroduced, **16 of the repetition tests fail**, so the gate has teeth.
+
+Oracle validity condition, stated because it is load-bearing: it holds only when history
+lives in the move stack, i.e. `repetitions_fn` contributes 0. A non-zero `repetitions_fn`
+describes occurrences python-chess cannot see, and the assertion would be checking the
+wrong thing.
 
 ### Chunk 6 required reading — the four terminal-interaction questions
 
