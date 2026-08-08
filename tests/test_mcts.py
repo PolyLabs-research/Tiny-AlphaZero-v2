@@ -373,6 +373,79 @@ def test_in_search_repetition_counts_on_top_of_game_history() -> None:
     assert int(result_with_history.visits.sum()) == 32
 
 
+def test_repetition_token_matches_python_chess_at_every_expansion() -> None:
+    """The repetition token fed to the evaluator must be the *prior* count.
+
+    Regression for a silent off-by-one: ``encode_board`` documents "occurred
+    earlier" (so a first visit is 0) while the threefold claim needs the total
+    *including* now. Both were read off one counter, so every non-root expansion
+    passed a count one too high — 44 of 45 on the shuffle position below. No
+    gate could catch it because the stub evaluator ignores the token; the real
+    network in chunk 6 would have been fed a corrupted repetition signal, which
+    is precisely the input spec §12.1 says to watch.
+
+    python-chess is the oracle here: the search pushes onto the live board, so
+    ``_repetitions_from_board`` sees the true path.
+    """
+    import tinyalphazero.mcts.search as search_mod
+    from tinyalphazero.encoding import _repetitions_from_board
+    from tinyalphazero.encoding import encode_board as real_encode
+
+    for fen, sims in [
+        ("7k/8/8/8/8/8/8/K6R w - - 0 1", 48),  # king shuffle: repeats constantly
+        (MIDGAME_FEN, 32),
+        ("8/8/8/4k3/8/8/4K3/4R3 w - - 0 1", 64),
+    ]:
+        mismatches: list[tuple[int, int, str]] = []
+
+        def probe(
+            board: chess.Board, reps: int, _sink: list = mismatches
+        ) -> np.ndarray:
+            truth = _repetitions_from_board(board)
+            if min(reps, 2) != truth:
+                _sink.append((reps, truth, board.fen()))
+            return real_encode(board, reps)
+
+        original = search_mod.encode_board
+        search_mod.encode_board = probe  # type: ignore[assignment]
+        try:
+            _search().run(chess.Board(fen), None, sims)
+        finally:
+            search_mod.encode_board = original  # type: ignore[assignment]
+
+        assert not mismatches, f"{fen}: {len(mismatches)} bad tokens, first={mismatches[0]}"
+
+
+def test_child_terminality_accounts_for_the_path_not_just_the_position() -> None:
+    """A threefold draw is a property of the path, not of the position alone.
+
+    Terminal status is resolved eagerly at expansion and cached on the edge. That
+    is sound only because a tree path from root to any node is unique, so the
+    repetition count that decided the flag cannot change later. This pins the
+    consequence that matters: raising the game-history count for the root
+    position must change what the search considers terminal.
+    """
+    fen = "7k/8/8/8/8/8/8/K6R w - - 0 1"
+
+    def none(_b: chess.Board) -> int:
+        return 0
+
+    def already_twice(b: chess.Board) -> int:
+        # Every position claimed to have occurred twice already: one more
+        # occurrence anywhere makes a claimable threefold draw.
+        return 2
+
+    search = _search()
+    _, _, sims_a = search.run_tree(chess.Board(fen), none, 32)
+    tree_b, root_b, sims_b = search.run_tree(chess.Board(fen), already_twice, 32)
+
+    assert sims_a == sims_b == 32
+    # With two prior occurrences claimed, root children are immediately drawn.
+    sl = tree_b.edge_slice(root_b)
+    assert tree_b.terminal[sl].any(), "history must be able to create terminal children"
+    assert (tree_b.terminal_value[sl][tree_b.terminal[sl]] == 0.0).all(), "draws are 0"
+
+
 def test_repetitions_fn_is_consulted() -> None:
     board = chess.Board()
     calls: list[str] = []

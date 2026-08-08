@@ -36,6 +36,33 @@ FIFTY_MOVE_PLIES = 100
 THREEFOLD_COUNT = 3
 
 
+# --- repetition counting ----------------------------------------------------
+#
+# Two callers want two *different* counts off the same data, and conflating them
+# is a silent off-by-one that no stub-evaluator gate can catch:
+#
+#   encode_board(board, repetitions)  wants occurrences strictly EARLIER than now
+#   threefold claim                   wants TOTAL occurrences, including now
+#
+# Invariant: ``path_reps`` always includes the position the board is standing on,
+# root included. Both helpers below are derived from that one invariant so the
+# distinction lives in their names rather than in a caller's arithmetic.
+
+
+def _total_occurrences(
+    board: chess.Board, path_reps: Counter, base_reps: RepetitionsFn
+) -> int:
+    """Times this position has occurred, counting the present one."""
+    return base_reps(board) + path_reps[board._transposition_key()]
+
+
+def _prior_occurrences(
+    board: chess.Board, path_reps: Counter, base_reps: RepetitionsFn
+) -> int:
+    """Times this position occurred *before* now — what ``encode_board`` wants."""
+    return max(0, _total_occurrences(board, path_reps, base_reps) - 1)
+
+
 @dataclass
 class RootResult:
     """Root statistics after a search."""
@@ -129,8 +156,7 @@ class Search:
         Cost is O(branching) push/pops per expansion; chunk 5 is correctness
         before speed (plan §chunk-5) and chunk 7 can revisit it after profiling.
         """
-        rep_here = base_reps(board) + path_reps[board._transposition_key()]
-        tokens = encode_board(board, rep_here)
+        tokens = encode_board(board, _prior_occurrences(board, path_reps, base_reps))
         policy, value = self.evaluate_fn(tokens)
 
         edges: list[tuple[int, int, float]] = []
@@ -142,8 +168,7 @@ class Search:
             board.push(mv)
             key = board._transposition_key()
             path_reps[key] += 1
-            child_reps = base_reps(board) + path_reps[key]
-            tv = self._terminal_value(board, child_reps)
+            tv = self._terminal_value(board, _total_occurrences(board, path_reps, base_reps))
             path_reps[key] -= 1
             board.pop()
 
@@ -237,6 +262,10 @@ class Search:
 
         tree = Tree(cap_nodes=num_sims + 1)
         path_reps: Counter = Counter()
+        # The root occupies the path too — without this the root is the one node
+        # whose prior-occurrence count is off by one in the other direction, and
+        # the two helpers above stop agreeing on what path_reps means.
+        path_reps[board._transposition_key()] += 1
         root, _ = self._expand(tree, board, path_reps, base_reps)
 
         sims_run = 0

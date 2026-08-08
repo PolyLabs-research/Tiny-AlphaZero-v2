@@ -428,14 +428,14 @@ Created `src/tinyalphazero/mcts/{tree,search}.py`, `scripts/generate_suites.py`,
 
 ```
 $ pytest tests/test_mcts.py -q
-23 passed in 1.79s
+25 passed in 1.91s
 
 $ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_1.epd --sims 16 --stub
 mate_in_1.epd: 100/100 solved at 16 sims (100.0%)
 exit=0
 
 $ pytest -q
-131 passed, 36 warnings in 56.83s
+144 passed, 36 warnings in 56.37s
 
 $ ruff check src/ tests/ scripts/
 All checks passed!
@@ -484,6 +484,65 @@ inits: policy-CE ratio **5.6×–25.6× unmasked** vs **12.7×–39.8× masked**
 gate, so the unmasked path sits close enough to lose occasionally. Fixed with
 `torch.manual_seed(0)`; **the 4× threshold is unchanged** — only the uncontrolled
 variable was removed. Verified 131 passed × 4 consecutive full runs.
+
+### Repetition off-by-one — found by the review's question 1, fixed
+
+Eager terminal resolution creates a repetition hazard, and reviewing for it turned up a
+live bug. `encode_board(board, repetitions)` documents *"occurred **earlier**"* (a first
+visit is 0) while the threefold claim needs the total **including now**. Both were read
+off one counter, so **every non-root expansion passed a count one too high** — measured
+44 of 45 expansions wrong on a king-shuffle position, root the only correct one.
+
+No gate could have caught it: the stub evaluator ignores that token, so it is invisible
+until the real network arrives. It would then have fed a corrupted repetition signal to
+every non-root position — the exact input spec §12.1 flags as the thing to watch for
+shuffle-into-draw pathologies.
+
+Fixed by naming the distinction instead of computing it inline: `_total_occurrences`
+(counts now) and `_prior_occurrences` (excludes now), both derived from one stated
+invariant — *`path_reps` always includes the position the board is standing on, root
+included*. Establishing that for the root also corrected threefold detection on paths
+that return to the root position, which previously under-counted.
+
+Verified with python-chess as an independent oracle (the search pushes onto the live
+board, so `_repetitions_from_board` sees the true path): **0 mismatches over 207
+expansions** across three positions, from 44/45 wrong before. Pinned as
+`test_repetition_token_matches_python_chess_at_every_expansion`.
+
+### Chunk 6 required reading — the four terminal-interaction questions
+
+Raised at the chunk 5 review. Two are answered by the chunk 5 implementation; two are
+open and belong to chunk 6/7.
+
+1. **Repetition-aware child terminality — ANSWERED.** The eager check consults the
+   path-local counter, so terminality is path-aware, not a property of the position
+   alone. Caching it on the edge is sound *because a tree path from root to any node is
+   unique*, so the count that decided the flag cannot later change — that reasoning is
+   the load-bearing part and it breaks the moment the tree becomes a DAG (transposition
+   table), which chunk 7 should treat as a blocker, not an optimisation.
+   Pinned by `test_child_terminality_accounts_for_the_path_not_just_the_position`.
+2. **Budget accounting — ANSWERED: terminals DO consume budget.** A simulation ending on
+   a terminal edge still increments that edge's `N` and counts as one simulation, so the
+   identity is `1 + Σ N(root edges) == sims_run + 1` with no special case, and
+   `sims_run == num_sims` whenever the root has edges. Sequential Halving in chunk 6
+   must be written against *this* convention: its exact-budget arithmetic will not
+   balance if it assumes terminal hits are free.
+3. **Gumbel root interaction — OPEN.** Root terminal children need the same exact-value
+   substitution inside σ(q̂) and the improved-policy completion that `_select_edge` does.
+   A mate scored by completed-Q estimate at the root while non-root selection uses exact
+   values is an inconsistency Gumbel absorbs silently into worse policy targets.
+4. **Chunk 7 equivalence — OPEN.** Terminal short-circuits never reach the evaluator, so
+   the batched runner must not count them as leaves awaiting a forward pass, or the
+   batch-1 equivalence gate fails late and confusingly.
+
+### `.gitignore` must-track test
+
+Added `tests/test_gitignore_musttrack.py` (11 cases) after four separate incidents across
+two sessions — `BLOCKED.md` ignored outright, bare `data/` blocking descent into
+`runs/data/`, `benchmarks/results.jsonl` ignored, and `runs/**` swallowing
+`runs/ANCHORS.sha256` on the very commit that added it. It runs `git check-ignore` over a
+must-track list and, in the other direction, asserts checkpoints and `.venv` stay ignored
+so a too-wide negation cannot start committing 75 MB blobs.
 
 ### Not done in this chunk (by instruction)
 
