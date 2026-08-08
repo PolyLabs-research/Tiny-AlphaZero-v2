@@ -1,0 +1,3 @@
+train:
+  phase1_mate1_mix: 0.10
+  phase1_epochs: 6

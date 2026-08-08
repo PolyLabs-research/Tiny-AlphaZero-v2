@@ -1,0 +1,62 @@
+# Golden mini-run config: tiny model for CI/smoke testing
+# 2 iterations, 8 games, 16 sims, batch 64, replay 5K
+seed: 42
+
+model:
+  aux_legality: true
+  d_ff: 256
+  d_model: 64
+  d_policy: 32
+  dropout: 0.1
+  n_heads: 4
+  n_layers: 2
+  seq_len: 72
+
+mcts:
+  batch_leaves: 64
+  c_puct: 1.25
+  c_scale: 1.0
+  c_visit: 50.0
+  dirichlet_alpha: 0.3
+  dirichlet_frac: 0.25
+  gumbel_m: 8
+  root_mode: gumbel
+  sims: 16
+  temperature_ply_cutoff: 30
+
+selfplay:
+  concurrent_games: 8
+  games_per_iteration: 8
+  league_latest_frac: 0.8
+  league_pool_size: 5
+  max_plies: 80
+  resign_consecutive: 8
+  resign_disabled_frac: 0.1
+  resign_threshold: -0.9
+  sims_per_move: 16
+
+train:
+  batch_size: 64
+  grad_clip: 1.0
+  legality_loss_weight: 1.0
+  lr: 0.0002
+  phase1_epochs: 1
+  phase1_lr_end: 3.0e-05
+  phase1_lr_start: 0.0003
+  phase1_mate1_mix: 0.05
+  phase1_value_weight_anchor: 1.0
+  phase1_value_weight_random: 0.25
+  policy_loss_weight: 1.0
+  promo_loss_weight: 1.0
+  replay_capacity: 5000
+  train_steps_per_iter: 20
+  value_loss_weight: 1.0
+  weight_decay: 0.0001
+
+eval:
+  anchor_games: 20
+  bootstrap_resamples: 1000
+  eval_every_n_iters: 1
+  openings_path: tests/suites/openings_4ply.epd
+  stockfish_path: ''
+  suite_sims: 16

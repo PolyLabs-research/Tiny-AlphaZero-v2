@@ -1,0 +1,314 @@
+# How to Train TinyAlphaZero v2
+
+This guide covers the Phase 1 supervised bootstrap pipeline from raw data generation through model evaluation.
+
+---
+
+## Prerequisites
+
+```bash
+# Install dependencies (run once)
+~/.local/bin/uv pip install -e ".[dev]"
+
+# Verify environment
+VIRTUAL_ENV=.venv .venv/bin/python scripts/check_env.py
+```
+
+Expected output shows torch version, device (CPU or ROCm/CUDA), and bf16 matmul throughput. Phase 1 runs on CPU but GPU is ~10–20× faster.
+
+---
+
+## Step 1 — Generate training data
+
+Two datasets are needed: random-play games and mate-in-1 anchors.
+
+```bash
+# ~2M positions from 50K random games (~5–10 min on CPU, ~1 min on GPU)
+VIRTUAL_ENV=.venv .venv/bin/python scripts/generate_phase1.py \
+    --games 50000 \
+    --out runs/data/phase1 \
+    --seed 1
+
+# 20K mate-in-1 anchor positions (~4 min on CPU)
+VIRTUAL_ENV=.venv .venv/bin/python scripts/generate_phase1.py \
+    --mate1 20000 \
+    --out runs/data/mate1 \
+    --seed 2
+```
+
+Also generate the held-out evaluation sets. Metrics must never be computed on the
+training dirs:
+
+```bash
+VIRTUAL_ENV=.venv .venv/bin/python scripts/generate_phase1.py \
+    --games 500 --out runs/data/eval_rand --seed 99
+VIRTUAL_ENV=.venv .venv/bin/python scripts/generate_phase1.py \
+    --mate1 500 --out runs/data/eval_mate1 --seed 100
+```
+
+Both write memmap files + a `meta.json` sidecar. Expected sizes:
+
+| Dataset | Positions | Disk |
+|---------|-----------|------|
+| `runs/data/phase1` | ~9.5M | ~5.3 GB |
+| `runs/data/mate1` | 20K | ~11 MB |
+| `runs/data/eval_rand` | ~95K | ~53 MB |
+| `runs/data/eval_mate1` | 500 | ~300 KB |
+
+> 50K games average ~191 plies, so `phase1` is ~9.5M positions — not the ~2M this
+> guide used to claim. Budget disk and epoch time accordingly.
+
+**Check the mode, not just the directory name.** `runs/data/mate1` was once
+generated with `--games` instead of `--mate1`, producing 3.8M random positions
+under the anchor name; that alone cost a 9.5-hour training run. `train_phase1.py`
+and `eval_phase1.py` now call `assert_dataset_mode()` and refuse to start on a
+mismatch, but verify by hand when in doubt:
+
+```bash
+VIRTUAL_ENV=.venv .venv/bin/python -c "
+import json; from pathlib import Path
+for d in ['runs/data/phase1','runs/data/mate1','runs/data/eval_rand','runs/data/eval_mate1']:
+    m = json.loads(Path(d,'meta.json').read_text())
+    g = m['generation_config']
+    print(f\"{d:24} n={m['n']:>9}  mode={g['mode']:<12} argv={' '.join(g.get('argv',[])[1:])}\")
+"
+```
+
+To inspect:
+
+```bash
+VIRTUAL_ENV=.venv .venv/bin/python -c "
+import json; from pathlib import Path
+for d in ['runs/data/phase1', 'runs/data/mate1']:
+    m = json.loads(Path(d, 'meta.json').read_text())
+    print(d, '->', m['n'], 'positions')
+"
+```
+
+---
+
+## Step 2 — Train (Phase 1)
+
+```bash
+VIRTUAL_ENV=.venv .venv/bin/python scripts/train_phase1.py \
+    --data runs/data/phase1 \
+    --mate1 runs/data/mate1 \
+    --eval-data runs/data/eval_rand \
+    --eval-mate1 runs/data/eval_mate1 \
+    --out runs/phase1_a \
+    --epochs 3 \
+    --seed 42
+```
+
+Add `--max-steps 600` for a timing/smoke slice that does not commit to the full run.
+
+### What happens
+
+- Loads a 6.5M-param `ChessNet` with the default config (`configs/default.yaml`).
+- Builds a mixed DataLoader: 95% random-play (value weight 0.25) + 5% mate-in-1 (value weight 1.0), sampled via `WeightedRandomSampler`.
+- Trains with AdamW, lr cosine 3e-4 → 3e-5, batch 1024, bf16 autocast on GPU.
+- Uses **unmasked** policy CE (`phase1_policy_masked=False`). Masking the CE gives
+  illegal logits zero gradient, so `top1_legal_rate` can never train; see the
+  `runs/phase1_a` post-mortem in `PROGRESS.md`.
+- Logs a progress line every 200 steps with **per-component** losses, and per-epoch
+  metrics to `runs/phase1_a/metrics.jsonl`.
+- Saves epoch checkpoints (`epoch_01.pt`, `epoch_02.pt`, `epoch_03.pt`) and `final.pt`.
+
+### Expected console output
+
+```
+Phase 1 training | device=cuda | bf16=True | steps=28008/28008 | batch=1024 | workers=8 | masked_policy=False
+  step    200/28008  loss=9.4715  policy=8.2717  promo=0.9710  value=0.1882  leg=0.0406  lr=3.00e-04
+  step    400/28008  loss=8.2164  policy=6.8483  promo=1.1518  value=0.1745  leg=0.0419  lr=2.99e-04
+  ...
+Epoch 1 | loss=5.4120 (policy=3.6210) | top1_legal=0.9123 | mate1_solve=0.4210 | auc=0.9812 | wdl_anchor=0.7431
+Saved runs/phase1_a/epoch_01.pt
+```
+
+**Read the components, not the total.** The totals here are not comparable to the
+old guide's numbers:
+
+- Initial total ≈ **10.6**, with policy at ln(4096) ≈ **8.32**, falling steeply.
+  A flat policy term from step 1 is the signature of the `runs/phase1_a` bug.
+- Converged policy CE returns to ≈ **3.1–3.3** = E[ln n_legal]. That is the *same*
+  number the failed run showed — but reached by learning rather than granted by the
+  mask. Judge by `top1_legal_rate`, not by the policy value.
+- Promo CE has an irreducible **ln(4) ≈ 1.39** floor: random play promotes uniformly
+  over four pieces.
+- Converged total ≈ **4.8–5.5** is expected and fine.
+
+By epoch 3, `top1_legal` should approach or exceed 0.99.
+
+### Non-finite gradients
+
+If you see lines like:
+
+```
+  step   1423: non-finite gradient (norm=nan), update skipped (1 total)
+```
+
+that is the NaN guard. On ROCm/gfx1151 the backward pass has gone non-finite
+nondeterministically while the forward loss was still finite; a single such update
+poisons the weights and makes every later step NaN. `train_step` now skips the update
+instead, so a transient costs one batch. Skips are logged per epoch as
+`skipped_steps` in `metrics.jsonl`, and the run aborts if they exceed 1% of steps.
+
+An occasional skip is tolerable. A steady trickle is not — see the ROCm SDPA note in
+`PROGRESS.md` and try math-only attention:
+
+```python
+torch.backends.cuda.enable_flash_sdp(False)
+torch.backends.cuda.enable_mem_efficient_sdp(False)
+```
+
+### Wall-clock targets
+
+| Hardware | Expected time |
+|----------|--------------|
+| ROCm/gfx1151 (Strix Halo) | < 1 hour |
+| NVIDIA RTX 3090 | ~45 min |
+| CPU (16-core) | ~6–8 hours |
+
+The first real run took **9.5 hours** against the "< 1 hour" target. Two reasons:
+the dataset is 9.5M positions (not the ~2M assumed above), and the loader was
+`num_workers=2` with per-sample random memmap reads. The default is now
+`--workers 8` with `prefetch_factor=4`. Time a slice before committing:
+
+```bash
+VIRTUAL_ENV=.venv .venv/bin/python scripts/train_phase1.py \
+    --data runs/data/phase1 --mate1 runs/data/mate1 \
+    --eval-data runs/data/eval_rand --eval-mate1 runs/data/eval_mate1 \
+    --out runs/_timing --max-steps 600 --workers 8
+```
+
+If the step rate is far off GPU-bound for a 6.5M-param model, it is the input
+pipeline, not the GPU — raise `--workers` before anything else.
+
+### Resuming from a checkpoint
+
+```bash
+VIRTUAL_ENV=.venv .venv/bin/python scripts/train_phase1.py \
+    --data runs/data/phase1 \
+    --mate1 runs/data/mate1 \
+    --eval-data runs/data/eval_rand \
+    --eval-mate1 runs/data/eval_mate1 \
+    --out runs/phase1_a \
+    --ckpt runs/phase1_a/epoch_02.pt
+```
+
+The optimizer state and LR schedule are restored automatically.
+
+### Custom config
+
+```bash
+# Use mini config for a quick smoke run (< 5 min on CPU)
+VIRTUAL_ENV=.venv .venv/bin/python scripts/train_phase1.py \
+    --data runs/data/phase1 \
+    --out runs/smoke \
+    --config configs/mini.yaml \
+    --epochs 1
+```
+
+---
+
+## Step 3 — Evaluate
+
+```bash
+VIRTUAL_ENV=.venv .venv/bin/python scripts/eval_phase1.py \
+    --ckpt runs/phase1_a/final.pt \
+    --data runs/data/phase1 \
+    --mate1 runs/data/mate1
+```
+
+### Acceptance table (§5 gates)
+
+```
+==================================================================
+Metric                        Value          Gate    Pass
+------------------------------------------------------------------
+  top1_legal_rate             0.9934      ≥ 0.99    PASS
+  mate1_solve_rate            0.9210      ≥ 0.90    PASS
+  legality_auc                0.9967     ≥ 0.995    PASS
+  wdl_anchor_mass             0.8340      ≥ 0.80    PASS
+------------------------------------------------------------------
+  top1_exact_rate             0.2810          (informational)
+==================================================================
+
+All gates PASSED — ready for Phase 2.
+```
+
+The script exits 0 on pass, 1 on any failure.
+
+### Metric definitions
+
+| Metric | Definition |
+|--------|-----------|
+| `top1_legal_rate` | Fraction of positions where the raw unmasked policy argmax is a legal move — measures whether the model has learned piece mobility without relying on the mask |
+| `top1_exact_rate` | Fraction where the masked policy argmax matches the played move (supervised accuracy) |
+| `mate1_solve_rate` | Fraction of mate-in-1 positions where the masked policy argmax is the mating move — no search |
+| `legality_auc` | ROC AUC of the auxiliary legality head's per-square predictions against the true legal mask |
+| `wdl_anchor_mass` | Mean P(win) assigned by the value head on mate-in-1 positions (side to move wins) |
+
+---
+
+## Troubleshooting
+
+**`top1_legal_rate` plateaus below 0.98**
+The most likely cause is an encoding bug. Re-run the Markov fuzz:
+```bash
+VIRTUAL_ENV=.venv .venv/bin/python -m tinyalphazero.encoding --fuzz 1000000
+```
+Any violation printed here invalidates the dataset — regenerate from scratch with a fresh seed.
+
+**`mate1_solve_rate` below 0.85 after 3 epochs**
+Check the mate1 mixture is actually being sampled: inspect `runs/phase1_a/metrics.jsonl` to confirm `mate1_solve_rate` rises each epoch. If it's flat, the mate1 DataLoader path may not be loading correctly. Also confirm the mate1 dataset has genuine checkmates:
+```bash
+VIRTUAL_ENV=.venv .venv/bin/python -m pytest tests/test_data.py::test_mate_in_1_move_is_checkmate -v
+```
+
+**`legality_auc` below 0.99**
+The auxiliary legality head is not converging. Verify `cfg.model.aux_legality=True` in the config and that `legality_loss_weight` is not accidentally 0.
+
+**Loss is NaN from step 1**
+Almost always a data issue. Check that the played move for every position is actually in the legal mask:
+```bash
+VIRTUAL_ENV=.venv .venv/bin/python -m pytest tests/test_data.py::test_stored_legal_bitset_matches_board_reconstruction -v
+```
+
+**Out of GPU memory**
+Reduce `--batch` (e.g. `--batch 512`). The default 1024 requires ~6 GB VRAM; 512 requires ~3 GB.
+
+---
+
+## Inspecting metrics
+
+```bash
+# Print the metrics log as a table
+VIRTUAL_ENV=.venv .venv/bin/python -c "
+import json
+from pathlib import Path
+lines = Path('runs/phase1_a/metrics.jsonl').read_text().strip().split('\n')
+for line in lines:
+    m = json.loads(line)
+    print(f\"step={m['step']:5d}  loss={m['loss']:.4f}  legal={m['top1_legal_rate']:.4f}  mate1={m['mate1_solve_rate']:.4f}  auc={m['legality_auc']:.4f}\")
+"
+```
+
+---
+
+## File layout after a complete run
+
+```
+runs/
+  data/
+    phase1/          # random-play memmap dataset (~1.3 GB)
+    mate1/           # mate-in-1 anchor dataset (~13 MB)
+  phase1_a/
+    epoch_01.pt      # checkpoint after epoch 1
+    epoch_02.pt
+    epoch_03.pt
+    final.pt         # same as epoch_03.pt, canonical name for downstream chunks
+    metrics.jsonl    # one JSON line per epoch
+```
+
+The `final.pt` checkpoint is the input to Chunk 5 (MCTS) and all subsequent phases.

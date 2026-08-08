@@ -1,0 +1,19 @@
+{
+  "n": 9540953,
+  "version": "1",
+  "git_sha": "unknown",
+  "dtype_map": {
+    "boards": "int8",
+    "moves": "int16",
+    "promos": "int8",
+    "legals": "uint8",
+    "outcomes": "int8"
+  },
+  "generation_config": {
+    "mode": "random_games",
+    "num_games": 50000,
+    "seed": 1,
+    "max_plies": 200,
+    "min_plies": 10
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "n": 95465,
+  "version": "1",
+  "git_sha": "unknown",
+  "dtype_map": {
+    "boards": "int8",
+    "moves": "int16",
+    "promos": "int8",
+    "legals": "uint8",
+    "outcomes": "int8"
+  },
+  "generation_config": {
+    "mode": "random_games",
+    "num_games": 500,
+    "seed": 99,
+    "max_plies": 200,
+    "min_plies": 10,
+    "argv": [
+      "scripts/generate_phase1.py",
+      "--games",
+      "500",
+      "--out",
+      "runs/data/eval_rand",
+      "--seed",
+      "99"
+    ]
+  }
+}

@@ -1,0 +1,34 @@
+# Run outputs: checkpoints and datasets are far too large to track (runs/ is ~6.8G).
+# The exceptions are the small provenance files the campaign log cites as evidence —
+# per-epoch metrics and dataset generation_config — which are a few KB each and are
+# useless to reconstruct after the fact. `!runs/**/` lets git descend to reach them.
+runs/**
+!runs/**/
+!runs/**/metrics.jsonl
+!runs/**/meta.json
+
+# Root-scoped: a bare `data/` would also swallow runs/data/ as a directory ignore,
+# and git cannot descend into an ignored directory to reach the negations above.
+/data/
+__pycache__/
+*.pt
+*.pyc
+*.pyo
+*.dat
+*.npy
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+uv.lock
+*.ipynb_checkpoints/
+benchmarks/results.jsonl
+
+# Review bundles zipped for external review (regenerable)
+*.zip
+
+# Machine-local Claude Code settings (and the atomic-write temp files it leaves)
+.claude/settings.local.json*
+*.tmp.*

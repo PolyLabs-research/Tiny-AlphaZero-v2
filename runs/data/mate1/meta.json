@@ -1,0 +1,26 @@
+{
+  "n": 20000,
+  "version": "1",
+  "git_sha": "unknown",
+  "dtype_map": {
+    "boards": "int8",
+    "moves": "int16",
+    "promos": "int8",
+    "legals": "uint8",
+    "outcomes": "int8"
+  },
+  "generation_config": {
+    "mode": "mate_in_1",
+    "num_positions": 20000,
+    "seed": 2,
+    "argv": [
+      "scripts/generate_phase1.py",
+      "--mate1",
+      "20000",
+      "--out",
+      "runs/data/mate1",
+      "--seed",
+      "2"
+    ]
+  }
+}
