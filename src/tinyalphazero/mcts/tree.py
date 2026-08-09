@@ -60,6 +60,12 @@ class Tree:
         # so an immediate mate can still be preferred over a longer forced one.
         self.proven = np.zeros(cap_edges, dtype=bool)
         self.proven_value = np.zeros(cap_edges, dtype=np.float32)
+        # proven_depth: plies from this edge to mate under the induction that
+        # proved it — winner takes the fastest line, defender the slowest.
+        # Without it every proven win ties at q̂ = +1 and the acting argmax
+        # breaks the tie on the *prior*, which is how a mate-in-5 got played
+        # over a mate-in-2 on nine positions of the gate suite.
+        self.proven_depth = np.zeros(cap_edges, dtype=np.int16)
 
         self.n_nodes = 0
         self.n_edges = 0
@@ -86,7 +92,7 @@ class Tree:
         self.child = np.resize(self.child, new_cap)
         self.child[old:] = -1  # np.resize tiles old contents; -1 means unexpanded
         for name in ("move_ft", "promo", "prior", "N", "W", "vloss", "terminal",
-                     "terminal_value", "proven", "proven_value"):
+                     "terminal_value", "proven", "proven_value", "proven_depth"):
             arr = np.resize(getattr(self, name), new_cap)
             arr[old:] = 0
             setattr(self, name, arr)
@@ -119,6 +125,7 @@ class Tree:
             self.terminal_value[e] = 0.0
             self.proven[e] = False
             self.proven_value[e] = 0.0
+            self.proven_depth[e] = 0
         self.n_edges += len(edges)
         return node
 
@@ -137,6 +144,15 @@ class Tree:
         has = self.terminal[sl] | self.proven[sl]
         val = np.where(self.terminal[sl], self.terminal_value[sl], self.proven_value[sl])
         return has, val.astype(np.float32)
+
+    def exact_depth(self, sl: slice) -> np.ndarray:
+        """Plies-to-mate per edge in ``sl``, for edges whose value is exact.
+
+        A terminal edge ends the game on the move that reaches it, so it is one
+        ply from mate; a proven edge carries the distance its induction found.
+        Meaningless (and unread) on edges that are neither, and on exact draws.
+        """
+        return np.where(self.terminal[sl], 1, self.proven_depth[sl]).astype(np.int32)
 
     def node_q(self, node: int) -> float:
         """Value of ``node`` from its own side-to-move perspective.

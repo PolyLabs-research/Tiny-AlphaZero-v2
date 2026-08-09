@@ -7,6 +7,7 @@ cannot be argued away as model quality.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -18,7 +19,10 @@ import pytest
 from tinyalphazero.config import MCTSConfig
 from tinyalphazero.mcts.gumbel import allocate_within_phase, halving_phase_budgets
 from tinyalphazero.mcts.search import (
+    EXACT_WIN_BONUS,
+    WIN_DEPTH_STEP,
     Search,
+    _forces_mate_in_2,
     load_epd,
     run_suite,
     uniform_stub_evaluator,
@@ -897,6 +901,75 @@ def test_gate_eval_profile_mate_in_1_at_48_sims_stub() -> None:
         cfg=_eval_cfg(), mate_in=1, rng=np.random.default_rng(0),
     )
     assert solved == total == 100, f"{solved}/{total}; failed {failed[:8]}"
+
+
+# ---------------------------------------------------------------------------
+# 9. Mate distance among proven wins (gate triage, 2026-08-09)
+# ---------------------------------------------------------------------------
+
+
+def test_gate_shorter_proven_mate_beats_a_longer_one() -> None:
+    """GATE: a proven mate-in-2 must be played over a proven longer mate.
+
+    Nine of the twelve mate-in-2 gate failures were this one thing. Both moves
+    are *proved* wins, so both sit at q̂ = +1, and the acting argmax fell
+    through to ``g + logits`` — noise under self-play, the raw policy prior
+    under the evaluation profile. The search was discarding what it had proved
+    in favour of what the network guessed.
+
+    Runs on the stub evaluator, so a pass cannot come from the network
+    happening to prefer the right move.
+    """
+    for idx in (3, 5, 7):  # mate2_004, _006, _008 — three of the nine
+        board = chess.Board()
+        board.set_epd(load_epd(MATE_IN_2)[idx][0])
+        search = Search(uniform_stub_evaluator, _eval_cfg(), np.random.default_rng(0))
+        result = search.run(board, None, 128)
+        assert _forces_mate_in_2(board, result.best_move()), (
+            f"suite index {idx}: played {result.best_move()}, "
+            "which does not force mate in 2"
+        )
+
+
+def test_proven_depth_is_odd_and_never_immediate() -> None:
+    """The induction's shape, on a real tree.
+
+    A win from the side to move takes an odd number of plies, and a *proven*
+    (as opposed to terminal) one takes at least three — if a proven edge ever
+    reported an even distance, the winner/defender alternation in
+    ``_solve_edge`` would be off by one and the ordering above would be sorting
+    on nonsense.
+    """
+    board = chess.Board()
+    board.set_epd(load_epd(MATE_IN_2)[3][0])
+    search = Search(uniform_stub_evaluator, _eval_cfg(), np.random.default_rng(0))
+    search.run(board, None, 128)
+
+    tree, root, _ = search.run_tree(board, None, 0)
+    sl = tree.edge_slice(root)
+    for _ in range(128):
+        search._simulate(
+            tree, root, board, Counter({board._transposition_key(): 1}), lambda _b: 0
+        )
+    wins = [
+        i
+        for i in range(int(tree.num_edges[root]))
+        if tree.proven[sl.start + i] and -tree.proven_value[sl.start + i] >= 1.0
+    ]
+    for i in wins:
+        depth = int(tree.proven_depth[sl.start + i])
+        assert depth >= 3 and depth % 2 == 1, f"edge {i}: proven_depth {depth}"
+
+
+def test_exact_win_bonus_dominates_prior_and_sigma() -> None:
+    """Scale check, so the ordering is not accidentally true at tested priors.
+
+    ``logits`` are O(10) and σ is O(100); one extra ply of mate distance has to
+    outweigh both, and the bonus must stay positive past any reachable mate
+    distance or a deep win would rank *below* an ordinary move.
+    """
+    assert WIN_DEPTH_STEP > 500
+    assert EXACT_WIN_BONUS - 900 * WIN_DEPTH_STEP > 0
 
 
 def test_root_completed_q_prefers_exact_over_estimate() -> None:

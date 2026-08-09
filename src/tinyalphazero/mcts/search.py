@@ -44,10 +44,17 @@ RepetitionsFn = Callable[[chess.Board], int]
 FIFTY_MOVE_PLIES = 100
 THREEFOLD_COUNT = 3
 
-# Separates immediate mates from deeper proven wins, which both sit at q=+1.
-# Must exceed the g+logits spread (Gumbel noise is O(1), logits O(10)) so the
-# tiebreak is decided by mate distance rather than by noise.
-IMMEDIATE_WIN_BONUS = 1e3
+# Lifts every exactly-known win above every estimate, and orders wins by mate
+# distance. All proven wins sit at q̂ = +1, so without this the acting argmax
+# falls through to `g + logits` — noise under self-play, the raw policy prior
+# under the evaluation profile. Either way the search discards what it has
+# *proved* in favour of what the network *guesses*.
+#
+# Scale: logits are O(10) and σ is O(100), so WIN_DEPTH_STEP dominates both and
+# one extra ply of mate distance always outweighs any prior preference. The
+# bonus stays positive out past 900 plies, well beyond any reachable mate.
+EXACT_WIN_BONUS = 1e6
+WIN_DEPTH_STEP = 1e3
 
 
 # --- repetition counting ----------------------------------------------------
@@ -506,7 +513,13 @@ class Search:
         and immune to elimination.
 
         Kept separate from ``terminal`` so an immediate mate still outranks a
-        longer forced one (see ``IMMEDIATE_WIN_BONUS``).
+        longer forced one (see ``EXACT_WIN_BONUS``).
+
+        Mate distance is inducted alongside the value: the winning side takes
+        the **fastest** proved line, the losing side the **slowest**. Without a
+        distance every proven win ties at q̂ = +1, and the acting argmax then
+        breaks the tie on the prior — which is how a proven mate-in-5 was played
+        over a proven mate-in-2 on nine positions of the gate suite.
         """
         c = int(tree.child[e])
         if c < 0 or tree.terminal[e] or tree.proven[e]:
@@ -516,34 +529,58 @@ class Search:
             return
         has_exact, val = tree.exact_value(sl)
         mover_view = -val  # child's own side-to-move perspective
+        depths = tree.exact_depth(sl)
 
         if has_exact.any() and (mover_view[has_exact] >= 1.0).any():
             solved = 1.0
+            winning = has_exact & (mover_view >= 1.0)
+            depth = 1 + int(depths[winning].min())  # winner mates as fast as it can
         elif has_exact.all():
             solved = float(mover_view.max())
+            # Losing: every line is refuted, so the defender picks the longest.
+            # Otherwise the distance belongs to the line actually chosen.
+            depth = 1 + int(
+                depths.max() if solved <= -1.0 else depths[int(np.argmax(mover_view))]
+            )
         else:
             return
         tree.proven[e] = True
         tree.proven_value[e] = solved
+        tree.proven_depth[e] = min(depth, np.iinfo(np.int16).max)
 
     def _gumbel_scores(
         self, tree: Tree, root: int, g: np.ndarray, logits: np.ndarray
     ) -> np.ndarray:
         """``g + logits + σ(q̂)`` over all root actions, q̂ exact where known.
 
-        Immediate mates additionally get ``IMMEDIATE_WIN_BONUS``. Once deeper
-        proven wins also reach q̂ = +1 the two tie, and ``g + logits`` then breaks
-        the tie by *noise* — which cost 2/100 on the mate-in-1 suite by choosing a
-        mate-in-2 over the mate-in-1 sitting right there. A shorter forced mate is
-        strictly better play, and an exactly-known immediate win should never lose
-        a coin-flip to a longer one. The bonus only ever separates values already
-        tied at the +1 ceiling, so it cannot promote a worse action.
+        **Every exactly-known win** — immediate mate or deeper proven line —
+        gets ``EXACT_WIN_BONUS``, reduced by ``WIN_DEPTH_STEP`` per ply to mate.
+        Two properties follow, and both are load-bearing:
+
+        1. an exactly-known win always outranks a merely-estimated move, however
+           good the prior thinks the estimate is;
+        2. among wins, the shorter mate is always preferred.
+
+        (1) is the fix for nine gate-suite failures where the search *proved* a
+        mate-in-2 and played a proven mate-in-5 instead: all proven wins tie at
+        q̂ = +1, so the acting argmax fell through to ``g + logits`` and picked
+        whichever line the policy prior happened to like. (2) is the older
+        ``IMMEDIATE_WIN_BONUS`` argument — a shorter forced mate is strictly
+        better play — now stated over mate distance rather than over the single
+        special case of depth 1.
+
+        The bonus only ever reorders actions already at the +1 ceiling relative
+        to each other, and lifts that whole group above everything else, so it
+        cannot promote a worse action.
         """
         sl = tree.edge_slice(root)
         max_n = int(tree.N[sl].max()) if int(tree.num_edges[root]) else 0
         scores = g + logits + gumbel.sigma(self._root_completed_q(tree, root), max_n, self.cfg)
-        immediate_win = tree.terminal[sl] & (-tree.terminal_value[sl] >= 1.0)
-        return np.where(immediate_win, scores + IMMEDIATE_WIN_BONUS, scores)
+        exact_win = (tree.terminal[sl] & (-tree.terminal_value[sl] >= 1.0)) | (
+            tree.proven[sl] & (-tree.proven_value[sl] >= 1.0)
+        )
+        depth = tree.exact_depth(sl)
+        return np.where(exact_win, scores + EXACT_WIN_BONUS - depth * WIN_DEPTH_STEP, scores)
 
     def run_tree(
         self,
