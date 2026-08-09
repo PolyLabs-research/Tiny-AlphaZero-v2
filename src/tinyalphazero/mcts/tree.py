@@ -46,8 +46,14 @@ class Tree:
         self.W = np.zeros(cap_edges, dtype=np.float32)
         self.vloss = np.zeros(cap_edges, dtype=np.int16)
         # --- additions (see module docstring) ---
+        # terminal: the child position is game-over (set once, at expansion).
         self.terminal = np.zeros(cap_edges, dtype=bool)
         self.terminal_value = np.zeros(cap_edges, dtype=np.float32)
+        # proven: the child *subtree* is solved by backward induction, even
+        # though the position itself is not over. Kept separate from `terminal`
+        # so an immediate mate can still be preferred over a longer forced one.
+        self.proven = np.zeros(cap_edges, dtype=bool)
+        self.proven_value = np.zeros(cap_edges, dtype=np.float32)
 
         self.n_nodes = 0
         self.n_edges = 0
@@ -64,7 +70,8 @@ class Tree:
         old = len(self.child)
         self.child = np.resize(self.child, new_cap)
         self.child[old:] = -1  # np.resize tiles old contents; -1 means unexpanded
-        for name in ("move_ft", "promo", "prior", "N", "W", "vloss", "terminal", "terminal_value"):
+        for name in ("move_ft", "promo", "prior", "N", "W", "vloss", "terminal",
+                     "terminal_value", "proven", "proven_value"):
             arr = np.resize(getattr(self, name), new_cap)
             arr[old:] = 0
             setattr(self, name, arr)
@@ -95,6 +102,8 @@ class Tree:
             self.vloss[e] = 0
             self.terminal[e] = False
             self.terminal_value[e] = 0.0
+            self.proven[e] = False
+            self.proven_value[e] = 0.0
         self.n_edges += len(edges)
         return node
 
@@ -103,6 +112,16 @@ class Tree:
     def edge_slice(self, node: int) -> slice:
         start = int(self.first_edge[node])
         return slice(start, start + int(self.num_edges[node]))
+
+    def exact_value(self, sl: slice) -> tuple[np.ndarray, np.ndarray]:
+        """``(has_exact, value)`` per edge in ``sl``, child-perspective.
+
+        Terminal (position over) takes precedence over proven (subtree solved);
+        both are exact, and where both hold they agree.
+        """
+        has = self.terminal[sl] | self.proven[sl]
+        val = np.where(self.terminal[sl], self.terminal_value[sl], self.proven_value[sl])
+        return has, val.astype(np.float32)
 
     def node_q(self, node: int) -> float:
         """Value of ``node`` from its own side-to-move perspective.

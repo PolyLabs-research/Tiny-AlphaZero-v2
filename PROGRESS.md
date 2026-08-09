@@ -564,4 +564,165 @@ gate. The branch is **not merged**; it awaits the chunks 5–7 review checkpoint
 
 ---
 
-## Next: Chunk 6 — Gumbel root selection
+## Chunk 6 — Gumbel root selection ⚠️ BLOCKED (branch `chunk-06-gumbel`, 2026-08-08)
+
+Implemented in full: `mcts/gumbel.py`, Gumbel top-m + Sequential Halving, `improved_policy`,
+PUCT+Dirichlet ablation control, `--ckpt` network evaluator. **185 tests pass, ruff clean.**
+
+### Gate results (verbatim)
+
+```
+$ pytest tests/test_mcts.py -q
+66 passed in 5.51s
+
+$ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_1.epd --sims 16 --stub
+mate_in_1.epd: 100/100 solved at 16 sims (100.0%) | eval=stub root=gumbel | gate >= 100%
+
+$ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_1.epd --sims 48 --stub
+mate_in_1.epd: 100/100 solved at 48 sims (100.0%) | eval=stub root=gumbel | gate >= 100%
+
+$ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_2.epd --sims 128 --ckpt runs/phase1_anchor.pt
+mate_in_2.epd: 154/200 solved at 128 sims (77.0%) | eval=runs/phase1_anchor.pt root=gumbel | gate >= 95%
+
+$ pytest -q
+185 passed, 36 warnings in 59.91s
+```
+
+| Gate | Result |
+|---|---|
+| Gumbel mate-in-1, 48 sims, stub | **100/100** |
+| Sequential Halving exact budget, 8 (n,m) combos | pass |
+| `improved_policy` well-formed; >0.9 on a proven mate | pass |
+| PUCT ablation control still 100/100 | pass |
+| **mate-in-2 ≥95% @128 sims with the anchor** | **77.0% — FAILS** |
+
+**BLOCKED after 3 fix attempts: `BLOCKED-2026-08-08-mate2-gate.md`.** Chunk 7 not started.
+
+### This fires a return condition of the Phase 1 closure
+
+`BLOCKED-2026-08-06` named "mate-in-2 < 95% @128 sims with this checkpoint" as return
+condition 1. It has fired. The mate-in-1 half did not (100/100, stub, no network).
+
+Diagnosis order was search-first as instructed. Stub 30.5% → anchor 77.0%, and the decisive
+split: **95.4% solved *given* the forcing move was in the considered set**, which is only
+75.5% of the time at m=16. Search is at the gate; *consideration* is not. Gumbel takes top-m
+by `g + logits`, so a move the prior ranks below ~16th is never simulated — network prior
+`top16 = 83%` on these positions is a hard ceiling on a 95% gate.
+
+Neither knob rescues it: m ∈ {16,24,32,48,128} → 76/73.5/80/81/81%; sims ∈ {128,256,512,1024}
+→ 81.7/81.7/91.7/86.7% (60-position subset). Full evidence and the three attempts in the
+BLOCKED doc.
+
+The tension is real: the Phase 1 retirement argued mate-in-1 is "search's job", which holds
+(100% with no network). It does not extend to mate-in-2, where the first move must be
+*considered*, and consideration is the policy prior's job — the exact quality Phase 1 stopped
+gating. Both decisions are defensible alone; this gate is where they collide.
+
+### Three chunk-5 tests were silently re-pointed and had to be pinned
+
+`MCTSConfig.root_mode` defaults to `"gumbel"`, and chunk 6 added dispatch on it — so the
+chunk 5 pinned-visit and backup tests, written against PUCT, began measuring Sequential
+Halving instead. They now set `root_mode="puct"` explicitly (and `dirichlet_frac=0` for
+determinism). Worth noting as a pattern: adding a dispatch on a defaulted config field
+silently changes what every existing test of the old path measures.
+
+---
+
+## Chunk 6 — evaluation profile + bounded tuning ⚠️ STILL BLOCKED (2026-08-09)
+
+Tom's decision on the round-`d` split result: **the gate number does not move.** Two staged
+interventions, pre-registered in `BLOCKED-2026-08-08-mate2-gate.md` *before* any measurement.
+Both were run. **The gate is 0.940 and the ≥0.95 threshold is not met.** Nothing was promoted,
+merged or tagged; the gate-number conversation goes back to Tom.
+
+Authoritative write-up (with the argument, not just the numbers): `BLOCKED-2026-08-08` and the
+round-`d` result block in `TRAINING_STRATEGY.md`, both on branch `round-d`.
+
+### Stage 1 — the evaluation profile
+
+`MCTSConfig.root_noise` (default `true` = self-play). At `false`: root candidates are the
+deterministic top-m by raw logits, and the acting argmax is `logits + σ(q̂)` — Sequential
+Halving, σ, the solver and the budget convention unchanged. Implemented as `g ≡ 0` rather than
+a second selection path. Suites, ladder and match play run this profile; self-play runs noise.
+
+```
+$ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_2.epd --sims 128 \
+      --ckpt runs/phase1_d/final.pt --no-root-noise --seed 1
+mate_in_2.epd: 188/200 solved at 128 sims (94.0%) | eval=runs/phase1_d/final.pt root=gumbel profile=eval(deterministic) m=16 c_visit=50 c_scale=1 | gate >= 95%
+
+$ ... --seed 2
+mate_in_2.epd: 188/200 solved at 128 sims (94.0%) | ... (identical, including the failure list)
+
+$ ... --suite tests/suites/mate_in_1.epd --sims 16 --ckpt runs/phase1_d/final.pt --no-root-noise
+mate_in_1.epd: 100/100 solved at 16 sims (100.0%) | gate >= 100%
+```
+
+0.890 → **0.940**, and the ±2.5-point seed spread is gone: both seeds agree exactly, on the
+score *and* on which twelve positions failed. **Pre-registered projection was 0.93 ± 0.02**;
+0.940 sits at the top edge of that window, so the three-factor decomposition was right and
+stage 2 was authorised rather than triggered by surprise.
+
+### Stage 2 — one bounded sweep, on a disjoint 500-position tuning suite
+
+`runs/data/mate2_tune_500` (seed 102), verified disjoint from both gate suites, all four
+held-out eval sets and all five anchor sets — including the superseded ones, since `phase1_d`
+warm-started from `phase1_c` (`tests/test_contamination.py`, 29 pass). Full grid, 128 sims,
+eval profile, ~98 s per config:
+
+| c_visit | c_scale | m=16 | m=32 |
+|---|---|---|---|
+| 25 | 0.5 | 91.2 | 92.6 |
+| 25 | 1.0 | 91.8 | 92.8 |
+| 25 | 2.0 | 92.2 | **93.2** |
+| 50 | 0.5 | 91.8 | 92.8 |
+| 50 | 1.0 | 92.2ᵈ | **93.2** |
+| 50 | 2.0 | 92.4 | 92.2 |
+| 100 | 0.5 | 92.2 | **93.4** ← selected |
+| 100 | 1.0 | 92.4 | 92.2 |
+| 100 | 2.0 | 92.6 | 90.6 |
+
+ᵈ = paper defaults. Selection by tuning-suite solve alone, ties toward defaults; 93.4% was a
+unique maximum. **Single-shot gate with the chosen config, the one permitted touch:**
+
+```
+$ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_2.epd --sims 128 \
+      --ckpt runs/phase1_d/final.pt --no-root-noise --eval-m 32 --eval-c-visit 100 --eval-c-scale 0.5 --seed 1
+mate_in_2.epd: 188/200 solved at 128 sims (94.0%) | ... m=32 c_visit=100 c_scale=0.5 | gate >= 95%
+   (seed 2 identical)
+```
+
+**188/200 — the same score as the untuned profile, on a different set of twelve failures.**
+The +1.2 points the sweep bought on the tuning suite transferred as exactly zero. That is the
+firewall doing its job: the whole 18-config grid spans 90.6–93.4%, and the binomial standard
+error at n=500, p≈0.93 is ±1.14 points, so the grid's spread is ~2.5 SE and picking its
+maximum is mostly picking noise. Had the sweep been run on the gate suite, 93.4% would have
+been reported as a tuning win.
+
+### The decomposition now closes exactly, and names what is left
+
+`scripts/diagnose_mate2.py` against the gate suite, eval profile:
+
+| Factor | m=16 (defaults) | m=32 (selected) |
+|---|---|---|
+| prior coverage @ top-m | 0.990 | 0.995 |
+| solved given considered | 0.949 | 0.945 |
+| **product** | **0.940** | **0.940** |
+| measured gate | 0.940 | 0.940 |
+
+Under noise the chain was `0.990 × 0.925 × 0.941`; the middle factor is now 1.000 by
+construction. Prior coverage is at 0.990 (top-1 0.660, top-8 0.975, top-32 0.995, median
+forcing-move rank 0). **The entire residual is conversion — solved *given* the winning move
+was simulated — and raising m trades against it almost exactly: +0.005 coverage, −0.004
+conversion, product unchanged to three places.**
+
+Twelve failures = 2 never considered + 10 considered but not converted. To reach 0.95 at
+coverage 0.990, conversion must rise from 0.949 to ≥0.960.
+
+**What is now known that was not on 2026-08-09 morning:** the gate is not prior-limited (round
+`d` settled that), not noise-limited (stage 1 settled that), and not σ/m-limited (stage 2
+settled that, at the cost of one burned tuning suite). It is limited by what the search does
+with 128 simulations once the right move is already in front of it.
+
+---
+
+## Next: chunk 6 gate-number conversation is back with Tom (see BLOCKED-2026-08-08)
