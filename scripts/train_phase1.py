@@ -40,8 +40,21 @@ def _build_loader(
     cfg_train,
     seed: int,
     num_workers: int = 8,
+    mate2_dir: Path | None = None,
 ) -> tuple[DataLoader, int]:
-    """Build a DataLoader mixing random-play and mate-in-1 at cfg_train.phase1_mate1_mix ratio."""
+    """Mix random play with mate-in-1 and mate-in-2 anchors at their configured fractions.
+
+    Each anchor sample is up-weighted so its dataset contributes exactly its
+    configured fraction of the batch, regardless of how many positions it holds.
+    Random play takes the remainder, so the mixes must sum below 1.
+    """
+    anchor_mix = cfg_train.phase1_mate1_mix + getattr(cfg_train, "phase1_mate2_mix", 0.0)
+    if not 0.0 <= anchor_mix < 1.0:
+        raise ValueError(
+            f"anchor mixes must sum to <1, got mate1={cfg_train.phase1_mate1_mix} + "
+            f"mate2={getattr(cfg_train, 'phase1_mate2_mix', 0.0)} = {anchor_mix}"
+        )
+
     rand_ds = WeightedPhaseDataset(
         Phase1Dataset(data_dir),
         value_weight=cfg_train.phase1_value_weight_random,
@@ -49,18 +62,23 @@ def _build_loader(
 
     n_rand = len(rand_ds)
     datasets = [rand_ds]
-    weights = np.full(n_rand, 1.0 - cfg_train.phase1_mate1_mix)
+    weights = np.full(n_rand, 1.0 - anchor_mix)
 
-    if mate1_dir is not None and mate1_dir.exists():
-        mate1_ds = WeightedPhaseDataset(
-            Phase1Dataset(mate1_dir),
+    for anchor_dir, mix in (
+        (mate1_dir, cfg_train.phase1_mate1_mix),
+        (mate2_dir, getattr(cfg_train, "phase1_mate2_mix", 0.0)),
+    ):
+        if anchor_dir is None or not anchor_dir.exists() or mix <= 0:
+            continue
+        anchor_ds = WeightedPhaseDataset(
+            Phase1Dataset(anchor_dir),
             value_weight=cfg_train.phase1_value_weight_anchor,
         )
-        n_m1 = len(mate1_ds)
-        datasets.append(mate1_ds)
-        # weight each mate1 sample so the fraction adds up to phase1_mate1_mix
-        m1_w = (cfg_train.phase1_mate1_mix / (1 - cfg_train.phase1_mate1_mix)) * (n_rand / n_m1)
-        weights = np.concatenate([weights, np.full(n_m1, m1_w)])
+        n_a = len(anchor_ds)
+        datasets.append(anchor_ds)
+        weights = np.concatenate(
+            [weights, np.full(n_a, (mix / (1.0 - anchor_mix)) * (n_rand / n_a))]
+        )
 
     combined = ConcatDataset(datasets)
     sampler = WeightedRandomSampler(
@@ -88,10 +106,16 @@ def main() -> None:
     parser.add_argument("--data", required=True, type=Path, help="Random-play dataset dir")
     parser.add_argument("--mate1", default=None, type=Path, help="Mate-in-1 anchor dataset dir")
     parser.add_argument(
+        "--mate2", default=None, type=Path, help="Mate-in-2 anchor dataset dir (round d+)"
+    )
+    parser.add_argument(
         "--eval-data", default=None, type=Path, help="Held-out random-play dir for metrics"
     )
     parser.add_argument(
         "--eval-mate1", default=None, type=Path, help="Held-out mate-in-1 dir for metrics"
+    )
+    parser.add_argument(
+        "--eval-mate2", default=None, type=Path, help="Held-out mate-in-2 dir for metrics"
     )
     parser.add_argument("--workers", type=int, default=8, help="DataLoader worker processes")
     parser.add_argument(
@@ -110,6 +134,15 @@ def main() -> None:
     parser.add_argument("--batch", type=int, default=None, help="Override batch_size")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--ckpt", type=Path, default=None, help="Resume from checkpoint")
+    parser.add_argument(
+        "--init-weights",
+        type=Path,
+        default=None,
+        help="Warm start: load MODEL WEIGHTS ONLY from this checkpoint, then train with "
+        "a fresh optimizer, fresh schedule and step counter at 0. Distinct from --ckpt, "
+        "which resumes optimizer state and step for crash recovery within a round. "
+        "Mutually exclusive with --ckpt.",
+    )
     parser.add_argument("--config", type=str, default=None, help="YAML config file")
     args = parser.parse_args()
 
@@ -121,8 +154,17 @@ def main() -> None:
 
     # ---- Fail fast on mis-generated datasets (see runs/phase1_a post-mortem) ----
     assert_dataset_mode(args.data, "random_games")
+    if args.ckpt is not None and args.init_weights is not None:
+        parser.error(
+            "--ckpt and --init-weights are mutually exclusive: --ckpt resumes a run "
+            "(optimizer + step), --init-weights starts a new one from borrowed weights."
+        )
     if args.mate1 is not None:
         assert_dataset_mode(args.mate1, "mate_in_1")
+    if args.mate2 is not None:
+        assert_dataset_mode(args.mate2, "mate_in_2")
+    if args.eval_mate2 is not None:
+        assert_dataset_mode(args.eval_mate2, "mate_in_2")
     if args.eval_data is not None:
         assert_dataset_mode(args.eval_data, "random_games")
     if args.eval_mate1 is not None:
@@ -130,6 +172,8 @@ def main() -> None:
 
     eval_data = args.eval_data or args.data
     eval_mate1 = args.eval_mate1 or args.mate1
+    if args.mate2 is not None and args.eval_mate2 is None:
+        print("WARNING: --mate2 given without --eval-mate2; the round d gate cannot be read.")
     if args.eval_data is None:
         print("WARNING: --eval-data not set; metrics computed on the TRAINING set.")
 
@@ -152,6 +196,18 @@ def main() -> None:
         net, meta = load_checkpoint(args.ckpt, device=device, reference_model_cfg=cfg.model)
         start_step = meta.get("step", 0)
         print(f"Resumed from {args.ckpt} at step {start_step}")
+    elif args.init_weights is not None:
+        # Warm restart: borrow the weights, discard everything else. start_step
+        # stays 0 so the schedule, epoch numbering and metrics.jsonl all describe
+        # *this* round rather than continuing the donor's bookkeeping.
+        net, donor = load_checkpoint(
+            args.init_weights, device=device, reference_model_cfg=cfg.model
+        )
+        print(
+            f"Warm start from {args.init_weights} "
+            f"(donor step={donor.get('step', '?')}, sha={donor.get('git_sha', '?')}); "
+            "fresh optimizer, fresh schedule, step=0"
+        )
     else:
         net = ChessNet(cfg.model).to(device)
 
@@ -163,7 +219,8 @@ def main() -> None:
         net = torch.compile(net)
 
     loader, n_samples = _build_loader(
-        args.data, args.mate1, cfg.train, args.seed, num_workers=args.workers
+        args.data, args.mate1, cfg.train, args.seed,
+        num_workers=args.workers, mate2_dir=args.mate2,
     )
     # len(loader) accounts for drop_last; ceil(n/batch) does not, which left the old
     # run with a 3-step orphan "epoch 4".
@@ -280,6 +337,7 @@ def main() -> None:
             eval_data,
             device,
             mate1_dir=eval_mate1,
+            mate2_dir=args.eval_mate2,
             n_random=1000,
             n_mate1=200,
         )
@@ -298,6 +356,7 @@ def main() -> None:
         print(
             f"Epoch {epoch} | loss={mean_epoch_loss:.4f} "
             f"(policy={mean_losses['policy_loss']:.4f}) | "
+            f"mate2_top16={metrics.get('mate2_top16_coverage', float('nan')):.4f} | "  # gated (round d)
             f"mate1_top8={metrics['mate1_top8_masked']:.4f} | "  # gated (BLOCKED-2026-08-06)
             f"auc={metrics['legality_auc']:.4f} | "
             f"wdl_anchor={metrics['wdl_anchor_mass']:.4f} | "

@@ -85,6 +85,7 @@ class TrainConfig:
     phase1_value_weight_random: float = 0.25  # down-weight random-play value labels
     phase1_value_weight_anchor: float = 1.0
     phase1_mate1_mix: float = 0.05  # fraction of mate-in-1 anchors per batch
+    phase1_mate2_mix: float = 0.0  # fraction of mate-in-2 anchors per batch (round d+)
     # Masking the policy CE zeroes the gradient on illegal logits, so the trunk never
     # learns legality — and on uniform-random-play data the masked loss is already at
     # its optimum at init. Phase 1 therefore trains unmasked; Phase 2 (search-improved
@@ -171,6 +172,36 @@ def _resolve_field_types(cfg_dict: dict, cls: type) -> Any:
     return cls(**kwargs)
 
 
+def _assert_known_keys(raw: dict, cls: type, source: str, prefix: str = "") -> None:
+    """Reject config keys that do not exist on the dataclass tree.
+
+    Silence here is the same failure family as a wrong git SHA: the run looks
+    fine and the number is wrong. A near-miss on a real field is worse than a
+    typo, because the default it leaves in place is plausible -- `phase1_lr`
+    (not a field) next to `phase1_lr_end` (a field) would have left the LR at
+    its 3e-4 default while reading as a request for 1e-4.
+    """
+    import dataclasses
+    import typing
+
+    valid = {f.name for f in dataclasses.fields(cls)}
+    # `from __future__ import annotations` makes field.type a *string*, so the
+    # nested dataclass would never be recognised and every nested key would pass.
+    hints = typing.get_type_hints(cls)
+    for key, value in raw.items():
+        dotted = f"{prefix}{key}"
+        if key not in valid:
+            near = [n for n in valid if n.startswith(key[:8]) or key.startswith(n[:8])]
+            hint = f" Did you mean {sorted(near)[0]!r}?" if near else ""
+            raise ValueError(
+                f"{source}: unknown config key {dotted!r} for {cls.__name__}.{hint} "
+                f"Valid: {sorted(valid)}"
+            )
+        nested = hints.get(key)
+        if isinstance(value, dict) and dataclasses.is_dataclass(nested):
+            _assert_known_keys(value, nested, source, prefix=f"{dotted}.")
+
+
 def load_config(path: str | None = None, overrides: dict | None = None) -> Config:
     """Load a Config from a YAML file, optionally applying flat key overrides.
 
@@ -180,6 +211,7 @@ def load_config(path: str | None = None, overrides: dict | None = None) -> Confi
     if path is not None:
         with open(path) as fh:
             raw = yaml.safe_load(fh) or {}
+        _assert_known_keys(raw, Config, str(path))
     else:
         raw = {}
 

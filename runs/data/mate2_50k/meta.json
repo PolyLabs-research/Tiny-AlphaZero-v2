@@ -1,0 +1,42 @@
+{
+  "n": 50000,
+  "version": "1",
+  "git_sha": "29b2294",
+  "dtype_map": {
+    "boards": "int8",
+    "moves": "int16",
+    "promos": "int8",
+    "legals": "uint8",
+    "outcomes": "int8"
+  },
+  "generation_config": {
+    "mode": "mate_in_2",
+    "num_positions": 50000,
+    "seed": 4,
+    "workers": 24,
+    "positions_per_sec": 32.88,
+    "excluded_sources": [
+      "runs/data/eval_mate2_1k",
+      "tests/suites/mate_in_2.epd",
+      "tests/suites/mate_in_1.epd"
+    ],
+    "argv": [
+      "scripts/generate_phase1.py",
+      "--mate2",
+      "50000",
+      "--out",
+      "runs/data/mate2_50k",
+      "--seed",
+      "4",
+      "--workers",
+      "24",
+      "--exclude",
+      "runs/data/eval_mate2_1k",
+      "--exclude",
+      "tests/suites/mate_in_2.epd",
+      "--exclude",
+      "tests/suites/mate_in_1.epd"
+    ],
+    "has_key_moves": true
+  }
+}

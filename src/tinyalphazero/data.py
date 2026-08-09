@@ -19,6 +19,7 @@ from torch.utils.data import Dataset
 
 from tinyalphazero.encoding import (
     _repetitions_from_board,
+    decode_board,
     encode_board,
     encode_move,
     legal_moves_packed,
@@ -47,6 +48,12 @@ class PositionRecord:
     promo: int
     legals: np.ndarray   # (512,) uint8
     outcome: int         # +1, 0, -1 from side-to-move perspective
+    # Multi-hot bitset over from*64+to of *every* move that satisfies the anchor's
+    # objective (mate_in_2: every first move forcing mate). None for modes with a
+    # single correct answer. from_sq/to_sq above stay the canonical CE target;
+    # this exists because a coverage metric that credits only one of several
+    # equally-winning moves measures the dataset's arbitrary choice, not the model.
+    key_moves: np.ndarray | None = None   # (512,) uint8 or None
 
 
 @dataclass
@@ -193,6 +200,118 @@ def generate_mate_in_1(
 # ---------------------------------------------------------------------------
 
 
+def mate_in_1_moves(board: chess.Board) -> list[chess.Move]:
+    """Every move that delivers immediate checkmate. Board is restored."""
+    out = []
+    for move in board.legal_moves:
+        board.push(move)
+        if board.is_checkmate():
+            out.append(move)
+        board.pop()
+    return out
+
+
+def mate_in_2_key_moves(board: chess.Board) -> list[chess.Move]:
+    """Every first move that *forces* mate in two. Empty if none, or if mate-in-1 exists.
+
+    A position that already has a one-mover is excluded: it would train the
+    mate-in-2 objective on an answer the mate-in-1 anchors already cover, and it
+    would make the held-out mate-in-2 eval a re-run of the mate-in-1 eval.
+
+    This is the single source of truth for the detection — `scripts/generate_suites.py`
+    (chunk 5, on the chunk-05-mcts branch) has an equivalent private copy and should
+    be pointed here when those branches merge.
+    """
+    if mate_in_1_moves(board):
+        return []
+    keys: list[chess.Move] = []
+    for move in board.legal_moves:
+        board.push(move)
+        try:
+            if board.is_checkmate() or board.is_stalemate():
+                continue
+            replies = list(board.legal_moves)
+            if not replies:
+                continue
+            forced = True
+            for reply in replies:
+                board.push(reply)
+                has_mate = bool(mate_in_1_moves(board))
+                board.pop()
+                if not has_mate:
+                    forced = False
+                    break
+            if forced:
+                keys.append(move)
+        finally:
+            board.pop()
+    return keys
+
+
+def _pack_moves(moves: list[chess.Move]) -> np.ndarray:
+    """Multi-hot (512,) uint8 bitset over from*64+to, matching legal_moves_packed."""
+    packed = np.zeros(512, dtype=np.uint8)
+    for mv in moves:
+        idx = mv.from_square * 64 + mv.to_square
+        packed[idx // 8] |= np.uint8(1 << (idx % 8))
+    return packed
+
+
+def generate_mate_in_2(
+    num_positions: int,
+    rng: np.random.Generator,
+    max_plies: int = 160,
+) -> Iterator[PositionRecord]:
+    """Yield positions with a forced mate in two, harvested from random play.
+
+    Deliberately unfiltered by branching factor. The chunk 5 suite generator skips
+    positions with >40 legal moves purely for speed, but training anchors drawn that
+    way would under-represent exactly the high-branching positions the gate fails on.
+    Cost is ~3.3 positions/sec/core; the CLI multiprocesses.
+    """
+    found = 0
+    board = chess.Board()
+    plies = 0
+
+    while found < num_positions:
+        if board.is_game_over() or plies >= max_plies:
+            board.reset()
+            plies = 0
+            continue
+
+        keys = mate_in_2_key_moves(board)
+        if keys:
+            rep = _repetitions_from_board(board)
+            canonical = keys[0]
+            from_sq, to_sq, promo = encode_move(canonical)
+            yield PositionRecord(
+                tokens=encode_board(board, rep),
+                from_sq=from_sq,
+                to_sq=to_sq,
+                promo=promo,
+                legals=legal_moves_packed(board),
+                outcome=1,  # side to move forces mate -> +1
+                key_moves=_pack_moves(keys),
+            )
+            found += 1
+
+        legal = list(board.legal_moves)
+        board.push(legal[int(rng.integers(len(legal)))])
+        plies += 1
+
+
+def position_key(tokens: np.ndarray) -> str:
+    """Contamination-comparison key: placement + turn + castling + EP.
+
+    Derived by decoding the tokens, so both sides of a comparison are normalised
+    the same way. That matters: the EP token is only set when en passant is
+    *legally available* (the Markov fix, spec §3.1), so a raw FEN's EP field and
+    this one legitimately disagree, and comparing raw FENs would under-report
+    overlap exactly where the encoding is cleverest.
+    """
+    return decode_board(np.asarray(tokens)).epd()
+
+
 def write_dataset(
     records: Iterator[GameRecord | PositionRecord],
     out_dir: Path,
@@ -210,6 +329,7 @@ def write_dataset(
     promos_list: list[int] = []
     legals_list: list[np.ndarray] = []
     outcomes_list: list[int] = []
+    keymoves_list: list[np.ndarray] = []
 
     for record in records:
         positions = record.positions if isinstance(record, GameRecord) else [record]
@@ -219,6 +339,8 @@ def write_dataset(
             promos_list.append(pos.promo)
             legals_list.append(pos.legals)
             outcomes_list.append(pos.outcome)
+            if pos.key_moves is not None:
+                keymoves_list.append(pos.key_moves)
 
     n = len(boards_list)
     if n == 0:
@@ -236,6 +358,16 @@ def write_dataset(
     _write_memmap(out_dir / "legals.dat", legals_arr)
     _write_memmap(out_dir / "outcomes.dat", outcomes_arr)
 
+    # Optional sixth memmap. Written only when every record carries key moves, so
+    # a partially-populated file can never be mistaken for a complete one.
+    has_key_moves = len(keymoves_list) == n and n > 0
+    if has_key_moves:
+        _write_memmap(out_dir / "keymoves.dat", np.stack(keymoves_list).astype(np.uint8))
+    elif keymoves_list:
+        raise ValueError(
+            f"key_moves present on {len(keymoves_list)} of {n} records -- all or none"
+        )
+
     # Record the exact invocation: runs/data/mate1 was once generated with --games
     # instead of --mate1, and nothing downstream could tell.
     gen_cfg = dict(generation_config or {})
@@ -246,7 +378,7 @@ def write_dataset(
         version=_VERSION,
         git_sha=_git_sha(),
         dtype_map=_DTYPE_MAP,
-        generation_config=gen_cfg,
+        generation_config={**gen_cfg, "has_key_moves": has_key_moves},
     )
     with open(out_dir / "meta.json", "w") as fh:
         json.dump(meta.to_dict(), fh, indent=2)
@@ -308,12 +440,21 @@ class Phase1Dataset(Dataset):
         self._outcomes = np.memmap(
             data_dir / "outcomes.dat", dtype=np.int8, mode="r", shape=(n,)
         )
+        # Optional: present only for modes with several equally-correct answers
+        # (mate_in_2). Absent for every dataset generated before 2026-08-08, so
+        # this must stay optional or every existing data dir stops loading.
+        km_path = data_dir / "keymoves.dat"
+        self._keymoves = (
+            np.memmap(km_path, dtype=np.uint8, mode="r", shape=(n, 512))
+            if km_path.exists()
+            else None
+        )
 
     def __len__(self) -> int:
         return self.meta.n
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        return {
+        item = {
             "tokens": torch.from_numpy(self._boards[idx].astype(np.int64)),
             "from_sq": torch.tensor(int(self._moves[idx, 0]), dtype=torch.long),
             "to_sq": torch.tensor(int(self._moves[idx, 1]), dtype=torch.long),
@@ -321,6 +462,9 @@ class Phase1Dataset(Dataset):
             "legals": torch.from_numpy(self._legals[idx].copy()),
             "outcome": torch.tensor(int(self._outcomes[idx]), dtype=torch.long),
         }
+        if self._keymoves is not None:
+            item["key_moves"] = torch.from_numpy(self._keymoves[idx].copy())
+        return item
 
 
 # ---------------------------------------------------------------------------

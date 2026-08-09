@@ -1,0 +1,32 @@
+{
+  "n": 1000,
+  "version": "1",
+  "git_sha": "29b2294",
+  "dtype_map": {
+    "boards": "int8",
+    "moves": "int16",
+    "promos": "int8",
+    "legals": "uint8",
+    "outcomes": "int8"
+  },
+  "generation_config": {
+    "mode": "mate_in_2",
+    "num_positions": 1000,
+    "seed": 101,
+    "workers": 24,
+    "positions_per_sec": 37.81,
+    "excluded_sources": [],
+    "argv": [
+      "scripts/generate_phase1.py",
+      "--mate2",
+      "1000",
+      "--out",
+      "runs/data/eval_mate2_1k",
+      "--seed",
+      "101",
+      "--workers",
+      "24"
+    ],
+    "has_key_moves": true
+  }
+}

@@ -1,0 +1,12 @@
+# Round d — mate-in-2 anchor coverage (BLOCKED-2026-08-08).
+# NOTE: the field is phase1_lr_start, NOT phase1_lr. The brief's `phase1_lr` does
+# not exist; before load_config gained strict key validation it was silently
+# ignored, which would have left the LR at its 3e-4 default and run a cosine decay
+# down to 1e-4 instead of the constant 1e-4 this round intends — a 3x hotter LR on
+# warm-started weights, aimed straight at the competence the no-regress gates check.
+train:
+  phase1_epochs: 2
+  phase1_lr_start: 1.0e-4
+  phase1_lr_end: 1.0e-4
+  phase1_mate1_mix: 0.08
+  phase1_mate2_mix: 0.07

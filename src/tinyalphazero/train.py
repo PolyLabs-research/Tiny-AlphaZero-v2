@@ -189,6 +189,12 @@ class WeightedPhaseDataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         item = self.ds[idx]
         item["value_weight"] = self._weight.clone()
+        # Drop key_moves on the training path. Only the mate-in-2 dataset carries
+        # it, so a mixed batch would have inconsistent keys and default_collate
+        # raises KeyError. Training never reads it either way -- the CE target is
+        # the canonical key move in from_sq/to_sq. The eval path opens
+        # Phase1Dataset directly and still sees it.
+        item.pop("key_moves", None)
         return item
 
 
@@ -282,6 +288,11 @@ def _binary_auc(scores: np.ndarray, labels: np.ndarray) -> float:
 # BLOCKED-2026-08-06-phase1-gates.md; the rest are reported for shape.
 MATE1_TOPK = (1, 3, 8, 16)
 
+# Mate-in-2 coverage is gated at k=16 because Gumbel's default considered-set size
+# is m=16: an action outside the prior's top-16 is never simulated at the Phase 2
+# root, so top-16 rank coverage is the quantity search actually depends on.
+MATE2_TOPK = 16
+
 
 @torch.no_grad()
 def compute_metrics(
@@ -291,6 +302,8 @@ def compute_metrics(
     mate1_dir: Path | None = None,
     n_random: int = 2000,
     n_mate1: int = 500,
+    mate2_dir: Path | None = None,
+    n_mate2: int = 1000,
 ) -> dict[str, float]:
     """Compute §5 acceptance metrics on a sample of the dataset.
 
@@ -415,13 +428,69 @@ def compute_metrics(
     }
     wdl_anchor_mass = wdl_win_mass_total / n_m1 if n_m1 > 0 else float("nan")
 
-    return {
+    out_metrics = {
         "top1_legal_rate": top1_legal_rate,
         "top1_exact_rate": top1_exact_rate,
         "mate1_solve_rate": topk_rates[1],
         "legality_auc": legality_auc,
         "wdl_anchor_mass": wdl_anchor_mass,
         **{f"mate1_top{k}_masked": topk_rates[k] for k in MATE1_TOPK},
+    }
+    out_metrics.update(_mate2_metrics(net, mate2_dir, device, n_mate2, rng))
+    return out_metrics
+
+
+@torch.no_grad()
+def _mate2_metrics(
+    net: ChessNet,
+    mate2_dir: Path | None,
+    device: torch.device,
+    n_mate2: int,
+    rng: np.random.Generator,
+) -> dict[str, float]:
+    """Mate-in-2 prior coverage (round `d`, BLOCKED-2026-08-08).
+
+    ``mate2_top16_coverage`` succeeds when the masked top-16 contains **any** key
+    move. Crediting only the dataset's canonical choice would score the arbitrary
+    tie-break rather than the model: many of these positions have several first
+    moves that force mate, and Gumbel only needs one of them in its considered set.
+
+    k=16 because that is Gumbel's default considered-set size — an action outside
+    the prior's top-16 is never simulated at the Phase 2 root, which is precisely
+    the constraint that made the chunk 6 gate unreachable.
+    """
+    empty = {"mate2_top16_coverage": float("nan"), "mate2_solve_rate": float("nan")}
+    if mate2_dir is None or not Path(mate2_dir).exists():
+        return empty
+
+    ds = Phase1Dataset(mate2_dir)
+    n = min(n_mate2, len(ds))
+    if n == 0:
+        return empty
+    idxs = rng.choice(len(ds), size=n, replace=False)
+
+    covered = 0
+    solved = 0
+    for i in idxs:
+        item = ds[int(i)]
+        out = net(item["tokens"].unsqueeze(0).to(device))
+        logits = out.policy_ft[0].reshape(4096)
+        legal = unpack_legal_mask(item["legals"].unsqueeze(0).to(device))[0].reshape(4096)
+        masked = logits.masked_fill(~legal, float("-inf"))
+
+        if "key_moves" in item:
+            keys = unpack_legal_mask(item["key_moves"].unsqueeze(0).to(device))[0].reshape(4096)
+        else:  # dataset predates key_moves — fall back to the canonical target
+            keys = torch.zeros(4096, dtype=torch.bool, device=device)
+            keys[int(item["from_sq"]) * 64 + int(item["to_sq"])] = True
+
+        top_k = torch.topk(masked, k=min(MATE2_TOPK, int(legal.sum().item()))).indices
+        covered += int(bool(keys[top_k].any().item()))
+        solved += int(bool(keys[int(masked.argmax().item())].item()))
+
+    return {
+        "mate2_top16_coverage": covered / n,
+        "mate2_solve_rate": solved / n,
     }
 
 
