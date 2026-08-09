@@ -37,3 +37,7 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-v"
+markers = [
+    "golden: the Phase 2 golden mini-run (spec §9.4) — CPU, under 3 minutes",
+    "slow: subprocess/SIGKILL crash-resume tests; minutes, not seconds",
+]

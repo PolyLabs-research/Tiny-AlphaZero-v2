@@ -280,6 +280,77 @@ Reduce `--batch` (e.g. `--batch 512`). The default 1024 requires ~6 GB VRAM; 512
 
 ---
 
+## Step 4 — Phase 2 self-play loop (spec §7)
+
+Phase 1 is a supervised bootstrap; Phase 2 is the AlphaZero loop proper. One
+process alternates generate → train → snapshot, forever, from the Phase 1 anchor.
+
+```bash
+# The golden mini-run first — 2 iterations, CPU, under 3 minutes. If this fails,
+# nothing below is worth starting.
+make golden
+
+# A campaign. TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 is the blessed stack on
+# this box (see "Non-finite gradients" above); nothing else should hold the GPU.
+TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 python scripts/train_phase2.py \
+    --config configs/default.yaml \
+    --init runs/phase1_anchor.pt \
+    --out runs/p2_a \
+    --iterations 50
+```
+
+### Resuming
+
+Killing the process at any point is safe, and `--resume` is how you come back:
+
+```bash
+TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 python scripts/train_phase2.py \
+    --resume runs/p2_a --iterations 50
+```
+
+The iteration counter, league pool, replay ring and optimizer state are
+reconstructed from the run directory; the config is re-read from
+`runs/p2_a/config.yaml`, not from `--config`, so a resumed run cannot silently
+change what it is. RNG is *derived* from (run seed, iteration, stream) rather than
+saved, so a resumed iteration draws exactly what an uninterrupted one would have.
+
+At most one iteration's work is lost — never more, and never a corrupted buffer.
+That is a tested property, not a claim: `pytest tests/test_phase2.py -m slow`
+SIGKILLs a real run inside generation and inside training and requires it back.
+
+### Reading the log
+
+`runs/p2_a/iterations.jsonl` has one row per iteration, defined once in
+`src/tinyalphazero/logschema.py`.
+
+```bash
+python -c "
+from tinyalphazero.logschema import read_jsonl
+for r in read_jsonl('runs/p2_a/iterations.jsonl'):
+    print(f\"iter {r['iteration']:4d}  loss={r['loss']:.4f}  decisive={r['decisive_rate']:.3f}\"
+          f\"  plies={r['mean_plies']:.0f}  H_prior={r['move1_prior_entropy']:.2f}\"
+          f\"  {r['total_s']/60:.1f} min (gen {r['selfplay_s']/60:.1f} + train {r['train_s']/60:.1f})\")
+"
+```
+
+The numbers to watch, in order of how early they warn you:
+
+| Column | What it means when it moves |
+|--------|-----------------------------|
+| `total_s` split | Erratum 6's ≤ ~35 min budget, per stage. Over budget → profile the stage the row names, do not guess |
+| `move1_prior_entropy` | §8's collapse detector. Falling toward 0 means the policy has stopped considering alternatives, and nothing outside its top-m is ever simulated again |
+| `move1_policy_entropy` | Sharpness of the *improved policy*, i.e. of the training target. **This one is expected to fall fast and is not a collapse.** σ scales q̂ by `(c_visit + max_N)` ≈ 70, so the target sharpens the moment the value head can separate two moves — measured 2.909 → 0.226 across two iterations while the prior barely moved |
+| `false_resign_rate` | `null` until a resign-disabled game crosses the threshold. Its first non-null value is a calibration reading, not a fault; §7 wants it under 5% |
+
+### What is deliberately absent
+
+**No gating.** The learner always trains on and generates from the latest weights.
+v1's arena gate is deleted rather than fixed: at 4–100 games per iteration it
+either does nothing or rejects real progress at random. The anchor ladder (§8) is
+the progress signal instead.
+
+---
+
 ## Inspecting metrics
 
 ```bash
@@ -309,6 +380,14 @@ runs/
     epoch_03.pt
     final.pt         # same as epoch_03.pt, canonical name for downstream chunks
     metrics.jsonl    # one JSON line per epoch
+  p2_a/              # a Phase 2 campaign (chunk 9)
+    config.yaml      # resolved config — the resume reads THIS, not --config
+    provenance.json  # git SHA, torch/device, init checkpoint
+    state.json       # iteration counter, league pool, replay head; written last
+    iterations.jsonl # one logschema.IterationRow per iteration
+    ckpt_iter0000.pt # the initial weights; iteration 0 pool = {this}
+    ckpt_iter0001.pt # ~78 MB each (weights + AdamW moments), keep-all
+    replay/          # memmap ring, ~540 MB at the 500K default capacity
 ```
 
 The `final.pt` checkpoint is the input to Chunk 5 (MCTS) and all subsequent phases.

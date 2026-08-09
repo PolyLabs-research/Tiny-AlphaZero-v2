@@ -6,6 +6,12 @@ runs/**
 !runs/**/
 !runs/**/metrics.jsonl
 !runs/**/meta.json
+# Phase 2 (chunk 9): iterations.jsonl is a campaign's only durable narrative —
+# ~50 rows for a 24h run and nothing else survives the process — and
+# provenance.json is the git SHA and config fingerprint that make those rows
+# interpretable. Same argument as metrics.jsonl, same few KB.
+!runs/**/iterations.jsonl
+!runs/**/provenance.json
 !runs/ANCHORS.sha256
 
 # Root-scoped: a bare `data/` would also swallow runs/data/ as a directory ignore,

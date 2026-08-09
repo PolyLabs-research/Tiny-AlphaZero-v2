@@ -148,6 +148,48 @@ class TrainConfig:
 
 
 @dataclass
+class Phase2Config:
+    """Loop-level knobs for the Phase 2 orchestrator (spec §7, chunk 9).
+
+    **What is deliberately *not* here.** Every per-iteration number in the §7
+    table already has an owner: games/concurrency/sims/ply-cap/resignation/league
+    live in ``selfplay``, optimiser and replay in ``train``, search constants in
+    ``mcts``. Restating them under ``phase2`` would put two writable spellings of
+    one number in the same file, which is the duplication rule in AGENTS.md §5
+    and exactly how a run ends up honouring the copy nobody edited.
+    ``configs/default.yaml`` carries the table verbatim as a comment with the
+    owning key on each row, so the table is readable in one place and settable in
+    exactly one.
+    """
+
+    iterations: int = 1000  # campaign length; --iterations overrides
+    # Train on positions whose mover was a pool opponent rather than the latest
+    # weights. Named default, pre-registered as the first ablation if M3 Elo
+    # stalls: a search-improved target is a valid improvement target regardless of
+    # which weights ran the search — it is merely ~20% staler, because ~20% of
+    # plies come from pool opponents. ``ReplayBuffer`` tags every row with
+    # ``mover_is_latest``, so flipping this filters the existing buffer instead of
+    # regenerating it.
+    train_on_pool_moves: bool = True
+    # Distinct pool opponents drawn per iteration. §7 fixes the *fraction* of
+    # league games (20%) and the pool they come from; it says nothing about how
+    # many different snapshots one iteration must span. Coalescing onto a few
+    # keeps the batched forward wide — an uncoalesced draw spreads ~102 games
+    # over 20 snapshots, and a 5-row forward costs the same GPU latency as a
+    # 256-row one. The marginal distribution over snapshots is unchanged across a
+    # campaign; only within-iteration opponent diversity is traded away.
+    league_opponents_per_iter: int = 4
+    # Phase 2 targets are supported on the legal move set, so the policy CE is
+    # taken over legal moves only (Phase 1 ran unmasked to *learn* legality).
+    masked_policy: bool = True
+    # NaN-skip guard, carried over verbatim from the Phase 1 trainer: skip the
+    # update on a non-finite gradient, count the skips, abort if they become a
+    # rate rather than a transient.
+    nan_abort_frac: float = 0.01
+    nan_abort_min_steps: int = 20
+
+
+@dataclass
 class EvalConfig:
     """Anchor ladder evaluation parameters (spec §8)."""
 
@@ -168,6 +210,7 @@ class Config:
     mcts: MCTSConfig = field(default_factory=MCTSConfig)
     selfplay: SelfPlayConfig = field(default_factory=SelfPlayConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
+    phase2: Phase2Config = field(default_factory=Phase2Config)
     eval: EvalConfig = field(default_factory=EvalConfig)
 
 

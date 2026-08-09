@@ -50,6 +50,13 @@ class TracePosition:
     ply: int
     root_q: float  # best root value estimate — chunk 8 reads this to decide resignation
     outcome: int = 0  # +1/0/-1 from THIS position's mover's view; filled after the game
+    # Entropy (nats) of the network's *prior* over legal root moves, before search.
+    # Distinct from the entropy of `improved_policy` and not a substitute for it:
+    # the improved policy is softmax(logits + σ(q̂)) with σ ≈ (c_visit + max_N), so
+    # once the value head becomes informative its entropy collapses by design.
+    # Spec §8's collapse detector is a question about the *policy* — has the
+    # network stopped considering alternatives — and only the prior answers it.
+    root_prior_entropy: float = 0.0
 
 
 @dataclass
@@ -69,6 +76,10 @@ class _LeafRequest:
     game: int
     tokens: np.ndarray
     legal_mask: np.ndarray  # (64, 64) bool — computed CPU-side when the leaf yields
+    # Which network answers this leaf. None (the default) means the runner's single
+    # evaluator, and the buffer stays one undivided batch; chunk 9's league sets it
+    # per game+colour so latest-vs-pool games can share one concurrent pool.
+    evaluator: Any = None
 
 
 class _GameState:
@@ -81,6 +92,11 @@ class _GameState:
         self.trace = GameTrace()
         self.ply = 0
         self.done = False
+        # Side to move at the *root* of the move currently being searched. The
+        # board is pushed to the leaf when a simulation yields, so `board.turn`
+        # at request time is the leaf's mover, not the searcher's — and it is the
+        # searcher whose weights answer the leaf.
+        self.root_turn: bool = board.turn
         # Positions this game has already LEFT, by transposition key. Incremented
         # once per committed move -- never per simulation -- so the hot path
         # never rescans a move stack. Counts occurrences strictly BEFORE the
@@ -134,19 +150,42 @@ class BatchRunner:
         # two searches can agree on the move while disagreeing about everything else.
         self.debug_trees: dict[tuple[int, int], tuple[Tree, int, int]] = {}
         self._stop_fn: Any = None
+        self._evaluator_for: Any = None
 
     # -- evaluation plumbing ---------------------------------------------
 
     def _flush(self, pending: list[_LeafRequest], games: list[_GameState]) -> None:
-        """One batched forward; resume every suspended simulation it answers."""
+        """Resume every suspended simulation, one batched forward per network.
+
+        With a single evaluator (the default, and everything before chunk 9) this
+        is exactly one forward over the whole buffer — the equivalence gate's
+        ``batch_leaves=1`` path is untouched. Under league play the buffer holds
+        leaves from games searched by different snapshots; grouping is what lets
+        all 512 games stay in *one* concurrent pool instead of being generated in
+        per-opponent waves, which is the difference between a wide forward and
+        twenty latency-bound narrow ones.
+        """
         if not pending:
             return
-        tokens = np.stack([r.tokens for r in pending]).astype(np.int64)
-        policies, promos, values = self.evaluate_batch(tokens)
-        self.stats["forwards"] += 1
-        self.stats["leaves"] += len(pending)
+        if self._evaluator_for is None:
+            self._forward(self.evaluate_batch, pending, games)
+        else:
+            groups: dict[Any, list[_LeafRequest]] = {}
+            for req in pending:
+                groups.setdefault(req.evaluator, []).append(req)
+            for fn, reqs in groups.items():
+                self._forward(fn, reqs, games)
+        pending.clear()
 
-        for i, req in enumerate(pending):
+    def _forward(
+        self, evaluate_batch: Any, reqs: list[_LeafRequest], games: list[_GameState]
+    ) -> None:
+        tokens = np.stack([r.tokens for r in reqs]).astype(np.int64)
+        policies, promos, values = evaluate_batch(tokens)
+        self.stats["forwards"] += 1
+        self.stats["leaves"] += len(reqs)
+
+        for i, req in enumerate(reqs):
             policy = np.asarray(policies[i], dtype=np.float32).reshape(64, 64)
             masked = np.where(req.legal_mask, policy, -np.inf)
             m = masked.max()
@@ -156,7 +195,6 @@ class BatchRunner:
                 probs = (e / e.sum()).astype(np.float32)
             promo = np.asarray(promos[i], dtype=np.float32).reshape(64, 64, 4)
             self._resume(games[req.game], (probs, promo, float(values[i])))
-        pending.clear()
 
     def _resume(self, gs: _GameState, answer: tuple[np.ndarray, np.ndarray, float]) -> None:
         try:
@@ -176,6 +214,7 @@ class BatchRunner:
     ) -> None:
         """Begin a move: open the root-expansion coroutine (it yields one leaf)."""
         gs.tree = Tree(cap_nodes=num_sims + 1)
+        gs.root_turn = gs.board.turn
         gs.path_reps = Counter()
         gs.path_reps[gs.board._transposition_key()] += 1
         gs.sims_run = 0
@@ -252,6 +291,7 @@ class BatchRunner:
         boards: list[chess.Board] | None = None,
         repetitions_fn: RepetitionsFn | None = None,
         stop_fn: Any = None,
+        evaluator_for: Any = None,
     ) -> Iterator[GameTrace]:
         """``stop_fn(trace) -> str | None`` is consulted after every committed
         move; a returned string ends that game with it as the result.
@@ -261,6 +301,11 @@ class BatchRunner:
         decision (spec §7 says exactly that); deciding when a position is lost
         enough to abandon is the actor's policy, and keeping it out here is what
         lets the actor disable it for 10% of games without a second code path.
+
+        ``evaluator_for(game_index, root_side_to_move) -> evaluate_batch`` is the
+        same idea for the league (chunk 9): the runner does not know what a
+        snapshot pool is, only that a leaf belongs to whoever is searching. None —
+        the default — keeps a single evaluator and a single forward per flush.
         """
         num_sims = self.cfg.sims if num_sims is None else num_sims
         seeds = seeds or list(range(num_games))
@@ -286,6 +331,7 @@ class BatchRunner:
         # the equivalence gate already reads debug_trees for the same reason.
         self._games_debug = games
         self._stop_fn = stop_fn
+        self._evaluator_for = evaluator_for
         for gs in games:
             self._start_move(gs, search, num_sims, game_reps(gs))
 
@@ -332,7 +378,14 @@ class BatchRunner:
                     progressed = True
                     continue
 
-                pending.append(_LeafRequest(gi, tokens, legal_mask_ft(gs.board)))
+                pending.append(
+                    _LeafRequest(
+                        gi,
+                        tokens,
+                        legal_mask_ft(gs.board),
+                        None if evaluator_for is None else evaluator_for(gi, gs.root_turn),
+                    )
+                )
                 progressed = True
                 if len(pending) >= batch_leaves:
                     self._flush(pending, games)
@@ -388,6 +441,7 @@ class BatchRunner:
                 side_to_move=gs.board.turn,
                 ply=gs.ply,
                 root_q=float(completed_q.max()),
+                root_prior_entropy=gumbel.entropy(tree.prior[sl]),
             )
         )
 

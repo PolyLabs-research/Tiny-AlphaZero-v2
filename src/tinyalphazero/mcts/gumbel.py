@@ -234,6 +234,21 @@ def improved_policy(
     return (p / total).astype(np.float32) if total > 0 else np.full_like(p, 1.0 / len(p))
 
 
+def entropy(p: np.ndarray) -> float:
+    """Shannon entropy in nats of a probability vector, ignoring zero entries.
+
+    Lives here because the two distributions it is applied to — the network's
+    prior and :func:`improved_policy` — both live here, and because reading their
+    entropies as the same quantity is a mistake worth making hard. σ scales by
+    ``(c_visit + max_N)``, i.e. ~70 at 48 sims, so the improved policy's entropy
+    collapses as soon as the value head can tell two moves apart; that is Gumbel
+    working, not a policy collapse. Spec §8's collapse detector is the prior's.
+    """
+    q = np.asarray(p, dtype=np.float64)
+    q = q[q > 0]
+    return float(-(q * np.log(q)).sum()) if q.size else 0.0
+
+
 def dirichlet_mixed_prior(
     prior: np.ndarray, rng: np.random.Generator, cfg: MCTSConfig
 ) -> np.ndarray:

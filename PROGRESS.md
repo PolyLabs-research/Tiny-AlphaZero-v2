@@ -1084,4 +1084,234 @@ and `MCTSConfig.promo_prior_from_head`.
 
 ---
 
-## Next: **chunk 9** — the Phase 2 loop and the golden mini-run, then the 24h M3 campaign with the watchlist riding along.
+## Chunk 9 — The Phase 2 loop ✅ (branch `chunk-09-phase2`, 2026-08-10)
+
+**Created:** `src/tinyalphazero/phase2.py`, `src/tinyalphazero/logschema.py`,
+`scripts/train_phase2.py`, `tests/test_phase2.py`, `make golden`.
+
+### Gate results (verbatim)
+
+```
+$ make test                    474 passed, 46 warnings in 264.09s (0:04:24)
+$ ruff check src/ tests/ scripts/                      All checks passed!
+$ make golden                  1 passed, 28 deselected in 18.78s   (budget: 180s)
+$ python scripts/parity_probe.py                       0 disagreement(s)
+$ pytest tests/test_phase2.py -m slow -q               2 passed in 57.89s
+$ python scripts/train_phase2.py --config configs/mini.yaml --out runs/golden --device cpu
+iter    1 | loss=4.5815 (policy=3.3273 value=0.9944) | decisive=0.000 draw=1.000 (cap=1.000 claim=0.000) | resign=0.000 false=None | plies=80.0 H_prior=2.996 H_target=2.983 | 1214 sims/s | 0.2 min (gen 0.1 + train 0.0 + snap 0.00 + other 0.00)
+iter    2 | loss=4.2733 (policy=3.3744 value=0.8424) | decisive=0.000 draw=1.000 (cap=1.000 claim=0.000) | resign=0.000 false=None | plies=80.0 H_prior=2.996 H_target=2.890 | 1275 sims/s | 0.1 min (gen 0.1 + train 0.0 + snap 0.00 + other 0.00)
+Done. Latest checkpoint: runs/golden/ckpt_iter0002.pt     real 0m19.8s
+```
+
+474 tests, up from 442. `ruff format --check` still reports 27 files — a
+pre-existing condition, not a chunk 9 regression: `main`'s own untouched
+`model.py` reformats. Left alone rather than bundling a whole-repo reformat into a
+feature commit.
+
+### Where the §7 table lives, and why not under `phase2:`
+
+Every per-iteration number in the §7 table already had an owner — games and
+concurrency and resignation in `selfplay`, optimiser and replay in `train`,
+search constants in `mcts`. Restating them under a new `phase2:` block would have
+put two writable spellings of each number in one file, which is AGENTS.md §5's
+duplication rule and precisely how a run ends up honouring the copy nobody edited.
+
+So `configs/default.yaml` carries **the table verbatim as a comment with the
+owning key on each row**, and `phase2:` holds only what had no home: iteration
+count, `train_on_pool_moves`, `league_opponents_per_iter`, `masked_policy`, and
+the NaN-abort thresholds. The table is readable in one place and settable in
+exactly one.
+
+Two §7 values did move into config as instructed: `model.dropout: 0.0` and
+`train.legality_loss_weight: 0.0`. The legality *head* stays instantiated —
+`aux_legality` is a model-shape key and the Phase 1 anchor has its weights, so
+dropping the module would make the anchor unloadable. §7 puts "legality auxiliary
+OFF" in the **Loss** row, which is where it now is; `train_step_phase2` skips
+computing it entirely when the weight is zero, so it costs no backward pass.
+
+`configs/default.yaml` is therefore now the Phase 2 campaign config, not a
+snapshot of the dataclass defaults. Phase 1 is closed and its rounds are pinned in
+`configs/phase1_[c,d].yaml`, which set their own values and are unaffected.
+
+### League: §7 says *latest-vs-pool*, so the two sides of a game differ
+
+Chunk 8 shipped `play_games` with one evaluator for all games, which cannot
+express "the learner plays one colour and a snapshot the other". Two readings were
+available and they are not equivalent:
+
+| Reading | Pool data share | Batching cost at steady state |
+|---------|-----------------|-------------------------------|
+| Per-game (a snapshot plays *itself* in 20% of games) | ~20% of positions | ~102 games spread over 20 snapshots, run as sequential waves — **est. +14 min/iteration** |
+| Per-side (§7's wording; learner vs snapshot) | ~10% of positions | all 512 games in one concurrent pool, ≤5 forwards per flush — **est. +1.6 min/iteration** |
+
+Per-side is what the spec says, is faster, and is the only reading under which a
+*per-position* `mover_is_latest` tag means anything — under the per-game reading
+the tag would be constant within a game and belonged on the game, not the row.
+It needed one **additive** change to the reviewed batched runner:
+`BatchRunner.play_games(..., evaluator_for=None)`, a hook from (game index, root
+side to move) to an evaluator, with `_flush` grouping the buffer by network and
+issuing one forward per group. `evaluator_for=None` is byte-identical to before —
+one forward per flush — so the `batch_leaves=1` equivalence gate is untouched, and
+a test pins the forward count on the default path.
+
+The subtlety that would have been silent: the board is pushed to the *leaf* when a
+simulation yields, so `board.turn` at request time is the leaf's mover, not the
+searcher's. Routing on it would have fed half of every search to the opponent's
+network. `_GameState.root_turn` is captured at `_start_move` instead, and there is
+a test that each network sees only its own search.
+
+**One knob added that §7 does not name:** `league_opponents_per_iter` (default 4).
+§7 fixes the *fraction* of league games and the pool they come from; it says
+nothing about how many distinct snapshots one iteration must span. A 20-snapshot
+pool gives each snapshot ~5 games, and a five-row forward costs the same GPU
+latency as a 256-row one. Coalescing preserves the marginal over a campaign and
+trades only within-iteration diversity. Tested: the 20% count survives coalescing,
+the span is bounded, and the learner gets both colours.
+
+### The move-1 entropy metric was wrong, and the smoke measured it
+
+Spec §8 lists "policy entropy at move 1 (collapse detector)". The first
+implementation logged the entropy of the **improved policy**, which is the
+training target. The pre-shakedown GPU smoke (32 games, 2 iterations) reported it
+falling **2.909 → 0.226** between iterations — which reads as a policy collapsing
+after one iteration of training.
+
+It is not. Loading the three checkpoints and measuring the start position directly:
+
+| | prior entropy at startpos (max 2.996) | top-1 prior | child-value range | σ spread |
+|---|---|---|---|---|
+| `ckpt_iter0000` (anchor) | 2.9830 | 0.073 | 0.010 | 0.68 logits |
+| `ckpt_iter0001` | 2.9720 | 0.082 | 0.528 | 37.0 logits |
+| `ckpt_iter0002` | 2.7781 | 0.216 | 0.885 | 62.0 logits |
+
+The prior barely moved. What moved is the **value head**, from the Phase 1
+anchor's famous indifference (child values spanning 0.010) to genuine
+discrimination (0.885) — and σ = (c_visit + max_N)·c_scale ≈ 70 turns that into 62
+logits of spread inside `softmax(logits + σ(q̂))`. The improved policy's entropy
+collapsing is Gumbel working exactly as designed.
+
+The schema now logs **both**: `move1_prior_entropy` (§8's collapse detector, the
+question "has the policy stopped considering alternatives") and
+`move1_policy_entropy` (target sharpness). The golden run asserts on the prior.
+A single number would have had the M3 campaign report a working value head as a
+collapsing policy — at hour four, unattended.
+
+This also required `TracePosition.root_prior_entropy`, and `gumbel.entropy` as the
+one definition both consumers use.
+
+### Crash-safety is a write-ordering contract, and both kill points were performed
+
+`replay.py`'s docstring now states it in three clauses — single writer; position
+data written before the head advances; a torn iteration loses at most its own
+partial games — and each clause has a test.
+
+The mechanism: `add` fills every field of slot `i` and only then increments an
+in-RAM counter; the *durable* head is `meta.json` and moves only in `flush`. The
+run-level ordering mirrors it — replay flush, then checkpoint, then log row, then
+`state.json` written last and atomically via `os.replace`.
+
+Two gaps closed that testing found rather than reasoning:
+
+- **`ReplayBuffer.rewind_to`.** A kill *after* generation flushed but before the
+  snapshot leaves the durable head ahead of the last committed iteration; without
+  a rewind the re-run stores those games a second time and `replay_size` stops
+  meaning anything. The honest caveat is in the docstring: it restores the write
+  position, it does not un-write bytes, so a torn iteration that wrapped past the
+  end of the ring leaves slots holding valid but newer-than-expected rows until
+  writing catches up.
+- **Log truncation on resume.** The row is appended a millisecond before the state
+  commit, and a kill fits there. Resume drops rows for iterations `state.json`
+  does not claim, so `iterations.jsonl` is exactly the sequence `state.json`
+  asserts — the property chunk 11's dashboard is entitled to assume.
+
+Both `SIGKILL` points pass (`pytest tests/test_phase2.py -m slow`, 57.9s). They
+fail differently, which is why both are needed:
+
+| Kill point | State at the kill | What resume must do |
+|---|---|---|
+| mid-**generation**, iteration 1 | nothing flushed; `state.json` says iteration 0 | find the previous iteration intact and redo the work |
+| mid-**training**, iteration 2 | generation flushed, so the durable replay head is *ahead* of the last committed iteration | rewind the head, then re-run — asserted by `total_written == sum(row["positions"])`, i.e. every iteration's games counted exactly once |
+
+The training stage had to be lengthened to 300 steps for the test config: mini's
+20 steps take ~0.4 s, and a kill aimed at that window lands in the snapshot as
+often as not. A test that measures scheduler luck is not a test.
+
+### Not done, and why
+
+`ChessNet.forward` materialises the dense `(B, 64, 64, 4)` promotion tensor, and
+`train_step_phase2` reads a single `(from, to)` cell from it. `promo_logits` exists
+as the memory-efficient path and using it would need the forward decomposed by
+hand. Left alone deliberately: AGENTS.md says profile before optimising, and the
+shakedown puts training at **12–13%** of the iteration against generation's 87–88%.
+0.53 s/step at batch 1024 is the baseline any future attempt has to beat, and
+generation is where the minutes actually are.
+
+### Three-iteration GPU shakedown (pre-registered)
+
+```
+$ TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 python scripts/train_phase2.py \
+      --config configs/default.yaml --init runs/phase1_anchor.pt \
+      --out runs/p2_shakedown --iterations 3
+iter    1 | loss=4.2227 (policy=2.7435 value=0.6901) | decisive=0.613 draw=0.387 (cap=0.381 claim=0.002) | resign=0.000 false=None | plies=121.8 H_prior=2.983 H_target=2.909 | 1930 sims/s | 29.4 min (gen 25.9 + train 3.5 + snap 0.00 + other 0.00)
+iter    2 | loss=4.0741 (policy=2.7689 value=0.5585) | decisive=0.812 draw=0.188 (cap=0.174 claim=0.002) | resign=0.035 false=0.0 | plies=98.9 H_prior=2.984 H_target=0.371 | 1782 sims/s | 26.3 min (gen 22.7 + train 3.5 + snap 0.00 + other 0.00)
+iter    3 | loss=4.0040 (policy=2.7274 value=0.5634) | decisive=0.826 draw=0.174 (cap=0.137 claim=0.002) | resign=0.049 false=0.0 | plies=98.3 H_prior=2.669 H_target=0.160 | 1714 sims/s | 27.0 min (gen 23.5 + train 3.5 + snap 0.00 + other 0.00)
+Done. Latest checkpoint: runs/p2_shakedown/ckpt_iter0003.pt
+```
+
+**82.7 min for three iterations.** `runs/p2_shakedown` deleted after recording;
+the numbers are also in `benchmarks/results.jsonl` under `phase2_shakedown`.
+
+| Pre-registered expectation | Result |
+|---|---|
+| 24–30 min/iteration (26.0 projected) | **29.4 / 26.3 / 27.0** — all inside, all inside erratum 6's ≤ ~35 min |
+| skipped steps < 10 total | **0** in 1,200 steps |
+| decisive rate near the smoke's ≈62% at iteration 1 | **0.613** |
+| resignation likely still silent (`false_resign_rate: None`) | **fired at iteration 2**, and clean — see below |
+| every schema row populates, the split sums | 3/3 rows validate; `gen + train + snap + other == total` |
+| iteration 3's snapshot loads | loads, `phase="2"`, step 1200, config fingerprint matches |
+
+The wall-clock split says where the time goes, which is the entire point of adding
+it: generation is **87–88%** of every iteration and training is **12–13%**
+(3.5 min, flat across all three). Snapshot is 40 ms. Any future optimisation that
+does not touch generation is optimising the 12%.
+
+Generation's 25.86 min at iteration 1 lands within **0.6%** of chunk 8's 26.0 min
+projection from a 64-game sample — the first time that extrapolation has been
+tested at full scale.
+
+**Resignation began firing at iteration 2, ahead of the pre-registered
+expectation, and calibrated.** `resign_rate` 0.035 then 0.049, with
+`false_resign_rate` **0.0** both times against §7's < 5% requirement. The brief
+expected the first non-null value in M3; it arrived one iteration after the value
+head became informative. Nothing to fix — this is the number the 10% disabled
+holdout exists to produce, and it is the right side of the threshold.
+
+**The draw glut is receding on its own.** ply-cap draws 0.381 → 0.174 → 0.137 and
+mean plies 121.8 → 98.9 → 98.3, with decisive rate 0.613 → 0.812 → 0.826. Three
+iterations prove nothing about strength — but they do show the loop's own
+adjudication pressure working as §7 intended.
+
+**The two entropies separated exactly as the smoke predicted**, on the real
+campaign: `move1_policy_entropy` 2.909 → 0.371 → 0.160 while
+`move1_prior_entropy` held 2.983 → 2.984 → 2.669 against a 2.996 maximum. Logged
+as one number, iteration 2 would read as a policy collapse. The prior's 2.669 at
+iteration 3 is the first real movement and is the **baseline M3 should be watched
+against** — the question for the campaign is whether it keeps drifting down.
+
+**Not judged here, by pre-registration:** loss levels. Recorded for the record
+only — 4.2227 → 4.0741 → 4.0040, with the value term 0.690 → 0.559 → 0.563 and
+`grad_norm` spiking to 29.0 at iteration 2 (clip is 1.0, so that is the pre-clip
+norm of the value head learning what a lost position looks like).
+
+**One honesty note about the binary.** The shakedown ran at `7d7ace0` plus the
+chunk 9 working tree as it stood at launch. Two changes landed afterwards: the
+promotion-target conditioning fix in `ReplayBuffer.sample` and the `move1_prior_entropy`
+plumbing — the latter was already present (it is in the rows above), the former was
+not. It changes which rows contribute to the promotion CE term and nothing about
+tensor shapes, stage timing, schema population, or snapshot loading — i.e. nothing
+the shakedown was pre-registered to judge. It is named here rather than left to be
+noticed later.
+
+---
+
+## Next: **chunk 10** — opponents, the fixed 4-ply book, Elo with paired-bootstrap CIs, and the suites on ladder cadence. Then the one-sentence brief: run `p2_a` for 24 hours.

@@ -1,5 +1,8 @@
-# Golden mini-run config: tiny model for CI/smoke testing
-# 2 iterations, 8 games, 16 sims, batch 64, replay 5K
+# Golden mini-run config: tiny model for CI/smoke testing (spec §9.4).
+# 2 iterations, 8 games at 4 concurrent, 16 sims, 20 steps at batch 64, replay 5K,
+# CPU, under 3 minutes. Small enough to run on every commit, complete enough that
+# it exercises the same code path as the 24-hour campaign — generate, store, train,
+# snapshot, log, commit — rather than a reduced imitation of it.
 seed: 42
 
 model:
@@ -7,7 +10,7 @@ model:
   d_ff: 256
   d_model: 64
   d_policy: 32
-  dropout: 0.1
+  dropout: 0.0  # Phase 2 value, as in default.yaml
   n_heads: 4
   n_layers: 2
   seq_len: 72
@@ -25,7 +28,7 @@ mcts:
   temperature_ply_cutoff: 30
 
 selfplay:
-  concurrent_games: 8
+  concurrent_games: 4
   games_per_iteration: 8
   league_latest_frac: 0.8
   league_pool_size: 5
@@ -38,7 +41,7 @@ selfplay:
 train:
   batch_size: 64
   grad_clip: 1.0
-  legality_loss_weight: 1.0
+  legality_loss_weight: 0.0  # §7: legality auxiliary OFF in Phase 2
   lr: 0.0002
   phase1_epochs: 1
   phase1_lr_end: 3.0e-05
@@ -52,6 +55,16 @@ train:
   train_steps_per_iter: 20
   value_loss_weight: 1.0
   weight_decay: 0.0001
+
+phase2:
+  iterations: 2
+  # One opponent: the mini pool never exceeds 3 snapshots, so coalescing has
+  # nothing to do — but pinning it keeps the golden run's forward count stable.
+  league_opponents_per_iter: 1
+  masked_policy: true
+  nan_abort_frac: 0.01
+  nan_abort_min_steps: 20
+  train_on_pool_moves: true
 
 eval:
   anchor_games: 20

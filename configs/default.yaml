@@ -1,12 +1,50 @@
-# TinyAlphaZero v2 — default configuration (spec defaults §4.1, §6.2, §7)
+# TinyAlphaZero v2 — default configuration (spec §4.1, §6.2, §7)
+#
+# Phase 1 is closed; its rounds are pinned in configs/phase1_[c,d].yaml. This file
+# is now the **Phase 2 campaign config** — it is what scripts/train_phase2.py reads
+# by default — which is why `model.dropout` is 0.0 and `train.legality_loss_weight`
+# is 0.0 here while the dataclass defaults in config.py keep their Phase 1 values.
+#
+# ---------------------------------------------------------------------------
+# Spec §7, per-iteration defaults — the table verbatim, with the owning key.
+# Every number below is settable in exactly one place; nothing is restated under
+# `phase2:` (see Phase2Config's docstring).
+#
+#   | Knob                | Value                                          | Owning key                     |
+#   |---------------------|------------------------------------------------|--------------------------------|
+#   | Games / iteration   | 512, across 256 concurrent boards              | selfplay.games_per_iteration,  |
+#   |                     |                                                | selfplay.concurrent_games      |
+#   | Sims / move         | 48 (Gumbel, m=16 root actions)                 | selfplay.sims_per_move,        |
+#   |                     |                                                | mcts.gumbel_m                  |
+#   | Max game length     | 160 plies, then adjudicate as draw             | selfplay.max_plies             |
+#   | Resignation         | best root q < -0.90 for 8 consecutive own      | selfplay.resign_threshold,     |
+#   |                     | moves; disabled in 10% of games to calibrate   | selfplay.resign_consecutive,   |
+#   |                     | the false-resign rate (<5%)                    | selfplay.resign_disabled_frac  |
+#   | Replay capacity     | 500K positions (~1000-game window), uniform    | train.replay_capacity          |
+#   | Train steps / iter  | 400, batch 1024                                | train.train_steps_per_iter,    |
+#   |                     |                                                | train.batch_size               |
+#   | Optimizer           | AdamW, lr 2e-4 constant, wd 1e-4, clip 1.0     | train.lr, train.weight_decay,  |
+#   |                     |                                                | train.grad_clip                |
+#   | Loss                | policy CE vs Gumbel improved policy + promo CE | train.policy_loss_weight,      |
+#   |                     | + WDL CE (weight 1.0); legality auxiliary OFF  | train.promo_loss_weight,       |
+#   |                     |                                                | train.value_loss_weight,       |
+#   |                     |                                                | train.legality_loss_weight     |
+#   | Snapshot            | every iteration, keep all; league pool =        | selfplay.league_pool_size,     |
+#   |                     | uniform over last 20; 80% latest-vs-latest,    | selfplay.league_latest_frac    |
+#   |                     | 20% latest-vs-pool                             |                                |
+# ---------------------------------------------------------------------------
 seed: 42
 
 model:
+  # The legality head stays *instantiated* — it is a model-shape key, and the
+  # Phase 1 anchor this campaign starts from has its weights. §7 turns the
+  # auxiliary off in the *loss* (train.legality_loss_weight below), which is
+  # where the table puts it; dropping the module would make the anchor unloadable.
   aux_legality: true
   d_ff: 1024
   d_model: 256
   d_policy: 128
-  dropout: 0.1
+  dropout: 0.0  # §7: 0.0 in Phase 2 (0.1 in Phase 1) — config, not code
   n_heads: 8
   n_layers: 8
   seq_len: 72
@@ -41,7 +79,7 @@ selfplay:
 train:
   batch_size: 1024
   grad_clip: 1.0
-  legality_loss_weight: 1.0
+  legality_loss_weight: 0.0  # §7: legality auxiliary OFF in Phase 2
   lr: 0.0002
   phase1_epochs: 3
   phase1_lr_end: 3.0e-05
@@ -55,6 +93,14 @@ train:
   train_steps_per_iter: 400
   value_loss_weight: 1.0
   weight_decay: 0.0001
+
+phase2:
+  iterations: 1000
+  league_opponents_per_iter: 4
+  masked_policy: true
+  nan_abort_frac: 0.01
+  nan_abort_min_steps: 20
+  train_on_pool_moves: true
 
 eval:
   anchor_games: 200
