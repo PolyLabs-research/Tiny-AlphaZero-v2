@@ -1,13 +1,17 @@
 # TinyAlphaZero v2 — Build Progress
 
-## Status: Phase 1 CLOSED (2026-08-06, tag `phase1-closed`); Chunk 5 is next
+## Status: Phase 1 CLOSED (r2) on anchor v2 (2026-08-09, tag `phase1-closed-r2`); chunks 0–7 done; **chunk 8 is next**
 
-Chunks 0–4 are **done and signed off**. Phase 1 closed on `runs/phase1_anchor.pt`
-(= `runs/phase1_c/final.pt`, step 56,484) after three rounds; two of the four original
-§5 gates were retired to informational rather than lowered — reasoning in
-`BLOCKED-2026-08-06-phase1-gates.md`, campaign log in `TRAINING_STRATEGY.md`. Chunks
-5–12 are not started. See "Phase 1 post-mortem" below before touching training code,
-and "Readiness 2026-08-06" at the end for the close-out audit.
+Chunks **0–7** are done, reviewed and merged to `main`. Phase 1 first closed 2026-08-06 on
+`phase1_c/final.pt`, was reopened 2026-08-08 by the chunk 6 mate-in-2 gate, and re-closed
+2026-08-09 on **anchor v2 = `runs/phase1_d/final.pt`** with that gate at **98.5%** against its
+original, never-moved 0.95 threshold. Two of the four original §5 gates remain retired to
+informational rather than lowered — reasoning in `BLOCKED-2026-08-06-phase1-gates.md`, campaign
+log in `TRAINING_STRATEGY.md`, gate story in `BLOCKED-2026-08-08-mate2-gate.md`.
+
+Chunks 8–12 are not started; the intake register for chunk 8 is near the end of this file. See
+"Phase 1 post-mortem" below before touching training code, and "Readiness 2026-08-06" for the
+first close-out audit.
 
 ---
 
