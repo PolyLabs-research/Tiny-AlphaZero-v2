@@ -1,7 +1,12 @@
 # BLOCKED — Chunk 6 gate: mate-in-2 ≥ 95% at 128 sims
 
-**Date:** 2026-08-08 · **Branch:** `chunk-06-gumbel` · **Status:** **RESOLVED 2026-08-08 —
-reopen Phase 1 and fix the model; the gate does not move.**
+**Date:** 2026-08-08 · **Branch:** `chunk-06-gumbel` · **Status:** **STILL BLOCKED as of
+2026-08-09 — gate 0.940 vs 0.95 after both pre-registered stages. Back with Tom.**
+
+History: opened 2026-08-08 at 0.770 → decision "fix the model, the gate does not move" → round
+`d` 0.890 → evaluation profile 0.940 → bounded tuning 0.940. The threshold has never moved.
+Prior coverage, exploration noise and the σ/m constants are now all excluded as explanations;
+what remains is search conversion at 128 sims. Read "Outcome, 2026-08-09" below first.
 
 ## Decision (Tom, 2026-08-08)
 
@@ -153,6 +158,85 @@ search code at all, so the work cannot physically go there. Stage 1/2 code and t
 `chunk-06-gumbel`; this document and `TRAINING_STRATEGY.md` are authored on `round-d`. The
 measurement is unaffected either way: `phase1_d/final.pt` loads on both branches, because
 `_resolve_field_types` drops config keys the branch does not know (`phase1_mate2_mix` here).
+
+## Outcome, 2026-08-09 — both stages run, gate 0.940, **STILL BLOCKED**
+
+Both pre-registered interventions were executed in order. The gate is **0.940** against a
+threshold of 0.95. Per the pre-registered `< 0.95` rule: **stop, record, hand the gate-number
+conversation back to Tom.** Nothing was promoted, merged or tagged. `runs/phase1_anchor.pt`
+still points at `phase1_c/final.pt`, and the threshold was not touched.
+
+| Stage | mate-in-2 @128 sims | Seed spread |
+|---|---|---|
+| round `c` anchor, self-play profile | 0.770 | — |
+| round `d`, self-play profile | 0.890 | 0.875–0.900 (5 seeds) |
+| **stage 1** — eval profile, paper constants | **0.940** | **0.000** (exact across seeds) |
+| **stage 2** — eval profile, tuned constants | **0.940** | **0.000** |
+
+### Stage 1 landed inside its pre-registered window
+
+Projection was **0.93 ± 0.02**; the measurement was **0.940**, at the top edge. The
+stop-and-report rule did not fire, so the three-factor decomposition was sound and stage 2
+proceeded as authorised rather than as a reaction to a surprise.
+
+The seed spread collapsing to exactly zero is worth as much as the point gain. Both seeds
+agree on the score *and* on which twelve positions failed. The ±2.5-point gate noted on
+2026-08-08 as "worth knowing about when the threshold is 0.95" is gone, and chunk 10's ladder
+now has the deterministic acting it needs to resolve Elo.
+
+### Stage 2 bought 1.2 points of tuning-suite gain and transferred none of it
+
+Sweep on `runs/data/mate2_tune_500` (disjoint, verified), 18 configs, 128 sims, full table in
+`PROGRESS.md` on `chunk-06-gumbel`. Range 90.6–93.4%; paper defaults 92.2%; selected
+`m=32, c_visit=100, c_scale=0.5` at 93.4% — a unique maximum, so the tie-break toward defaults
+never came into play.
+
+Single-shot gate with the chosen config: **188/200 = 0.940. Identical to the untuned profile,
+on a different set of twelve failures.**
+
+That is the firewall earning its keep, and it is the most transferable thing this session
+produced. The binomial standard error at n=500, p≈0.93 is ±1.14 points; the whole grid spans
+~2.5 SE. Selecting the maximum of 18 such configs is mostly selecting noise, and the honest
+out-of-sample number says so. **Had the sweep been run on the gate suite, 93.4% would have
+gone into this document as a tuning win.**
+
+### The decomposition now closes exactly, and the residual has one name
+
+`scripts/diagnose_mate2.py`, gate suite, eval profile:
+
+| Factor | m=16 (defaults) | m=32 (selected) |
+|---|---|---|
+| prior coverage @ top-m | 0.990 | 0.995 |
+| solved given considered | 0.949 | 0.945 |
+| **product** | **0.940** | **0.940** |
+| measured gate | 0.940 | 0.940 |
+
+Under noise the chain read `0.990 × 0.925 × 0.941`. The middle factor is now **1.000 by
+construction**. Prior coverage is saturated (top-1 0.660, top-8 0.975, top-16 0.990, top-32
+0.995; median forcing-move rank 0). **The entire residual is conversion**, and `m` trades
+against it almost exactly — +0.005 coverage for −0.004 conversion, product unchanged to three
+decimal places. Twelve failures decompose as **2 never considered + 10 considered and not
+converted**. Clearing 0.95 at coverage 0.990 requires conversion ≥ 0.960, up from 0.949.
+
+### What is now excluded, and what the conversation is actually about
+
+Four candidate explanations have been tested and three are closed:
+
+1. ~~the prior can't rank forcing moves~~ — round `d`: coverage 0.83 → 0.990;
+2. ~~exploration noise is eating the considered set~~ — stage 1: that term is now 1.000;
+3. ~~the σ constants and `m` are mistuned~~ — stage 2: 18 configs, best transfers zero;
+4. **what the search does with 128 simulations once the right move is already in front of it** —
+   untested, and now the only thing left.
+
+Every remaining lever is inside chunk 6/7 search behaviour, not Phase 1 data and not the eval
+configuration. Ten positions where the winning move *is* simulated and still isn't chosen is a
+small, concrete, individually-inspectable set — that is a real diagnosis with a next step, not
+a plateau.
+
+**Three attempts were spent on 2026-08-08 (per `AGENTS.md`) and the gate was not weakened
+then or now.** The threshold conversation is Tom's; the options remain the three listed at the
+bottom of this document, now with the prior, the noise and the constants all eliminated as
+explanations.
 
 ## The failure
 

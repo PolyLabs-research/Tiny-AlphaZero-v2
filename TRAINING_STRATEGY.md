@@ -2,7 +2,7 @@
 
 This is the **campaign document**: which runs exist, why each was launched, the exact call that launched it, what it produced, and what gets launched next. `HOW_TO_TRAIN.md` explains *how the machinery works*; this file records *what we are doing with it and why*. One round = one entry here, written **before** the run starts (pre-registered expectations) and completed after it ends (results + decision).
 
-**Current status:** **Phase 1 REOPENED — round `d` complete: proxy gates PASS, operative gate 0.890; evaluation-profile investigation in flight.** The 2026-08-06 closure was reopened on 2026-08-08 via its own return condition 1: the chunk 6 mate-in-2 gate scored 77.0% < 95% with `runs/phase1_anchor.pt`. Decision (Tom): fix the model, the gate does not move — `BLOCKED-2026-08-08-mate2-gate.md`. Round `d` targets the measured binding constraint, prior rank coverage of mate-in-2 key moves.
+**Current status:** **Phase 1 REOPENED and NOT re-closed — round `d` proxy gates PASS, operative gate 0.940 vs 0.95 after both pre-registered resolution stages. The gate-number conversation is back with Tom.** The 2026-08-06 closure was reopened on 2026-08-08 via its own return condition 1: the chunk 6 mate-in-2 gate scored 77.0% < 95% with `runs/phase1_anchor.pt`. Decision (Tom): fix the model, the gate does not move — `BLOCKED-2026-08-08-mate2-gate.md`. Round `d` raised prior coverage 0.83 → 0.990 and moved the gate to 0.890; the evaluation profile took it to 0.940; a bounded tuning pass left it at 0.940. `runs/phase1_anchor.pt` is unchanged and the threshold has never moved. Full evidence chain in the BLOCKED doc; no round `e` is planned, because every remaining lever is search-side rather than data-side.
 
 ---
 
@@ -245,6 +245,13 @@ The round `d` entry above pre-registered: *"`mate2_top16_coverage` is its held-o
 2. **Selection given consideration is 0.941**, essentially unchanged from round `c`'s 0.954 — the search's ability to convert a considered forcing move into a chosen one was never the thing round `d` addressed.
 
 **Decision taken:** the permitted escalation (`phase1_epochs: 3` *or* mixes 0.10/0.10) targets prior coverage, which is at 0.990 and saturated after one epoch. Spending it would buy at most ~0.5 points against a 6-point gap. Recorded as evidence in `BLOCKED-2026-08-08-mate2-gate.md` rather than spent. **Phase 1 is NOT re-closed; `runs/phase1_anchor.pt` is unchanged.**
+
+**Follow-up, 2026-08-09 (no new training run — this is not a round).** Tom's resolution path was pre-registered in `BLOCKED-2026-08-08` before any measurement and then executed in full: an evaluation profile (deterministic root acting, `root_noise=false`) took the gate 0.890 → **0.940** with the seed spread collapsing from ±2.5 points to exactly zero — inside the pre-registered 0.93 ± 0.02 projection; then one bounded sweep of the eval-scoped σ constants and `m` on a disjoint 500-position tuning suite selected `m=32, c_visit=100, c_scale=0.5` (93.4% there, vs 92.2% for the paper defaults) and the single-shot gate came back at **0.940 — the same score as untuned, on a different set of twelve failures.**
+
+Two things this adds to the campaign record, both of which outlive this gate:
+
+1. **The firewall paid for itself the first time it was used.** Binomial SE at n=500, p≈0.93 is ±1.14 points and the 18-config grid spans ~2.5 SE, so its maximum is mostly noise — and the out-of-sample gate said so. Run on the gate suite, 93.4% would have been written up as a tuning win. Rule 4's "eval sets are frozen" now has a sibling worth stating: *a set you select a configuration against is spent, whether or not you trained on it.*
+2. **The gate is not a data problem, so there is no round `e` to plan.** Decomposed on the suite, `0.990 coverage × 0.949 conversion = 0.940` exactly. Prior coverage is saturated, the noise term is 1.000 by construction, and raising `m` trades coverage against conversion to a wash. The residual is ten positions where the winning move is simulated and still not chosen — a chunk 6/7 search property. Phase 1 anchor training has no lever left that points at it.
 
 ---
 
