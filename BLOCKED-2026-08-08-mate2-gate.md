@@ -70,8 +70,11 @@ available to promote if the gate conversation resolves that way.
 and that was worth fixing — the prior is now nearly perfect on this task. What remains is
 search-side, and the levers are chunk 6 configuration (`gumbel_m`, the Gumbel noise scale,
 the σ formulation), not Phase 1 data. That is a different conversation from the one this
-document opened, and it belongs to Tom. At that point supervised anchoring is
-demonstrated insufficient at this scale and the gate conversation returns to Tom.
+document opened, and it belongs to Tom.
+
+Supervised anchoring is now demonstrated *sufficient* for what it was aimed at — prior
+coverage 0.83 → 0.990 — and *insufficient* to clear this gate alone, which is a sharper
+result than "it didn't work" and the reason the escalation was recorded rather than spent.
 
 **This fires return condition 1 of `BLOCKED-2026-08-06-phase1-gates.md`**, verbatim:
 *"Chunk 5/6 search gates fail: mate-in-1 < 100% @16 sims (stub), or **mate-in-2 < 95% @128
