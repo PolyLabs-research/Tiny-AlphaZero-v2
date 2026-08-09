@@ -172,9 +172,7 @@ def main(argv: list[str] | None = None) -> int:
     pool = None
     if args.workers > 1:
         ctx = mp.get_context("spawn")  # ROCm contexts do not survive fork
-        pool = ctx.Pool(
-            args.workers, initializer=_init_worker, initargs=(str(args.ckpt), None)
-        )
+        pool = ctx.Pool(args.workers, initializer=_init_worker, initargs=(str(args.ckpt), None))
     else:
         _init_worker(str(args.ckpt), None)
 
@@ -188,10 +186,7 @@ def main(argv: list[str] | None = None) -> int:
                 positions, args.sims, dict(DEFAULTS), mate_in, pool, args.workers
             )
             projected = secs * len(grid) / 3600.0
-            print(
-                f"  timing slice: default config {secs:.1f}s "
-                f"→ full grid ≈ {projected:.2f} h"
-            )
+            print(f"  timing slice: default config {secs:.1f}s → full grid ≈ {projected:.2f} h")
             if projected > 4.0:
                 print(
                     "  ABORT: projected past the 4 h budget. Re-run with "

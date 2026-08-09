@@ -61,7 +61,9 @@ def test_resign_needs_eight_of_the_SAME_side_s_moves() -> None:
     # 8 white moves below threshold, interleaved with healthy black moves.
     for i in range(16):
         white = i % 2 == 0
-        trace.positions.append(_pos(i, -0.95 if white else 0.5, chess.WHITE if white else chess.BLACK))
+        trace.positions.append(
+            _pos(i, -0.95 if white else 0.5, chess.WHITE if white else chess.BLACK)
+        )
         if tr(trace) == RESIGN_RESULT and fired_at is None:
             fired_at = i
     assert fired_at == 14, f"fired at ply {fired_at}; expected the 8th white move"

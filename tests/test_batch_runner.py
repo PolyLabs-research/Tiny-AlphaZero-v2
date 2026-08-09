@@ -127,12 +127,12 @@ def test_gate_equivalence_with_synchronous_search(
 
     assert sims_run == sync.sims_run == sims
     assert list(tree.N[sl]) == list(sync.visits), f"{name}: visit counts diverged"
-    assert list(tree.terminal[sl]) == list(
-        _sync_tree_flags(epd, cfg, sims, "terminal")
-    ), f"{name}: terminal flags diverged"
-    assert list(tree.proven[sl]) == list(
-        _sync_tree_flags(epd, cfg, sims, "proven")
-    ), f"{name}: solver proven flags diverged"
+    assert list(tree.terminal[sl]) == list(_sync_tree_flags(epd, cfg, sims, "terminal")), (
+        f"{name}: terminal flags diverged"
+    )
+    assert list(tree.proven[sl]) == list(_sync_tree_flags(epd, cfg, sims, "proven")), (
+        f"{name}: solver proven flags diverged"
+    )
 
 
 def test_regression_phase_remainder_goes_to_the_best_survivor() -> None:
@@ -362,8 +362,10 @@ def test_eval_profile_batched_is_seed_independent() -> None:
         runner = BatchRunner(stub_batch, cfg, max_plies=3)
         list(runner.play_games(2, seeds=[seed, seed + 1], num_sims=24))
         trees.append(
-            {k: tree.N[tree.edge_slice(root)].tolist()
-             for k, (tree, root, _) in runner.debug_trees.items()}
+            {
+                k: tree.N[tree.edge_slice(root)].tolist()
+                for k, (tree, root, _) in runner.debug_trees.items()
+            }
         )
     assert trees[0] == trees[1], "batched eval profile still depends on the seed"
 
@@ -405,9 +407,7 @@ def test_trace_tokens_carry_the_repetition_count(monkeypatch: pytest.MonkeyPatch
     seen[board.epd()] = 1  # the root has been reached once before
 
     traces = list(
-        runner.play_games(
-            1, seeds=[3], num_sims=8, boards=[board], repetitions_fn=repetitions_fn
-        )
+        runner.play_games(1, seeds=[3], num_sims=8, boards=[board], repetitions_fn=repetitions_fn)
     )
     first = traces[0].positions[0]
     rep_token = int(first.tokens[-1])
@@ -466,9 +466,9 @@ def test_claim_draw_ends_the_game_at_the_actor() -> None:
     if t.result == "draw_claim":
         gs = runner._games_debug[0]
         occurrences = gs.history[gs.board._transposition_key()] + 1
-        assert (
-            gs.board.halfmove_clock >= FIFTY_MOVE_PLIES or occurrences >= THREEFOLD_COUNT
-        ), "draw_claim must be justified by the same rule the search uses"
+        assert gs.board.halfmove_clock >= FIFTY_MOVE_PLIES or occurrences >= THREEFOLD_COUNT, (
+            "draw_claim must be justified by the same rule the search uses"
+        )
 
 
 def test_batched_runner_resolves_eval_overrides() -> None:

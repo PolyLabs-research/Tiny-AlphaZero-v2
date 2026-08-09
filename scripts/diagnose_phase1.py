@@ -11,6 +11,7 @@ Usage:
       --ckpt runs/phase1_anchor.pt --ckpt2 runs/phase1_c/epoch_04.pt \
       --eval-rand runs/data/eval_rand --eval-mate1 runs/data/eval_mate1_1k
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,8 +30,9 @@ def load_net(path, device):
     ck = torch.load(path, map_location=device, weights_only=False)
     cfg = ck["config"]["model"] if isinstance(ck["config"], dict) else ck["config"].model
     from tinyalphazero.config import load_config
+
     base = load_config()
-    for k, v in (cfg.items() if isinstance(cfg, dict) else vars(cfg).items()):
+    for k, v in cfg.items() if isinstance(cfg, dict) else vars(cfg).items():
         if hasattr(base.model, k):
             setattr(base.model, k, v)
     net = ChessNet(base.model).to(device)
@@ -43,7 +45,7 @@ def load_net(path, device):
 def forward_all(net, tokens, device, bs=256):
     outs = []
     for i in range(0, len(tokens), bs):
-        o = net(tokens[i:i + bs].to(device))
+        o = net(tokens[i : i + bs].to(device))
         outs.append(o.policy_ft.float().cpu())
     return torch.cat(outs)
 
@@ -72,8 +74,10 @@ def illegal_argmax_report(name, ds, net, device):
     pol = forward_all(net, tokens, device).reshape(len(ds), 4096)
     top1 = pol.argmax(1)
     illegal_idx = (~mask.gather(1, top1[:, None]).squeeze(1)).nonzero().squeeze(1).tolist()
-    print(f"\n[{name}] illegal unmasked argmax: {len(illegal_idx)}/{len(ds)} "
-          f"({len(illegal_idx)/len(ds):.3%})")
+    print(
+        f"\n[{name}] illegal unmasked argmax: {len(illegal_idx)}/{len(ds)} "
+        f"({len(illegal_idx) / len(ds):.3%})"
+    )
     cats = Counter()
     in_check = 0
     for i in illegal_idx:
@@ -83,7 +87,7 @@ def illegal_argmax_report(name, ds, net, device):
         if board.is_check():
             in_check += 1
     for k, v in cats.most_common():
-        print(f"    {k:38} {v:4}  ({v/max(len(illegal_idx),1):.1%})")
+        print(f"    {k:38} {v:4}  ({v / max(len(illegal_idx), 1):.1%})")
     if illegal_idx:
         print(f"    (position was in check for {in_check}/{len(illegal_idx)} failures)")
     return set(illegal_idx)
@@ -93,7 +97,9 @@ def illegal_argmax_report(name, ds, net, device):
 def mate_topk(ds, net, device, ks=(1, 3, 8, 16)):
     tokens = torch.stack([ds[i]["tokens"] for i in range(len(ds))])
     legals = torch.stack([ds[i]["legals"] for i in range(len(ds))])
-    target = torch.tensor([int(ds[i]["from_sq"]) * 64 + int(ds[i]["to_sq"]) for i in range(len(ds))])
+    target = torch.tensor(
+        [int(ds[i]["from_sq"]) * 64 + int(ds[i]["to_sq"]) for i in range(len(ds))]
+    )
     mask = unpack_legal_mask(legals).reshape(len(ds), 4096)
     pol = forward_all(net, tokens, device).reshape(len(ds), 4096)
     pol = pol.masked_fill(~mask, float("-inf"))
@@ -125,8 +131,10 @@ def main():
         fail_e4 = illegal_argmax_report(f"{args.ckpt2}", rand, net2, device)
         inter = len(fail_final & fail_e4)
         uni = len(fail_final | fail_e4)
-        print(f"\n[failure-set overlap] |final ∩ e4|={inter}  |union|={uni}  "
-              f"Jaccard={inter/max(uni,1):.2f}  (high overlap ⇒ persistent hard class, not noise)")
+        print(
+            f"\n[failure-set overlap] |final ∩ e4|={inter}  |union|={uni}  "
+            f"Jaccard={inter / max(uni, 1):.2f}  (high overlap ⇒ persistent hard class, not noise)"
+        )
 
 
 if __name__ == "__main__":

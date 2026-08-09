@@ -189,9 +189,7 @@ def form_considered_set(
 
 def halve_survivors(survivors: list[int], scores: np.ndarray) -> list[int]:
     """Keep the better half by ``scores``, rounding up — the halving step itself."""
-    return sorted(survivors, key=lambda a: -scores[a])[
-        : max(1, (len(survivors) + 1) // 2)
-    ]
+    return sorted(survivors, key=lambda a: -scores[a])[: max(1, (len(survivors) + 1) // 2)]
 
 
 def phase_visit_queue(budget: int, n_survivors: int) -> list[int]:

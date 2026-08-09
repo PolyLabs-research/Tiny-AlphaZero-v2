@@ -582,7 +582,9 @@ def _launch(config: Path, out: Path, iterations: int = 3) -> subprocess.Popen:
     )
 
 
-def _kill_at_stage(proc: subprocess.Popen, stage: str, iteration: int, timeout: float = 300) -> None:
+def _kill_at_stage(
+    proc: subprocess.Popen, stage: str, iteration: int, timeout: float = 300
+) -> None:
     """SIGKILL the process the moment it announces it has entered ``stage``.
 
     SIGKILL, not SIGTERM: the point is the case with no cleanup, no atexit, no

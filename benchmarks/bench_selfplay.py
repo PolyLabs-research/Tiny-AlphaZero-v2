@@ -34,10 +34,18 @@ def _git_sha() -> str:
     try:
         return (
             subprocess.check_output(
-                ["git", "-C", str(Path(__file__).resolve().parents[1]),
-                 "rev-parse", "--short", "HEAD"],
+                [
+                    "git",
+                    "-C",
+                    str(Path(__file__).resolve().parents[1]),
+                    "rev-parse",
+                    "--short",
+                    "HEAD",
+                ],
                 stderr=subprocess.DEVNULL,
-            ).decode().strip()
+            )
+            .decode()
+            .strip()
         )
     except (OSError, subprocess.SubprocessError):
         return "no-git"
@@ -76,9 +84,7 @@ def main() -> int:
 
     runner = BatchRunner(evaluate, cfg, device=args.device, max_plies=args.max_plies)
     t0 = time.perf_counter()
-    traces = list(
-        runner.play_games(args.games, seeds=list(range(args.games)), num_sims=args.sims)
-    )
+    traces = list(runner.play_games(args.games, seeds=list(range(args.games)), num_sims=args.sims))
     elapsed = time.perf_counter() - t0
 
     s = runner.stats

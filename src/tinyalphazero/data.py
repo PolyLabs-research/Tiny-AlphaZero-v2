@@ -42,18 +42,18 @@ _DTYPE_MAP = {
 
 @dataclass
 class PositionRecord:
-    tokens: np.ndarray   # (72,) int8
+    tokens: np.ndarray  # (72,) int8
     from_sq: int
     to_sq: int
     promo: int
-    legals: np.ndarray   # (512,) uint8
-    outcome: int         # +1, 0, -1 from side-to-move perspective
+    legals: np.ndarray  # (512,) uint8
+    outcome: int  # +1, 0, -1 from side-to-move perspective
     # Multi-hot bitset over from*64+to of *every* move that satisfies the anchor's
     # objective (mate_in_2: every first move forcing mate). None for modes with a
     # single correct answer. from_sq/to_sq above stay the canonical CE target;
     # this exists because a coverage metric that credits only one of several
     # equally-winning moves measures the dataset's arbitrary choice, not the model.
-    key_moves: np.ndarray | None = None   # (512,) uint8 or None
+    key_moves: np.ndarray | None = None  # (512,) uint8 or None
 
 
 @dataclass
@@ -346,11 +346,11 @@ def write_dataset(
     if n == 0:
         raise ValueError("write_dataset: no records to write")
 
-    boards_arr = np.stack(boards_list).astype(np.int8)         # (N, 72)
-    moves_arr = np.array(moves_list, dtype=np.int16)           # (N, 2)
-    promos_arr = np.array(promos_list, dtype=np.int8)          # (N,)
-    legals_arr = np.stack(legals_list).astype(np.uint8)        # (N, 512)
-    outcomes_arr = np.array(outcomes_list, dtype=np.int8)      # (N,)
+    boards_arr = np.stack(boards_list).astype(np.int8)  # (N, 72)
+    moves_arr = np.array(moves_list, dtype=np.int16)  # (N, 2)
+    promos_arr = np.array(promos_list, dtype=np.int8)  # (N,)
+    legals_arr = np.stack(legals_list).astype(np.uint8)  # (N, 512)
+    outcomes_arr = np.array(outcomes_list, dtype=np.int8)  # (N,)
 
     _write_memmap(out_dir / "boards.dat", boards_arr)
     _write_memmap(out_dir / "moves.dat", moves_arr)
@@ -364,9 +364,7 @@ def write_dataset(
     if has_key_moves:
         _write_memmap(out_dir / "keymoves.dat", np.stack(keymoves_list).astype(np.uint8))
     elif keymoves_list:
-        raise ValueError(
-            f"key_moves present on {len(keymoves_list)} of {n} records -- all or none"
-        )
+        raise ValueError(f"key_moves present on {len(keymoves_list)} of {n} records -- all or none")
 
     # Record the exact invocation: runs/data/mate1 was once generated with --games
     # instead of --mate1, and nothing downstream could tell.
@@ -437,9 +435,7 @@ class Phase1Dataset(Dataset):
         self._moves = np.memmap(data_dir / "moves.dat", dtype=np.int16, mode="r", shape=(n, 2))
         self._promos = np.memmap(data_dir / "promos.dat", dtype=np.int8, mode="r", shape=(n,))
         self._legals = np.memmap(data_dir / "legals.dat", dtype=np.uint8, mode="r", shape=(n, 512))
-        self._outcomes = np.memmap(
-            data_dir / "outcomes.dat", dtype=np.int8, mode="r", shape=(n,)
-        )
+        self._outcomes = np.memmap(data_dir / "outcomes.dat", dtype=np.int8, mode="r", shape=(n,))
         # Optional: present only for modes with several equally-correct answers
         # (mate_in_2). Absent for every dataset generated before 2026-08-08, so
         # this must stay optional or every existing data dir stops loading.
@@ -484,8 +480,12 @@ def _board_outcome_white(board: chess.Board) -> int:
 
 def _git_sha() -> str:
     try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
-        ).decode().strip()
+        return (
+            subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
+            )
+            .decode()
+            .strip()
+        )
     except Exception:  # noqa: BLE001
         return "unknown"

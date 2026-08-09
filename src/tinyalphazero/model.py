@@ -18,9 +18,9 @@ from tinyalphazero.encoding import VOCAB_SIZE
 
 @dataclass
 class ModelOutput:
-    policy_ft: torch.Tensor       # (B, 64, 64) raw logits, unmasked
-    promo: torch.Tensor           # (B, 64, 64, 4) logits
-    value_wdl: torch.Tensor       # (B, 3) logits — order [loss, draw, win] from side to move
+    policy_ft: torch.Tensor  # (B, 64, 64) raw logits, unmasked
+    promo: torch.Tensor  # (B, 64, 64, 4) logits
+    value_wdl: torch.Tensor  # (B, 3) logits — order [loss, draw, win] from side to move
     legality: torch.Tensor | None  # (B, 64, 64) logits; None when cfg.aux_legality=False
 
 
@@ -81,8 +81,8 @@ class ChessNet(nn.Module):
 
         # Static index buffers for pos table construction
         self.register_buffer("_sq_ranks", torch.arange(64) // 8)  # (64,) int
-        self.register_buffer("_sq_files", torch.arange(64) % 8)   # (64,) int
-        self.register_buffer("_flag_ids", torch.arange(8))        # (8,)  int
+        self.register_buffer("_sq_files", torch.arange(64) % 8)  # (64,) int
+        self.register_buffer("_flag_ids", torch.arange(8))  # (8,)  int
 
         # ---- Transformer trunk (pre-norm, GELU, no causal mask) ----
         encoder_layer = nn.TransformerEncoderLayer(
@@ -153,12 +153,12 @@ class ChessNet(nn.Module):
         tokens: (B, 72) LongTensor
         returns: ModelOutput with all heads computed
         """
-        x = self._trunk(tokens)          # (B, 72, d)
-        h_sq = x[:, :64, :]             # (B, 64, d) — square features only
+        x = self._trunk(tokens)  # (B, 72, d)
+        h_sq = x[:, :64, :]  # (B, 64, d) — square features only
 
         policy_ft = self._policy(h_sq)  # (B, 64, 64)
-        promo = self._promo_dense(h_sq) # (B, 64, 64, 4)
-        value_wdl = self._value(x)      # (B, 3)
+        promo = self._promo_dense(h_sq)  # (B, 64, 64, 4)
+        value_wdl = self._value(x)  # (B, 3)
 
         legality: torch.Tensor | None = None
         if hasattr(self, "W_from_aux"):
@@ -199,7 +199,7 @@ class ChessNet(nn.Module):
         """
         idx = torch.arange(h_sq.size(0), device=h_sq.device)
         h_from = h_sq[idx, from_sq]  # (B, d)
-        h_to = h_sq[idx, to_sq]      # (B, d)
+        h_to = h_sq[idx, to_sq]  # (B, d)
         return self.promo_from(h_from) + self.promo_to(h_to)
 
     def param_count(self) -> dict[str, int]:
@@ -223,19 +223,19 @@ class ChessNet(nn.Module):
     def _pos_table(self) -> torch.Tensor:
         """Build (72, d_model) positional table from current embedding parameters."""
         sq_pos = self.rank_emb(self._sq_ranks) + self.file_emb(self._sq_files)  # (64, d)
-        flag_pos = self.flag_emb(self._flag_ids)                                  # (8,  d)
-        return torch.cat([sq_pos, flag_pos], dim=0)                               # (72, d)
+        flag_pos = self.flag_emb(self._flag_ids)  # (8,  d)
+        return torch.cat([sq_pos, flag_pos], dim=0)  # (72, d)
 
     def _trunk(self, tokens: torch.Tensor) -> torch.Tensor:
         """Token embed + positional table + transformer. Returns (B, 72, d)."""
-        pos = self._pos_table()                          # (72, d)
-        x = self.token_emb(tokens) + pos.unsqueeze(0)   # (B, 72, d)
-        return self.transformer(x)                        # (B, 72, d)
+        pos = self._pos_table()  # (72, d)
+        x = self.token_emb(tokens) + pos.unsqueeze(0)  # (B, 72, d)
+        return self.transformer(x)  # (B, 72, d)
 
     def _policy(self, h_sq: torch.Tensor) -> torch.Tensor:
         """Bilinear from→to policy logits. Returns (B, 64, 64)."""
         u = self.W_from(h_sq)  # (B, 64, d_p)
-        v = self.W_to(h_sq)    # (B, 64, d_p)
+        v = self.W_to(h_sq)  # (B, 64, d_p)
         return torch.bmm(u, v.transpose(1, 2)) / math.sqrt(self.cfg.d_policy)
 
     def _promo_dense(self, h_sq: torch.Tensor) -> torch.Tensor:
@@ -249,9 +249,9 @@ class ChessNet(nn.Module):
     def _value(self, x: torch.Tensor) -> torch.Tensor:
         """Attention-pool all 72 tokens via a learned query, then MLP. Returns (B, 3)."""
         scores = (x @ self.value_query) / math.sqrt(self.cfg.d_model)  # (B, 72)
-        weights = torch.softmax(scores, dim=-1)                          # (B, 72)
-        pooled = (weights.unsqueeze(-1) * x).sum(dim=1)                 # (B, d)
-        return self.value_mlp(pooled)                                    # (B, 3)
+        weights = torch.softmax(scores, dim=-1)  # (B, 72)
+        pooled = (weights.unsqueeze(-1) * x).sum(dim=1)  # (B, d)
+        return self.value_mlp(pooled)  # (B, 3)
 
     def _legality(self, h_sq: torch.Tensor) -> torch.Tensor:
         """Auxiliary legality head (Phase 1 only). Returns (B, 64, 64)."""

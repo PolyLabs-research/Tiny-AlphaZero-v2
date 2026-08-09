@@ -91,8 +91,19 @@ class Tree:
         old = len(self.child)
         self.child = np.resize(self.child, new_cap)
         self.child[old:] = -1  # np.resize tiles old contents; -1 means unexpanded
-        for name in ("move_ft", "promo", "prior", "N", "W", "vloss", "terminal",
-                     "terminal_value", "proven", "proven_value", "proven_depth"):
+        for name in (
+            "move_ft",
+            "promo",
+            "prior",
+            "N",
+            "W",
+            "vloss",
+            "terminal",
+            "terminal_value",
+            "proven",
+            "proven_value",
+            "proven_depth",
+        ):
             arr = np.resize(getattr(self, name), new_cap)
             arr[old:] = 0
             setattr(self, name, arr)

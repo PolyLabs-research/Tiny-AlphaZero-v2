@@ -310,9 +310,7 @@ class ReplayBuffer:
             "from_sq": torch.from_numpy(moves[:, 0]),
             "to_sq": torch.from_numpy(moves[:, 1]),
             "iteration": torch.from_numpy(self._arr["iteration"][idx].astype(np.int64)),
-            "mover_is_latest": torch.from_numpy(
-                self._arr["mover_latest"][idx].astype(np.int64)
-            ),
+            "mover_is_latest": torch.from_numpy(self._arr["mover_latest"][idx].astype(np.int64)),
         }
 
     def densify_one(self, i: int) -> np.ndarray:

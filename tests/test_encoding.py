@@ -333,7 +333,7 @@ def test_legal_mask_packed_agreement_1k_positions() -> None:
                 bit = bool((packed[idx >> 3] >> (idx & 7)) & 1)
                 assert bit == mask[i, j], (
                     f"Mismatch at ({i},{j}) in position {board.fen()}: "
-                    f"mask={mask[i,j]}, packed bit={bit}"
+                    f"mask={mask[i, j]}, packed bit={bit}"
                 )
 
 

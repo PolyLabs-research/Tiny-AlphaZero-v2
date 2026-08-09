@@ -42,7 +42,14 @@ def _git_sha() -> str:
     try:
         return (
             subprocess.check_output(
-                ["git", "-C", str(Path(__file__).resolve().parents[1]), "rev-parse", "--short", "HEAD"],
+                [
+                    "git",
+                    "-C",
+                    str(Path(__file__).resolve().parents[1]),
+                    "rev-parse",
+                    "--short",
+                    "HEAD",
+                ],
                 stderr=subprocess.DEVNULL,
             )
             .decode()
@@ -68,9 +75,7 @@ def time_batch(
     python-chess instead of the network.
     """
     rng = np.random.default_rng(0)
-    tokens = torch.from_numpy(
-        rng.integers(0, 12, size=(batch, seq_len), dtype=np.int64)
-    ).to(device)
+    tokens = torch.from_numpy(rng.integers(0, 12, size=(batch, seq_len), dtype=np.int64)).to(device)
 
     samples: list[float] = []
     with torch.inference_mode(), torch.autocast(device_type=device.type, dtype=torch.bfloat16):

@@ -182,8 +182,12 @@ def test_value_scalar_bounds() -> None:
 
 def test_value_scalar_extreme_logits() -> None:
     """With very high win logit, value_scalar should be close to +1."""
-    logits = torch.tensor([[100.0, 0.0, 0.0],   # loss wins → scalar ≈ -1
-                            [0.0, 0.0, 100.0]])   # win wins → scalar ≈ +1
+    logits = torch.tensor(
+        [
+            [100.0, 0.0, 0.0],  # loss wins → scalar ≈ -1
+            [0.0, 0.0, 100.0],
+        ]
+    )  # win wins → scalar ≈ +1
     v = value_scalar(logits)
     assert v[0].item() < -0.99
     assert v[1].item() > 0.99
@@ -213,7 +217,11 @@ def test_gradient_flows_to_all_parameters() -> None:
     policy_loss = torch.nn.functional.cross_entropy(logits_flat, target)
     promo_loss = out.promo.mean()
     value_loss = out.value_wdl.pow(2).mean()
-    legality_loss = (out.legality.sigmoid() - mask.float()).pow(2).mean() if out.legality is not None else torch.tensor(0.0)
+    legality_loss = (
+        (out.legality.sigmoid() - mask.float()).pow(2).mean()
+        if out.legality is not None
+        else torch.tensor(0.0)
+    )
     loss = policy_loss + promo_loss + value_loss + legality_loss
     loss.backward()
 

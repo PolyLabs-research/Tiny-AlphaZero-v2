@@ -240,9 +240,7 @@ def test_train_step_loss_decreases(masked: bool) -> None:
     history: list[dict[str, float]] = []
     for _step in range(200):
         history.append(
-            train_step(
-                batch, net, optimizer, torch.device("cpu"), cfg_train, masked_policy=masked
-            )
+            train_step(batch, net, optimizer, torch.device("cpu"), cfg_train, masked_policy=masked)
         )
 
     def window(key: str, sl: slice) -> float:
@@ -412,9 +410,7 @@ def test_git_sha_returns_short_sha(monkeypatch: pytest.MonkeyPatch) -> None:
     ],
     ids=["git-missing", "not-a-repo"],
 )
-def test_git_sha_sentinel_when_unavailable(
-    monkeypatch: pytest.MonkeyPatch, exc: Exception
-) -> None:
+def test_git_sha_sentinel_when_unavailable(monkeypatch: pytest.MonkeyPatch, exc: Exception) -> None:
     """Absence must be an explicit sentinel — never an exception, never silence."""
 
     def _raise(*_a: object, **_k: object) -> bytes:

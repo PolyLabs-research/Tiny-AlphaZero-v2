@@ -62,9 +62,7 @@ def drive_gumbel(search: Search, board: chess.Board, num_sims: int):
     if n_actions == 0:
         return None
 
-    g, logits, considered = gumbel.form_considered_set(
-        tree, root, search.cfg, search.rng, num_sims
-    )
+    g, logits, considered = gumbel.form_considered_set(tree, root, search.cfg, search.rng, num_sims)
     path_reps: Counter = Counter()
     path_reps[board._transposition_key()] += 1
 
@@ -74,7 +72,11 @@ def drive_gumbel(search: Search, board: chess.Board, num_sims: int):
             continue
         for local in gumbel.phase_visit_queue(budget, len(survivors)):
             search._simulate(
-                tree, root, board, path_reps, lambda _b: 0,
+                tree,
+                root,
+                board,
+                path_reps,
+                lambda _b: 0,
                 forced_edge=sl.start + int(survivors[local]),
             )
         if len(survivors) > 1:
@@ -107,8 +109,11 @@ def classify(tree, root, sl, considered, chosen, key_locals) -> tuple[str, dict]
 
     child = int(tree.child[e])
     if child < 0:
-        return "CAPABILITY", {**info, "replies_expanded": "0/?",
-                              "reason": "key move never expanded"}
+        return "CAPABILITY", {
+            **info,
+            "replies_expanded": "0/?",
+            "reason": "key move never expanded",
+        }
 
     csl = tree.edge_slice(child)
     has_exact, _ = tree.exact_value(csl)
@@ -147,10 +152,13 @@ def main(argv: list[str] | None = None) -> int:
         tree, root, sl, considered, _survivors, chosen = out
 
         moves = [
-            chess.Move(int(tree.move_ft[sl.start + i]) // 64,
-                       int(tree.move_ft[sl.start + i]) % 64,
-                       promotion=[None, chess.KNIGHT, chess.BISHOP, chess.ROOK,
-                                  chess.QUEEN][int(tree.promo[sl.start + i])])
+            chess.Move(
+                int(tree.move_ft[sl.start + i]) // 64,
+                int(tree.move_ft[sl.start + i]) % 64,
+                promotion=[None, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN][
+                    int(tree.promo[sl.start + i])
+                ],
+            )
             for i in range(int(tree.num_edges[root]))
         ]
         if args.validate:
@@ -169,6 +177,7 @@ def main(argv: list[str] | None = None) -> int:
             board.push(moves[best_key])
             try:
                 from tinyalphazero.encoding import encode_board
+
                 # Value head on the position AFTER the key move, opponent to
                 # move: the number self-play has to sharpen for this position to
                 # survive halving. Negated into our perspective.
@@ -176,16 +185,18 @@ def main(argv: list[str] | None = None) -> int:
             finally:
                 board.pop()
 
-        rows.append({
-            "id": ident,
-            "verdict": verdict,
-            "fen": board.fen(),
-            "n_key_moves": len(key_locals),
-            "value_head_on_key_child": (
-                None if key_child_value is None else round(key_child_value, 4)
-            ),
-            **info,
-        })
+        rows.append(
+            {
+                "id": ident,
+                "verdict": verdict,
+                "fen": board.fen(),
+                "n_key_moves": len(key_locals),
+                "value_head_on_key_child": (
+                    None if key_child_value is None else round(key_child_value, 4)
+                ),
+                **info,
+            }
+        )
 
     if args.validate:
         print(f"reproduction check: {mismatches} mismatch(es) vs Search.run\n")

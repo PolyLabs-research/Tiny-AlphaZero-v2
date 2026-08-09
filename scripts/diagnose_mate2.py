@@ -104,11 +104,15 @@ def main(argv: list[str] | None = None) -> int:
     cov = considered_hits / total
     conv = solved_given_considered / considered_hits if considered_hits else 0.0
     ranks_arr = np.array(ranks)
-    print(f"suite={args.suite.name} n={total} m={m} "
-          f"c_visit={active.c_visit:g} c_scale={active.c_scale:g} sims={args.sims}")
+    print(
+        f"suite={args.suite.name} n={total} m={m} "
+        f"c_visit={active.c_visit:g} c_scale={active.c_scale:g} sims={args.sims}"
+    )
     print(f"  prior coverage @top-{m:<3}        {cov:.3f}  ({considered_hits}/{total})")
-    print(f"  solved | considered            {conv:.3f}  "
-          f"({solved_given_considered}/{considered_hits})")
+    print(
+        f"  solved | considered            {conv:.3f}  "
+        f"({solved_given_considered}/{considered_hits})"
+    )
     print(f"  product                        {cov * conv:.3f}")
     print(f"  measured gate                  {solved / total:.3f}  ({solved}/{total})")
     for k in (1, 8, 16, 32):

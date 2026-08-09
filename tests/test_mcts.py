@@ -501,9 +501,7 @@ def test_repetition_token_matches_python_chess_at_every_expansion() -> None:
     ]:
         mismatches: list[tuple[int, int, str]] = []
 
-        def probe(
-            board: chess.Board, reps: int, _sink: list = mismatches
-        ) -> np.ndarray:
+        def probe(board: chess.Board, reps: int, _sink: list = mismatches) -> np.ndarray:
             truth = _repetitions_from_board(board)
             if min(reps, 2) != truth:
                 _sink.append((reps, truth, board.fen()))
@@ -658,9 +656,7 @@ def test_allocate_within_phase_sums_to_phase_budget(budget: int, k: int) -> None
 
 @pytest.mark.parametrize(("sims", "m"), [(48, 16), (128, 16), (32, 8)])
 @pytest.mark.parametrize("root_noise", [True, False], ids=["selfplay", "eval"])
-def test_gumbel_simulations_total_exactly_the_budget(
-    sims: int, m: int, root_noise: bool
-) -> None:
+def test_gumbel_simulations_total_exactly_the_budget(sims: int, m: int, root_noise: bool) -> None:
     """GATE: simulations == budget exactly, in **both** profiles.
 
     Chunk 5 ratified that terminal hits *consume* budget, so this is the
@@ -704,8 +700,12 @@ def test_evaluations_equal_budget_only_without_terminals() -> None:
 def test_gate_gumbel_mate_in_1_at_48_sims_stub() -> None:
     """GATE: Gumbel at 48 sims still solves mate-in-1 100% with the stub."""
     solved, total, failed = run_suite(
-        MATE_IN_1, sims=48, evaluate_fn=uniform_stub_evaluator,
-        cfg=_gumbel_cfg(), mate_in=1, rng=np.random.default_rng(0),
+        MATE_IN_1,
+        sims=48,
+        evaluate_fn=uniform_stub_evaluator,
+        cfg=_gumbel_cfg(),
+        mate_in=1,
+        rng=np.random.default_rng(0),
     )
     assert solved == total == 100, f"{solved}/{total}; failed {failed[:8]}"
 
@@ -759,9 +759,7 @@ def test_improved_policy_concentrates_on_a_proven_mate() -> None:
     search = Search(uniform_stub_evaluator, _gumbel_cfg(), np.random.default_rng(0))
     result = search.run(board, None, 48)
 
-    mating = [
-        i for i, mv in enumerate(result.moves()) if _delivers_mate(board, mv)
-    ]
+    mating = [i for i, mv in enumerate(result.moves()) if _delivers_mate(board, mv)]
     assert mating
     mass = float(result.improved_policy_probs[mating].sum())
     assert mass > 0.9, f"improved policy put only {mass:.3f} on the mate"
@@ -808,8 +806,12 @@ def test_eval_profile_suite_result_is_identical_across_seeds() -> None:
     """GATE (a), at the level the gate is actually read off: the suite runner."""
     runs = [
         run_suite(
-            MATE_IN_1, sims=48, evaluate_fn=uniform_stub_evaluator,
-            cfg=_eval_cfg(), mate_in=1, rng=np.random.default_rng(seed),
+            MATE_IN_1,
+            sims=48,
+            evaluate_fn=uniform_stub_evaluator,
+            cfg=_eval_cfg(),
+            mate_in=1,
+            rng=np.random.default_rng(seed),
         )
         for seed in (1, 2)
     ]
@@ -898,8 +900,12 @@ def test_gate_eval_profile_mate_in_1_at_48_sims_stub() -> None:
     solver would be interacting with the g ≡ 0 substitution.
     """
     solved, total, failed = run_suite(
-        MATE_IN_1, sims=48, evaluate_fn=uniform_stub_evaluator,
-        cfg=_eval_cfg(), mate_in=1, rng=np.random.default_rng(0),
+        MATE_IN_1,
+        sims=48,
+        evaluate_fn=uniform_stub_evaluator,
+        cfg=_eval_cfg(),
+        mate_in=1,
+        rng=np.random.default_rng(0),
     )
     assert solved == total == 100, f"{solved}/{total}; failed {failed[:8]}"
 
@@ -927,8 +933,7 @@ def test_gate_shorter_proven_mate_beats_a_longer_one() -> None:
         search = Search(uniform_stub_evaluator, _eval_cfg(), np.random.default_rng(0))
         result = search.run(board, None, 128)
         assert _forces_mate_in_2(board, result.best_move()), (
-            f"suite index {idx}: played {result.best_move()}, "
-            "which does not force mate in 2"
+            f"suite index {idx}: played {result.best_move()}, which does not force mate in 2"
         )
 
 
@@ -949,9 +954,7 @@ def test_proven_depth_is_odd_and_never_immediate() -> None:
     tree, root, _ = search.run_tree(board, None, 0)
     sl = tree.edge_slice(root)
     for _ in range(128):
-        search._simulate(
-            tree, root, board, Counter({board._transposition_key(): 1}), lambda _b: 0
-        )
+        search._simulate(tree, root, board, Counter({board._transposition_key(): 1}), lambda _b: 0)
     wins = [
         i
         for i in range(int(tree.num_edges[root]))
@@ -992,10 +995,12 @@ def test_promo_fixture_audit_covers_both_kinds() -> None:
     This asserts coverage of both kinds now exists, so a future change to the
     promotion branch cannot again pass by never being executed.
     """
-    with_promos = [f for f in (PROMO_FEN,) if any(
-        m.promotion for m in chess.Board(f).legal_moves)]
-    without = [f for f in (MIDGAME_FEN, TACTICAL_FEN) if not any(
-        m.promotion for m in chess.Board(f).legal_moves)]
+    with_promos = [f for f in (PROMO_FEN,) if any(m.promotion for m in chess.Board(f).legal_moves)]
+    without = [
+        f
+        for f in (MIDGAME_FEN, TACTICAL_FEN)
+        if not any(m.promotion for m in chess.Board(f).legal_moves)
+    ]
     assert with_promos, "no promotion fixture — the S4 branch is untested"
     assert without, "no promotion-free fixture — invariance is unasserted"
 
@@ -1044,10 +1049,13 @@ def test_promo_prior_from_head_redistributes_only_promotion_cells() -> None:
     sl = tree.edge_slice(root)
 
     moves = [
-        chess.Move(int(tree.move_ft[sl.start + i]) // 64,
-                   int(tree.move_ft[sl.start + i]) % 64,
-                   promotion=[None, chess.KNIGHT, chess.BISHOP, chess.ROOK,
-                              chess.QUEEN][int(tree.promo[sl.start + i])])
+        chess.Move(
+            int(tree.move_ft[sl.start + i]) // 64,
+            int(tree.move_ft[sl.start + i]) % 64,
+            promotion=[None, chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN][
+                int(tree.promo[sl.start + i])
+            ],
+        )
         for i in range(int(tree.num_edges[root]))
     ]
     priors = tree.prior[sl]
@@ -1079,8 +1087,12 @@ def test_puct_ablation_mode_still_runs_and_gates() -> None:
     cfg = MCTSConfig()
     cfg.root_mode = "puct"
     solved, total, _ = run_suite(
-        MATE_IN_1, sims=16, evaluate_fn=uniform_stub_evaluator,
-        cfg=cfg, mate_in=1, rng=np.random.default_rng(0),
+        MATE_IN_1,
+        sims=16,
+        evaluate_fn=uniform_stub_evaluator,
+        cfg=cfg,
+        mate_in=1,
+        rng=np.random.default_rng(0),
     )
     assert solved == total == 100, f"PUCT control regressed: {solved}/{total}"
 

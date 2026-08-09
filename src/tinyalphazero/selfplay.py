@@ -305,9 +305,7 @@ class SelfPlayStats:
         A network whose prior has collapsed onto one move cannot recover, because
         nothing outside its top-m is ever simulated.
         """
-        return (
-            float(np.mean(self.move1_prior_entropies)) if self.move1_prior_entropies else 0.0
-        )
+        return float(np.mean(self.move1_prior_entropies)) if self.move1_prior_entropies else 0.0
 
     def absorb(self, other: SelfPlayStats) -> None:
         """Fold another wave's stats into this one (spec §7 generates in waves).
@@ -468,9 +466,7 @@ def play_games(
 
         assignment = assignments[i] if assignments is not None else GameAssignment()
         if buffer is not None:
-            stats.pool_positions += _store(
-                buffer, trace, gs, iteration, tr.disabled, assignment
-            )
+            stats.pool_positions += _store(buffer, trace, gs, iteration, tr.disabled, assignment)
         traces.append(trace)
 
     stats.seconds = time.perf_counter() - t0
@@ -531,9 +527,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", default=None)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--iteration", type=int, default=0)
-    ap.add_argument(
-        "--capacity", type=int, default=None, help="Replay capacity (default: config)"
-    )
+    ap.add_argument("--capacity", type=int, default=None, help="Replay capacity (default: config)")
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)

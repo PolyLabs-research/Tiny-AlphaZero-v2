@@ -80,16 +80,12 @@ WIN_DEPTH_STEP = 1e3
 # distinction lives in their names rather than in a caller's arithmetic.
 
 
-def _total_occurrences(
-    board: chess.Board, path_reps: Counter, base_reps: RepetitionsFn
-) -> int:
+def _total_occurrences(board: chess.Board, path_reps: Counter, base_reps: RepetitionsFn) -> int:
     """Times this position has occurred, counting the present one."""
     return base_reps(board) + path_reps[board._transposition_key()]
 
 
-def _prior_occurrences(
-    board: chess.Board, path_reps: Counter, base_reps: RepetitionsFn
-) -> int:
+def _prior_occurrences(board: chess.Board, path_reps: Counter, base_reps: RepetitionsFn) -> int:
     """Times this position occurred *before* now — what ``encode_board`` wants."""
     return max(0, _total_occurrences(board, path_reps, base_reps) - 1)
 
@@ -141,9 +137,7 @@ class RootResult:
             raise ValueError("improved_policy is only produced in gumbel root mode")
         return [
             (int(ft), int(pr), float(p))
-            for ft, pr, p in zip(
-                self.move_ft, self.promo, self.improved_policy_probs, strict=True
-            )
+            for ft, pr, p in zip(self.move_ft, self.promo, self.improved_policy_probs, strict=True)
         ]
 
 
@@ -295,9 +289,7 @@ class Search:
         tokens = encode_board(board, _prior_occurrences(board, path_reps, base_reps))
         policy, promo_probs, value = self.evaluate_fn(tokens)
         self._evaluations += 1
-        return self._build_node(
-            tree, board, path_reps, base_reps, policy, promo_probs, value
-        )
+        return self._build_node(tree, board, path_reps, base_reps, policy, promo_probs, value)
 
     def expand_root_gen(
         self,
@@ -315,9 +307,7 @@ class Search:
         """
         tokens = self.leaf_tokens(board, path_reps, base_reps)
         policy, promo_probs, value = yield tokens
-        node, _ = self._build_node(
-            tree, board, path_reps, base_reps, policy, promo_probs, value
-        )
+        node, _ = self._build_node(tree, board, path_reps, base_reps, policy, promo_probs, value)
         return node
 
     def leaf_tokens(
@@ -469,9 +459,7 @@ class Search:
         self._last_tree, self._last_root = tree, root
         return self._root_result(tree, root, root_slice, sims_run)
 
-    def _root_result(
-        self, tree: Tree, root: int, root_slice: slice, sims_run: int
-    ) -> RootResult:
+    def _root_result(self, tree: Tree, root: int, root_slice: slice, sims_run: int) -> RootResult:
         return RootResult(
             move_ft=tree.move_ft[root_slice].copy(),
             promo=tree.promo[root_slice].copy(),
@@ -512,13 +500,9 @@ class Search:
         # Shared with BatchRunner (review S1): the noise draw or its g ≡ 0
         # substitute, top-m by g + logits, and force-include of proven wins all
         # live in one place so the two drivers cannot drift apart.
-        g, logits, considered = gumbel.form_considered_set(
-            tree, root, self.cfg, self.rng, num_sims
-        )
+        g, logits, considered = gumbel.form_considered_set(tree, root, self.cfg, self.rng, num_sims)
 
-        base_reps: RepetitionsFn = (
-            repetitions_fn if repetitions_fn is not None else (lambda _b: 0)
-        )
+        base_reps: RepetitionsFn = repetitions_fn if repetitions_fn is not None else (lambda _b: 0)
         path_reps: Counter = Counter()
         path_reps[board._transposition_key()] += 1
 
@@ -527,12 +511,14 @@ class Search:
         for budget in gumbel.halving_phase_budgets(num_sims, len(considered)):
             if budget <= 0 or not survivors:
                 continue
-            for local, visits in enumerate(
-                gumbel.allocate_within_phase(budget, len(survivors))
-            ):
+            for local, visits in enumerate(gumbel.allocate_within_phase(budget, len(survivors))):
                 for _ in range(visits):
                     self._simulate(
-                        tree, root, board, path_reps, base_reps,
+                        tree,
+                        root,
+                        board,
+                        path_reps,
+                        base_reps,
                         forced_edge=sl.start + int(survivors[local]),
                     )
                     sims_run += 1
@@ -544,9 +530,7 @@ class Search:
         result = self._root_result(tree, root, sl, sims_run)
         completed_q = self._root_completed_q(tree, root)
         max_n = int(tree.N[sl].max()) if n_actions else 0
-        result.improved_policy_probs = gumbel.improved_policy(
-            logits, completed_q, max_n, self.cfg
-        )
+        result.improved_policy_probs = gumbel.improved_policy(logits, completed_q, max_n, self.cfg)
         final_scores = self._gumbel_scores(tree, root, g, logits)
         result.chosen = int(max(survivors, key=lambda a: final_scores[a]))
         return result
@@ -592,9 +576,7 @@ class Search:
             solved = float(mover_view.max())
             # Losing: every line is refuted, so the defender picks the longest.
             # Otherwise the distance belongs to the line actually chosen.
-            depth = 1 + int(
-                depths.max() if solved <= -1.0 else depths[int(np.argmax(mover_view))]
-            )
+            depth = 1 + int(depths.max() if solved <= -1.0 else depths[int(np.argmax(mover_view))])
         else:
             return
         tree.proven[e] = True
@@ -648,9 +630,7 @@ class Search:
         entire point of the fuzz gate.
         """
         num_sims = self.cfg.sims if num_sims is None else num_sims
-        base_reps: RepetitionsFn = (
-            repetitions_fn if repetitions_fn is not None else (lambda _b: 0)
-        )
+        base_reps: RepetitionsFn = repetitions_fn if repetitions_fn is not None else (lambda _b: 0)
 
         tree = Tree(cap_nodes=num_sims + 1)
         path_reps: Counter = Counter()

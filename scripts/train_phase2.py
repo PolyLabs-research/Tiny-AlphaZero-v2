@@ -35,7 +35,9 @@ def _print_stage(name: str, iteration: int) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--config", default=None, help="YAML config (default: spec defaults)")
     ap.add_argument("--out", type=Path, default=None, help="Run directory to create")
     ap.add_argument(
@@ -53,7 +55,9 @@ def main(argv: list[str] | None = None) -> int:
         help="Checkpoint to start from (the Phase 1 anchor). Omitted means random "
         "init, which is the golden mini-run's case and nobody else's.",
     )
-    ap.add_argument("--iterations", type=int, default=None, help="Iterations to run this invocation")
+    ap.add_argument(
+        "--iterations", type=int, default=None, help="Iterations to run this invocation"
+    )
     ap.add_argument("--device", default=None, help="cuda | cpu (default: cuda if available)")
     ap.add_argument("--seed", type=int, default=None, help="Run seed (default: config seed)")
     args = ap.parse_args(argv)

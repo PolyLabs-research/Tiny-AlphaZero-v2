@@ -91,9 +91,7 @@ def _build_loader(
     # persistent_workers/prefetch_factor are only valid with worker processes, and
     # num_workers=0 is what tests and CPU debugging use -- so the shipped builder
     # has to accept it rather than being reachable only in its production shape.
-    worker_opts = (
-        {"persistent_workers": True, "prefetch_factor": 4} if num_workers > 0 else {}
-    )
+    worker_opts = {"persistent_workers": True, "prefetch_factor": 4} if num_workers > 0 else {}
     loader = DataLoader(
         combined,
         batch_size=cfg_train.batch_size,
@@ -224,8 +222,12 @@ def main() -> None:
         net = torch.compile(net)
 
     loader, n_samples = _build_loader(
-        args.data, args.mate1, cfg.train, args.seed,
-        num_workers=args.workers, mate2_dir=args.mate2,
+        args.data,
+        args.mate1,
+        cfg.train,
+        args.seed,
+        num_workers=args.workers,
+        mate2_dir=args.mate2,
     )
     # len(loader) accounts for drop_last; ceil(n/batch) does not, which left the old
     # run with a 3-step orphan "epoch 4".

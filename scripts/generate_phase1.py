@@ -149,14 +149,9 @@ def main() -> None:
         }
         meta = write_dataset(records, out_dir, generation_config=cfg)
         elapsed = time.perf_counter() - t0
-        print(
-            f"Generated {meta.n} positions from {args.games} games "
-            f"in {elapsed:.1f}s → {out_dir}"
-        )
+        print(f"Generated {meta.n} positions from {args.games} games in {elapsed:.1f}s → {out_dir}")
     elif args.mate2 is not None:
-        records, harvest_s, workers = _generate_mate2(
-            args.mate2, args.seed, args.workers, excluded
-        )
+        records, harvest_s, workers = _generate_mate2(args.mate2, args.seed, args.workers, excluded)
         cfg = {
             "mode": "mate_in_2",
             "num_positions": args.mate2,
@@ -193,9 +188,7 @@ def main() -> None:
         }
         meta = write_dataset(records, out_dir, generation_config=cfg)
         elapsed = time.perf_counter() - t0
-        print(
-            f"Generated {meta.n} mate-in-1 positions in {elapsed:.1f}s → {out_dir}"
-        )
+        print(f"Generated {meta.n} mate-in-1 positions in {elapsed:.1f}s → {out_dir}")
 
 
 if __name__ == "__main__":

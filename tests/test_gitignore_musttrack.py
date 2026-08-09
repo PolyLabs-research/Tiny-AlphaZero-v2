@@ -42,8 +42,8 @@ MUST_TRACK: list[str] = [
 # four incidents above happened. `git check-ignore -q` answers for a hypothetical
 # path, so the rule can be tested the day it is written.
 MUST_REACH: list[str] = [
-    "runs/p2_a/iterations.jsonl",   # a Phase 2 campaign's only durable narrative
-    "runs/p2_a/provenance.json",    # the SHA and fingerprint that make it readable
+    "runs/p2_a/iterations.jsonl",  # a Phase 2 campaign's only durable narrative
+    "runs/p2_a/provenance.json",  # the SHA and fingerprint that make it readable
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that

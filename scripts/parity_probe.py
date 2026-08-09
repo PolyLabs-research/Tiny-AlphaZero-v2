@@ -66,7 +66,7 @@ def root_visits_sync(fen: str, cfg: MCTSConfig, sims: int, seed: int) -> list[in
 def root_visits_batched(fen: str, cfg: MCTSConfig, sims: int, seed: int) -> list[int]:
     runner = BatchRunner(stub_batch, cfg, max_plies=1)
     list(runner.play_games(1, seeds=[seed], num_sims=sims, boards=[_board(fen)]))
-    (tree, root, _sims_run), = runner.debug_trees.values()
+    ((tree, root, _sims_run),) = runner.debug_trees.values()
     return list(tree.N[tree.edge_slice(root)])
 
 

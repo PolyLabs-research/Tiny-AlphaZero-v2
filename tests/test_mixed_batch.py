@@ -97,7 +97,13 @@ def test_mixed_batch_collates_and_trains(three_datasets: list[Path]) -> None:
 
     batch = next(iter(loader))  # this is the line that used to raise KeyError
     assert set(batch) >= {
-        "tokens", "from_sq", "to_sq", "promo", "legals", "outcome", "value_weight"
+        "tokens",
+        "from_sq",
+        "to_sq",
+        "promo",
+        "legals",
+        "outcome",
+        "value_weight",
     }
 
     from tinyalphazero.config import ModelConfig

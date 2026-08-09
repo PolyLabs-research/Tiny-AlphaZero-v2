@@ -263,7 +263,11 @@ def _resolve_field_types(cfg_dict: dict, cls: type) -> Any:
         annotation = hints.get(f.name, f.type)
         if isinstance(annotation, str):
             annotation = eval(annotation, {**vars(typing), **globals()})  # noqa: S307
-        if isinstance(val, dict) and isinstance(annotation, type) and hasattr(annotation, "__dataclass_fields__"):
+        if (
+            isinstance(val, dict)
+            and isinstance(annotation, type)
+            and hasattr(annotation, "__dataclass_fields__")
+        ):
             val = _resolve_field_types(val, annotation)
         kwargs[f.name] = val
     return cls(**kwargs)

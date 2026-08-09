@@ -351,9 +351,7 @@ class BatchRunner:
 
                 if gs.in_root:
                     # The root is a leaf like any other; it goes through the buffer.
-                    gs.gen = search.expand_root_gen(
-                        gs.tree, gs.board, gs.path_reps, game_reps(gs)
-                    )
+                    gs.gen = search.expand_root_gen(gs.tree, gs.board, gs.path_reps, game_reps(gs))
                 else:
                     forced = self._next_forced_edge(gs, search)
                     if forced is None:
@@ -361,8 +359,13 @@ class BatchRunner:
                         progressed = True
                         continue
                     gs.gen = search.simulate_gen(
-                        gs.tree, gs.root, gs.board, gs.path_reps, game_reps(gs),
-                        forced_edge=forced, use_vloss=True,
+                        gs.tree,
+                        gs.root,
+                        gs.board,
+                        gs.path_reps,
+                        game_reps(gs),
+                        forced_edge=forced,
+                        use_vloss=True,
                     )
 
                 try:
@@ -460,19 +463,21 @@ class BatchRunner:
         # another way at the actor would put contradictory value targets into
         # the replay buffer.
         occurrences = gs.history[gs.board._transposition_key()] + 1
-        claim_draw = (
-            occurrences >= THREEFOLD_COUNT or gs.board.halfmove_clock >= FIFTY_MOVE_PLIES
-        )
+        claim_draw = occurrences >= THREEFOLD_COUNT or gs.board.halfmove_clock >= FIFTY_MOVE_PLIES
 
         stop = self._stop_fn(gs.trace) if self._stop_fn is not None else None
         if stop or gs.board.is_game_over() or claim_draw or gs.ply >= self.max_plies:
             gs.done = True
             gs.trace.plies = gs.ply
             gs.trace.result = (
-                stop if stop
-                else "checkmate" if gs.board.is_checkmate()
-                else "draw_claim" if claim_draw
-                else "ply_cap" if gs.ply >= self.max_plies
+                stop
+                if stop
+                else "checkmate"
+                if gs.board.is_checkmate()
+                else "draw_claim"
+                if claim_draw
+                else "ply_cap"
+                if gs.ply >= self.max_plies
                 else "draw"
             )
             return
@@ -485,9 +490,7 @@ def _unused_evaluator(_tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray, floa
     Loud rather than silent: if a simulation ever evaluates inline here, the
     batching has been bypassed and throughput numbers would be quietly wrong.
     """
-    raise AssertionError(
-        "BatchRunner drove an inline evaluation — the batched path was bypassed"
-    )
+    raise AssertionError("BatchRunner drove an inline evaluation — the batched path was bypassed")
 
 
 def uniform_stub_batch(

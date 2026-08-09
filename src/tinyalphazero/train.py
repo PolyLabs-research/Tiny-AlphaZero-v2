@@ -38,10 +38,10 @@ def unpack_legal_mask(packed: torch.Tensor) -> torch.Tensor:
 
 
 def _policy_loss(
-    policy_ft: torch.Tensor,    # (B, 64, 64) raw logits
-    from_sq: torch.Tensor,      # (B,) long
-    to_sq: torch.Tensor,        # (B,) long
-    legal_mask: torch.Tensor,   # (B, 64, 64) bool
+    policy_ft: torch.Tensor,  # (B, 64, 64) raw logits
+    from_sq: torch.Tensor,  # (B,) long
+    to_sq: torch.Tensor,  # (B,) long
+    legal_mask: torch.Tensor,  # (B, 64, 64) bool
     masked: bool = True,
 ) -> torch.Tensor:
     """CE on the played (from, to) move.
@@ -60,41 +60,41 @@ def _policy_loss(
 
 
 def _promo_loss(
-    promo_out: torch.Tensor,      # (B, 64, 64, 4) logits
-    from_sq: torch.Tensor,        # (B,) long
-    to_sq: torch.Tensor,          # (B,) long
-    promo_target: torch.Tensor,   # (B,) long — 0=none, 1=N, 2=B, 3=R, 4=Q
+    promo_out: torch.Tensor,  # (B, 64, 64, 4) logits
+    from_sq: torch.Tensor,  # (B,) long
+    to_sq: torch.Tensor,  # (B,) long
+    promo_target: torch.Tensor,  # (B,) long — 0=none, 1=N, 2=B, 3=R, 4=Q
 ) -> torch.Tensor:
     mask = promo_target > 0
     if not mask.any():
         return torch.tensor(0.0, device=promo_out.device)
     idx = torch.where(mask)[0]
     logits = promo_out[idx, from_sq[idx], to_sq[idx], :]  # (K, 4)
-    targets = promo_target[idx] - 1                         # shift to 0..3
+    targets = promo_target[idx] - 1  # shift to 0..3
     return F.cross_entropy(logits, targets)
 
 
 def _value_loss(
-    value_wdl: torch.Tensor,     # (B, 3) logits [loss, draw, win]
-    outcome: torch.Tensor,        # (B,) long, values -1, 0, 1
+    value_wdl: torch.Tensor,  # (B, 3) logits [loss, draw, win]
+    outcome: torch.Tensor,  # (B,) long, values -1, 0, 1
     value_weight: torch.Tensor,  # (B,) float
 ) -> torch.Tensor:
-    targets = outcome + 1              # shift to 0, 1, 2
+    targets = outcome + 1  # shift to 0, 1, 2
     per_sample = F.cross_entropy(value_wdl, targets, reduction="none")  # (B,)
     return (per_sample * value_weight).mean()
 
 
 def _legality_loss(
-    legality: torch.Tensor,    # (B, 64, 64) logits
+    legality: torch.Tensor,  # (B, 64, 64) logits
     legal_mask: torch.Tensor,  # (B, 64, 64) bool
 ) -> torch.Tensor:
     return F.binary_cross_entropy_with_logits(legality, legal_mask.float())
 
 
 def _soft_policy_loss(
-    policy_ft: torch.Tensor,    # (B, 64, 64) raw logits
-    target: torch.Tensor,       # (B, 4096) distribution over from*64+to
-    legal_mask: torch.Tensor,   # (B, 64, 64) bool
+    policy_ft: torch.Tensor,  # (B, 64, 64) raw logits
+    target: torch.Tensor,  # (B, 4096) distribution over from*64+to
+    legal_mask: torch.Tensor,  # (B, 64, 64) bool
     masked: bool = True,
 ) -> torch.Tensor:
     """Cross-entropy against a *distribution* — Phase 2's improved-policy target.
@@ -119,11 +119,11 @@ def _soft_policy_loss(
 
 
 def _soft_promo_loss(
-    promo_out: torch.Tensor,     # (B, 64, 64, 4) logits
-    from_sq: torch.Tensor,       # (B,) long
-    to_sq: torch.Tensor,         # (B,) long
+    promo_out: torch.Tensor,  # (B, 64, 64, 4) logits
+    from_sq: torch.Tensor,  # (B,) long
+    to_sq: torch.Tensor,  # (B,) long
     promo_target: torch.Tensor,  # (B, 4) distribution over N/B/R/Q
-    promo_mask: torch.Tensor,    # (B,) bool — rows where a promotion carried mass
+    promo_mask: torch.Tensor,  # (B,) bool — rows where a promotion carried mass
 ) -> torch.Tensor:
     """Promotion CE on the rows that are promotions, at the acted (from, to) cell."""
     if not bool(promo_mask.any()):
@@ -334,7 +334,15 @@ class WeightedPhaseDataset(Dataset):
 # ---------------------------------------------------------------------------
 
 
-_MODEL_SHAPE_KEYS = {"d_model", "n_layers", "n_heads", "d_ff", "d_policy", "seq_len", "aux_legality"}
+_MODEL_SHAPE_KEYS = {
+    "d_model",
+    "n_layers",
+    "n_heads",
+    "d_ff",
+    "d_policy",
+    "seq_len",
+    "aux_legality",
+}
 
 
 def save_checkpoint(
@@ -503,11 +511,13 @@ def compute_metrics(
     else:
         # Generate mate-in-1 positions on the fly
         from tinyalphazero.data import generate_mate_in_1
+
         m1_positions = list(generate_mate_in_1(min(n_mate1, 200), rng))
 
         class _InlineDS:
             def __len__(self):
                 return len(m1_positions)
+
             def __getitem__(self, i):
                 pos = m1_positions[i]
                 return {
@@ -538,7 +548,9 @@ def compute_metrics(
 
         if legal_packed is not None:
             legal_mask_t = unpack_legal_mask(legal_packed)[0]
-            masked_logits = policy.reshape(4096).masked_fill(~legal_mask_t.reshape(4096), float("-inf"))
+            masked_logits = policy.reshape(4096).masked_fill(
+                ~legal_mask_t.reshape(4096), float("-inf")
+            )
         else:
             masked_logits = policy.reshape(4096)
 
@@ -554,9 +566,7 @@ def compute_metrics(
         wdl_probs = torch.softmax(out.value_wdl[0], dim=-1)
         wdl_win_mass_total += wdl_probs[2].item()
 
-    topk_rates = {
-        k: (topk_hits[k] / n_m1 if n_m1 > 0 else float("nan")) for k in MATE1_TOPK
-    }
+    topk_rates = {k: (topk_hits[k] / n_m1 if n_m1 > 0 else float("nan")) for k in MATE1_TOPK}
     wdl_anchor_mass = wdl_win_mass_total / n_m1 if n_m1 > 0 else float("nan")
 
     out_metrics = {
@@ -643,10 +653,14 @@ def _git_sha() -> str:
     """
     repo_root = Path(__file__).resolve().parents[2]
     try:
-        return subprocess.check_output(
-            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
-            stderr=subprocess.DEVNULL,
-        ).decode().strip()
+        return (
+            subprocess.check_output(
+                ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+                stderr=subprocess.DEVNULL,
+            )
+            .decode()
+            .strip()
+        )
     except (OSError, subprocess.SubprocessError):
         # git absent, not a repository, or no commits yet — all mean "no provenance".
         return NO_GIT_SENTINEL
