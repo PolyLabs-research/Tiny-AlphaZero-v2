@@ -68,8 +68,17 @@ class Tree:
 
     def _grow_nodes(self) -> None:
         new_cap = max(2 * len(self.first_edge), self.n_nodes + 1)
+        old = len(self.first_edge)
         self.first_edge = np.resize(self.first_edge, new_cap)
         self.num_edges = np.resize(self.num_edges, new_cap)
+        # np.resize *tiles* the old contents rather than zero-filling, so the
+        # fresh slots come up holding a copy of some earlier node's edge range.
+        # add_node overwrites both fields before anyone reads them, so this is
+        # hygiene rather than a live bug (review N3) — but a plausible-looking
+        # stale edge range is a bad thing to leave lying in a debugger, and
+        # _grow_edges already zeroes for the same reason.
+        self.first_edge[old:] = 0
+        self.num_edges[old:] = 0
 
     def _grow_edges(self, needed: int) -> None:
         new_cap = max(2 * len(self.child), self.n_edges + needed)

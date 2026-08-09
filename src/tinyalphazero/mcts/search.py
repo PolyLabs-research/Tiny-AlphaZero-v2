@@ -449,27 +449,12 @@ class Search:
         if n_actions == 0:
             return self._root_result(tree, root, sl, 0)
 
-        logits = gumbel.prior_logits(tree.prior[sl])
-        # The whole evaluation profile is this one substitution. Setting g ≡ 0
-        # makes the considered set the deterministic top-m by raw logits, and
-        # makes the acting argmax `logits + σ(q̂)` — both required behaviours —
-        # while Sequential Halving, σ, the solver and the budget convention read
-        # exactly the same code in both profiles. A second selection path would
-        # have to be kept in step with this one forever; a zero vector cannot
-        # drift. It also consumes no RNG, so eval runs are seed-independent by
-        # construction rather than by convention.
-        g = (
-            gumbel.gumbel_noise(self.rng, n_actions)
-            if self.cfg.root_noise
-            else np.zeros(n_actions, dtype=np.float32)
+        # Shared with BatchRunner (review S1): the noise draw or its g ≡ 0
+        # substitute, top-m by g + logits, and force-include of proven wins all
+        # live in one place so the two drivers cannot drift apart.
+        g, logits, considered = gumbel.form_considered_set(
+            tree, root, self.cfg, self.rng, num_sims
         )
-
-        # Considered set: top-m by g + logits, but a *proven win* is never
-        # dropped for noise — see _force_include_proven_wins.
-        m = min(self.cfg.gumbel_m, n_actions, max(num_sims, 1))
-        order = np.argsort(-(g + logits), kind="stable")
-        considered = list(order[:m])
-        considered = self._force_include_proven_wins(tree, root, considered, g + logits)
 
         base_reps: RepetitionsFn = (
             repetitions_fn if repetitions_fn is not None else (lambda _b: 0)
@@ -493,9 +478,7 @@ class Search:
                     sims_run += 1
             if len(survivors) > 1:
                 scores = self._gumbel_scores(tree, root, g, logits)
-                survivors = sorted(survivors, key=lambda a: -scores[a])[
-                    : max(1, (len(survivors) + 1) // 2)
-                ]
+                survivors = gumbel.halve_survivors(survivors, scores)
 
         self._last_tree, self._last_root = tree, root
         result = self._root_result(tree, root, sl, sims_run)
@@ -507,44 +490,6 @@ class Search:
         final_scores = self._gumbel_scores(tree, root, g, logits)
         result.chosen = int(max(survivors, key=lambda a: final_scores[a]))
         return result
-
-    def _force_include_proven_wins(
-        self, tree: Tree, root: int, considered: list[int], rank_score: np.ndarray
-    ) -> list[int]:
-        """Ensure exactly-known wins are in the considered set.
-
-        Measured, not assumed: with uniform stub priors, top-m by ``g + logits``
-        is a uniform random m-subset, so on the mate-in-1 suite (median 43 legal
-        moves, m=16) the mating move is simply not considered most of the time.
-        Built as specified first, the plan's "Gumbel at 48 sims still solves
-        mate-in-1 100%" gate scored **46/100**; with this it scores 100/100.
-        Discarding a proven win in favour of a sampled estimate makes the search
-        strictly weaker than its own knowledge.
-
-        Swaps rather than appends, so ``len(considered)`` is unchanged and the
-        halving schedule's budget arithmetic still lands exactly on num_sims.
-        """
-        sl = tree.edge_slice(root)
-        wins = [
-            i
-            for i in range(int(tree.num_edges[root]))
-            if tree.terminal[sl.start + i] and -tree.terminal_value[sl.start + i] >= 1.0
-        ]
-        missing = [w for w in wins if w not in considered]
-        if not missing:
-            return considered
-
-        out = list(considered)
-        # Evict the weakest considered actions that are not themselves wins.
-        evictable = sorted(
-            (a for a in out if a not in wins), key=lambda a: rank_score[a]
-        )
-        for win, victim in zip(missing, evictable, strict=False):
-            out[out.index(victim)] = win
-        for win in missing[len(evictable) :]:
-            if win not in out:
-                out.append(win)
-        return out
 
     def _solve_edge(self, tree: Tree, e: int) -> None:
         """Backward induction on ``e``'s child (MCTS-Solver, Winands et al. 2008).

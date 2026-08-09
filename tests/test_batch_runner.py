@@ -13,6 +13,11 @@ import pytest
 
 from tinyalphazero.config import MCTSConfig
 from tinyalphazero.mcts.batch_runner import BatchRunner, GameTrace
+from tinyalphazero.mcts.gumbel import (
+    allocate_within_phase,
+    halving_phase_budgets,
+    phase_visit_queue,
+)
 from tinyalphazero.mcts.search import Search, load_epd, uniform_stub_evaluator
 from tinyalphazero.mcts.tree import Tree
 
@@ -74,10 +79,11 @@ def _cfg(**kw) -> MCTSConfig:
 
 
 @pytest.mark.parametrize("name", sorted(FIXTURES))
-@pytest.mark.parametrize("sims", [16, 48])
+@pytest.mark.parametrize("m", [3, 5, 12, 16])
+@pytest.mark.parametrize("sims", [6, 16, 31, 48])
 @pytest.mark.parametrize("root_noise", [True, False], ids=["selfplay", "eval"])
 def test_gate_equivalence_with_synchronous_search(
-    name: str, sims: int, root_noise: bool
+    name: str, m: int, sims: int, root_noise: bool
 ) -> None:
     """batch_leaves=1, num_games=1, same seed → identical search, not merely a
     matching move.
@@ -91,9 +97,17 @@ def test_gate_equivalence_with_synchronous_search(
     than calling into ``Search``, so "the eval profile works" is a claim about
     two independent pieces of code, and this gate is the only place the two are
     compared directly.
+
+    Swept over ``m`` × ``sims`` because the reviewed defect was invisible at the
+    single comfortable pair this used to test. Divergence needs a Sequential
+    Halving phase whose budget does *not* divide evenly across its survivors; at
+    m=16 with 16 or 48 sims every phase divides, so a round-robin and a proper
+    allocation agreed by accident. ``m > sims`` combinations are kept rather than
+    skipped — the considered set is capped at ``num_sims`` and both drivers must
+    cap it identically.
     """
     epd = FIXTURES[name]
-    cfg = _cfg(root_noise=root_noise)
+    cfg = _cfg(root_noise=root_noise, gumbel_m=m)
 
     sync = Search(uniform_stub_evaluator, cfg, np.random.default_rng(7)).run(
         _board(epd), None, sims
@@ -112,6 +126,44 @@ def test_gate_equivalence_with_synchronous_search(
     assert list(tree.proven[sl]) == list(
         _sync_tree_flags(epd, cfg, sims, "proven")
     ), f"{name}: solver proven flags diverged"
+
+
+def test_regression_phase_remainder_goes_to_the_best_survivor() -> None:
+    """Named pin for the reviewed allocation defect: m=5, sims=6.
+
+    ``halving_phase_budgets(6, 5) == [5, 1, 0]``. Phase 1 gives all five
+    survivors one visit each and halves to three; phase 2 then has a single
+    visit, which ``allocate_within_phase(1, 3) == [1, 0, 0]`` assigns to the
+    **best-ranked** survivor. The batched driver used
+    ``survivors[sims_run % len(survivors)]`` — ``survivors[5 % 3]`` — spending
+    it on the *worst* of the three instead.
+
+    Pinned separately from the sweep above because this is the exact
+    configuration the review reproduced, and a named test says what broke
+    rather than leaving it as one cell in a 128-case matrix.
+    """
+    cfg = _cfg(gumbel_m=5)
+    sims = 6
+    assert halving_phase_budgets(sims, 5) == [5, 1, 0], "premise of this regression"
+
+    sync = Search(uniform_stub_evaluator, cfg, np.random.default_rng(7)).run(
+        _board(MIDGAME), None, sims
+    )
+    runner = BatchRunner(stub_batch, cfg, max_plies=1)
+    list(runner.play_games(1, seeds=[7], num_sims=sims, boards=[_board(MIDGAME)]))
+    tree, root, _ = runner.debug_trees[(0, 0)]
+
+    assert list(tree.N[tree.edge_slice(root)]) == list(sync.visits)
+
+
+def test_phase_visit_queue_matches_the_allocation() -> None:
+    """The queue is just the allocation, flattened — asserted, not assumed."""
+    for budget, k in [(5, 3), (1, 3), (12, 8), (6, 5), (0, 4), (7, 1)]:
+        queue = phase_visit_queue(budget, k)
+        alloc = allocate_within_phase(budget, k)
+        assert len(queue) == budget
+        assert [queue.count(i) for i in range(k)] == alloc
+        assert queue == sorted(queue), "best-ranked survivors must be served first"
 
 
 def _sync_tree_flags(epd: str, cfg: MCTSConfig, sims: int, attr: str) -> np.ndarray:
@@ -318,6 +370,51 @@ def test_selfplay_profile_batched_still_varies() -> None:
         tree, root, _ = runner.debug_trees[(0, 0)]
         seen.add(tuple(tree.N[tree.edge_slice(root)].tolist()))
     assert len(seen) > 1, "batched self-play profile went deterministic"
+
+
+def test_trace_tokens_carry_the_repetition_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review S3: trace rows must encode the *real* repetition count.
+
+    ``_commit_move`` used to encode with ``lambda _b: 0``, so every trace
+    position claimed to be a first occurrence. The repetition token is part of
+    the Markov state (spec §3.1) — teaching the network that a twice-reached
+    position is fresh is precisely the non-Markovian defect v1 was rebuilt to
+    remove, and it would have entered Phase 2 as silently corrupt training data
+    rather than as a crash.
+
+    Armed now with an injected ``repetitions_fn``; chunk 8 supplies the real
+    per-game history and owns claim-draw adjudication, at which point this stops
+    needing the injection.
+    """
+    from tinyalphazero.encoding import REP_0, REP_1
+
+    seen: dict[str, int] = {}
+
+    def repetitions_fn(board: chess.Board) -> int:
+        return seen.get(board.epd(), 0)
+
+    runner = BatchRunner(stub_batch, _cfg(batch_leaves=4), max_plies=3)
+    board = _board(MIDGAME)
+    seen[board.epd()] = 1  # the root has been reached once before
+
+    traces = list(
+        runner.play_games(
+            1, seeds=[3], num_sims=8, boards=[board], repetitions_fn=repetitions_fn
+        )
+    )
+    first = traces[0].positions[0]
+    rep_token = int(first.tokens[-1])
+    assert rep_token == REP_1, (
+        f"trace encoded rep={rep_token}, expected REP_1={REP_1}: the repetition "
+        "count is not reaching the trace"
+    )
+
+    plain = BatchRunner(stub_batch, _cfg(batch_leaves=4), max_plies=3)
+    plain_trace = list(plain.play_games(1, seeds=[3], num_sims=8, boards=[_board(MIDGAME)]))
+    assert int(plain_trace[0].positions[0].tokens[-1]) == REP_0, (
+        "with no history supplied the same position must encode as REP_0 — "
+        "otherwise this test would pass on a constant"
+    )
 
 
 def test_batched_runner_resolves_eval_overrides() -> None:

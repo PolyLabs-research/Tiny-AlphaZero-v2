@@ -77,7 +77,9 @@ class _GameState:
         self.in_root = False
         self.path_reps: Counter = Counter()
         self.gen: Any = None
-        self.schedule: list[int] = []  # remaining forced root edges for this move
+        self.schedule: list[int] = []  # remaining Sequential Halving phase budgets
+        self.phase_queue: list[int] = []  # survivor-local indices left in this phase
+        self.phase_ran = False  # did the phase just drained actually spend visits?
         self.sims_run = 0
         self.g: np.ndarray | None = None
         self.logits: np.ndarray | None = None
@@ -159,6 +161,8 @@ class BatchRunner:
         gs.path_reps[gs.board._transposition_key()] += 1
         gs.sims_run = 0
         gs.schedule = []
+        gs.phase_queue = []
+        gs.phase_ran = False
         gs.survivors = []
         gs.root = -1
         gs.in_root = True
@@ -168,50 +172,56 @@ class BatchRunner:
         """Root node built: derive Gumbel noise and the halving schedule."""
         gs.root = root
         gs.in_root = False
-        sl = gs.tree.edge_slice(gs.root)
         n_actions = int(gs.tree.num_edges[gs.root])
         if n_actions == 0:
             return
 
-        gs.logits = gumbel.prior_logits(gs.tree.prior[sl])
-        # Same g ≡ 0 substitution as Search.run_gumbel. It has to be repeated
-        # because this is a separate implementation of the root, and the ladder
-        # (chunk 10) plays its matches through *this* path — an eval profile the
-        # batched runner silently ignored would give deterministic suite numbers
-        # and noisy ladder numbers, which is the worst of both.
-        gs.g = (
-            gumbel.gumbel_noise(gs.rng, n_actions)
-            if self.cfg.root_noise
-            else np.zeros(n_actions, dtype=np.float32)
+        # Shared with Search.run_gumbel (review S1) — one definition of the
+        # considered set, consumed by both drivers, neither re-deriving it.
+        gs.g, gs.logits, considered = gumbel.form_considered_set(
+            gs.tree, gs.root, self.cfg, gs.rng, num_sims
         )
-        m = min(self.cfg.gumbel_m, n_actions, max(num_sims, 1))
-        order = np.argsort(-(gs.g + gs.logits), kind="stable")
-        considered = search._force_include_proven_wins(
-            gs.tree, gs.root, list(order[:m]), gs.g + gs.logits
-        )
-        # Flatten the whole halving schedule up front. Re-ranking between phases
-        # needs stats that concurrent games have not produced yet at scheduling
-        # time, so survivors are recomputed lazily in _next_forced_edge.
+        # Phase budgets up front; the per-phase allocation is computed at phase
+        # entry, because re-ranking needs stats concurrent games have not
+        # produced yet at scheduling time.
         gs.survivors = list(considered)
         gs.schedule = list(gumbel.halving_phase_budgets(num_sims, len(considered)))
+        gs.phase_queue = []
+        gs.phase_ran = False
 
     def _next_forced_edge(self, gs: _GameState, search: Search) -> int | None:
-        """The root edge this simulation must spend itself on, or None if the move is done."""
+        """The root edge this simulation must spend itself on, or None if done.
+
+        Mirrors ``Search.run_gumbel``'s loop exactly, one call at a time:
+
+        * a phase's visits come from ``allocate_within_phase`` — best-ranked
+          survivors absorb the remainder — not from a round-robin;
+        * survivors halve **after** a phase that actually ran, and a
+          zero-budget phase is skipped *without* halving, which is what the
+          synchronous ``continue`` does.
+
+        Both were wrong before (review S2). The round-robin gave phase
+        remainders to ``survivors[sims_run % k]``, and the old ``while`` loop
+        halved on zero-budget phases the synchronous driver skips over.
+        """
         if gs.tree is None or not gs.survivors:
             return None
         sl = gs.tree.edge_slice(gs.root)
-        while gs.schedule and gs.schedule[0] <= 0:
-            gs.schedule.pop(0)
-            if len(gs.survivors) > 1:
+
+        while not gs.phase_queue:
+            if gs.phase_ran and len(gs.survivors) > 1:
                 scores = search._gumbel_scores(gs.tree, gs.root, gs.g, gs.logits)
-                gs.survivors = sorted(gs.survivors, key=lambda a: -scores[a])[
-                    : max(1, (len(gs.survivors) + 1) // 2)
-                ]
-        if not gs.schedule:
-            return None
-        gs.schedule[0] -= 1
-        idx = gs.survivors[gs.sims_run % len(gs.survivors)]
-        return sl.start + int(idx)
+                gs.survivors = gumbel.halve_survivors(gs.survivors, scores)
+            gs.phase_ran = False
+            if not gs.schedule:
+                return None
+            budget = gs.schedule.pop(0)
+            if budget <= 0 or not gs.survivors:
+                continue
+            gs.phase_queue = gumbel.phase_visit_queue(budget, len(gs.survivors))
+            gs.phase_ran = True
+
+        return sl.start + int(gs.survivors[gs.phase_queue.pop(0)])
 
     # -- the loop ---------------------------------------------------------
 
@@ -327,7 +337,14 @@ class BatchRunner:
 
         gs.trace.positions.append(
             TracePosition(
-                tokens=search.leaf_tokens(gs.board, gs.path_reps, lambda _b: 0),
+                # Review S3: the real base_reps, not a zero stub. The trace row
+                # is training data, and the repetition token is part of the
+                # Markov state (spec §3.1) — encoding every position as
+                # first-occurrence teaches the network that a position it has
+                # already reached twice is fresh, which is exactly the
+                # non-Markovian defect v1 was rebuilt to remove. Harmless today
+                # only because chunk 7 passes no history; chunk 8 supplies one.
+                tokens=search.leaf_tokens(gs.board, gs.path_reps, base_reps),
                 improved_policy=result.improved_policy(),
                 side_to_move=gs.board.turn,
                 ply=gs.ply,
