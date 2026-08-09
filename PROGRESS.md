@@ -805,7 +805,7 @@ silently on whichever consumer forgot to read it.**
 
 ---
 
-## Session 2026-08-09 — tree state, and the push is deferred again
+## Session 2026-08-09 — tree state, and the push finally happened
 
 Nothing merged, nothing tagged. That is the pre-registered consequence of the gate landing at
 0.940: promotion, the `round-d` → `main` merge and the `phase1-closed-r2` tag were all
@@ -837,12 +837,21 @@ tuning suite's disjointness was verified there and the sweep was run on `chunk-0
 tuning suite itself lives under `runs/` (gitignored), so it survives checkouts; only its
 `meta.json` is tracked, on both branches.
 
-**Push deferred — fourth consecutive session.** `origin` is
-`git@github.com:tripptytrip/Tiny-AlphaZero-v2.git` and `~/.ssh/` still holds no private key
-(`git ls-remote origin` → `Permission denied (publickey)`). Everything since the initial commit
-is local-only: `main`, four branches, one tag, and the ~6.8 G of untracked
-checkpoints/datasets that no remote would carry anyway. Tom asked to be reminded of this — it
-is now the single largest unmitigated risk to the project, well ahead of any gate.
+**Pushed — the four-session backlog is cleared.** Tom generated an ed25519 keypair and pushed
+during this session. `origin` (`git@github.com:tripptytrip/Tiny-AlphaZero-v2.git`) now carries
+all five branches and the `phase1-closed` tag, each remote ref identical to its local tip;
+`git log --branches --tags --not --remotes` is empty. Verified after the fact rather than
+assumed, because "I pushed" and "everything is on the remote" are different claims — a bare
+`git push` from a branch with no upstream is the usual way they come apart.
+
+Still local-only and unprotected by this: the ~6.8 G of untracked checkpoints and datasets,
+including `runs/phase1_d/final.pt` (the strictly-better-but-unpromoted checkpoint) and
+`runs/phase1_anchor.pt` itself. `runs/ANCHORS.sha256` is committed, so the anchor's *identity*
+survives a disk loss — its *bytes* do not. Regenerating `phase1_d` costs ~3 h of GPU time and
+`phase1_c` considerably more.
+
+Note for the next session: only `main` has an upstream set. The other four branches were pushed
+by explicit refspec, so a bare `git push` from them will not do what it looks like it does.
 
 ---
 
