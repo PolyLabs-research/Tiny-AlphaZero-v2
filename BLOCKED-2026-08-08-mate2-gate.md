@@ -18,7 +18,59 @@ similar from the inside — the test is whether anything downstream reads the nu
 
 **Return-to-BLOCKED condition:** round `d` fails to clear ≥0.95 on `mate2_top16_coverage`
 *or* on the chunk 6 mate-in-2 re-gate, after the single permitted escalation (see
-`TRAINING_STRATEGY.md` round `d`, decision rules). At that point supervised anchoring is
+`TRAINING_STRATEGY.md` round `d`, decision rules).
+
+## Round `d` outcome, 2026-08-09 — the condition has fired
+
+Round `d` **succeeded at what it was designed to do and the gate still fails.**
+
+| Measurement | Round `c` | Round `d` | Gate |
+|---|---|---|---|
+| `mate2_top16_coverage` (held-out) | 0.8100 | **0.9770** | ≥0.95 ✓ |
+| `mate1_top8_masked` (no-regress) | 0.9800 | **0.9940** | ≥0.97 ✓ |
+| chunk 6 mate-in-2 @128 sims | 0.770 | **0.890** (5 seeds: 0.875–0.900) | ≥0.95 ✗ |
+
+**The two measurements disagree by 8.7 points, and the pre-registration named that
+disagreement as itself the finding.** Decomposed on the suite with `phase1_d`:
+
+```
+prior top-16 coverage                 0.990   (round c: 0.83)  <- round d fixed this
+   survives Gumbel noise into top-m   0.925   <- loses 6.5 points HERE
+      solved given considered         0.941   (round c: 0.954)
+                              gate =  0.870
+```
+
+`mate2_top16_coverage` was treated as an estimator of the gate. It is not — it is an
+**upper bound**, the first of two multiplicative factors. Round `d` drove that factor
+from 0.83 to 0.990, leaving essentially no headroom, and the gate still sits at 0.89
+because the other two factors were never what round `d` addressed:
+
+1. **Gumbel noise now dominates.** The considered set is top-m by `g + logits`, so a
+   move the prior ranks *first* can still be knocked out by an unlucky draw. At 0.83
+   coverage this was hidden inside the prior's own deficit; at 0.990 it is the largest
+   single loss in the chain.
+2. **Selection given consideration is 0.941** and barely moved (0.954 → 0.941), because
+   converting a considered forcing move into a chosen one is a search property.
+
+**The permitted escalation is aimed at a saturated axis.** Both offered levers
+(`phase1_epochs: 3`, mixes 0.10/0.10) act on prior coverage, which is at 0.990 and was
+already saturated after epoch 1 (epoch 1 → 2 moved it +0.001). It would buy at most
+~0.5 points against a 6-point gap. Not spent; recorded instead.
+
+**Gate measurement quality, for the threshold conversation:** over 5 Gumbel seeds the
+gate reads 0.875–0.900, spread 0.025. The shortfall is far outside that noise, so this
+is a real 6-point gap and not a seeding artefact — but a ±2.5-point gate is worth
+knowing about when the threshold is 0.95 and a pass would be declared on one run.
+
+**Phase 1 is NOT re-closed.** `runs/phase1_anchor.pt` still points at `phase1_c/final.pt`;
+`runs/phase1_d/final.pt` is a strictly better checkpoint on every held-out gate and is
+available to promote if the gate conversation resolves that way.
+
+**What is now known that was not on 2026-08-08:** the gate is not prior-limited. It was,
+and that was worth fixing — the prior is now nearly perfect on this task. What remains is
+search-side, and the levers are chunk 6 configuration (`gumbel_m`, the Gumbel noise scale,
+the σ formulation), not Phase 1 data. That is a different conversation from the one this
+document opened, and it belongs to Tom. At that point supervised anchoring is
 demonstrated insufficient at this scale and the gate conversation returns to Tom.
 
 **This fires return condition 1 of `BLOCKED-2026-08-06-phase1-gates.md`**, verbatim:

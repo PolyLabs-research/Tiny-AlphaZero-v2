@@ -24,7 +24,7 @@ This is the **campaign document**: which runs exist, why each was launched, the 
 | `phase1_a` | Jul 3–4 | 39,135 | 0.000 | 0.065 | 0.981 | 0.034 | invalid run — see post-mortem |
 | `phase1_b` | Aug 4 | 28,008 | 0.953 | 0.527 | **0.9998 ✓** | 0.683 | learning; schedule + anchor signal insufficient |
 | `phase1_c` | Aug 6 | 56,484 | 0.976ᵢ | 0.802ᵢ | **1.000 ✓** | **0.892 ✓** | Phase 1 CLOSED — BLOCKED-2026-08-06 (ᵢ = retired→informational) |
-| `phase1_d` | — | ~19,000 | *inf* | *inf* | *predict ≥0.995* | *predict ≥0.80* | planned — reopening; new gate `mate2_top16_coverage` ≥0.95 |
+| `phase1_d` | Aug 9 | 18,926 | 0.983ⁱ | 0.835ⁱ | **1.000 ✓** | **0.933 ✓** | held-out gates ALL PASS (mate2_top16 **0.977 ✓**); chunk-6 re-gate **0.890 ✗** — see result block |
 
 **Measurement basis.** All rows are `scripts/eval_phase1.py` against the frozen held-out sets (`eval_rand` n_random=2000; `eval_mate1_1k` full 1,000 anchors) — *not* the in-training eval, which samples 1000/200 and reads a point or two higher on the noisy metrics. Round `b`'s row is the re-baselined measurement from round `c`'s pre-flight step 3 (it read 0.967 / 0.480 / 0.685 on the retired 500-anchor set and the smaller in-training sample); rounds are only comparable on the same basis, per rule 4.
 
@@ -204,6 +204,47 @@ the two are expected to agree. If they disagree, the disagreement is the finding
 - **< 0.90 after that escalation** → stop. Update `BLOCKED-2026-08-08` with the evidence that
   supervised anchoring cannot buy this coverage at this scale, and hand the gate conversation
   back. Do not iterate further.
+
+---
+
+**Result (2026-08-09):** 18,926 steps, 2 epochs, 3.05 h wall-clock, **1 skipped step**, constant LR 1e-4 throughout, warm-started from `runs/phase1_anchor.pt` (donor step 56,484).
+
+**Held-out gates — all four PASS:**
+
+| Metric | Round `c` | Round `d` | Gate |
+|---|---|---|---|
+| `mate2_top16_coverage` | 0.8100 | **0.9770** | ≥0.95 ✓ |
+| `mate1_top8_masked` | 0.9800 | **0.9940** | ≥0.97 ✓ |
+| `legality_auc` | 1.0000 | 1.0000 | ≥0.995 ✓ |
+| `wdl_anchor_mass` | 0.8916 | 0.9333 | ≥0.80 ✓ |
+
+Informational: `mate2_solve_rate` 0.671, `mate1_solve_rate` 0.835, `top1_legal` 0.983.
+
+**Trajectory:** epoch 1 → 2 on `mate2_top16_coverage` was 0.9760 → 0.9770, **+0.001 — saturated by epoch 1**. The 0.07 mix was generous, not tight; the second epoch bought essentially nothing on the target metric. The no-regress gates did not erode under two full epochs of un-annealed 1e-4 — `mate1_top8` rose 0.980 → 0.994 and `wdl` 0.892 → 0.933, so the mate-in-2 anchors reinforced mate-in-1 rather than competing with it.
+
+**The operative re-gate FAILS, and the pre-registered disagreement is the finding.**
+
+```
+mate_in_2.epd: 180/200 at 128 sims (90.0%) | gate >= 95%
+over 5 Gumbel seeds: mean 0.890, range 0.875-0.900, spread 0.025
+mate_in_1.epd: 100/100 at 16 sims (sanity ✓)
+```
+
+The round `d` entry above pre-registered: *"`mate2_top16_coverage` is its held-out proxy and the two are expected to agree. If they disagree, the disagreement is the finding."* They disagree by 8.7 points. Decomposed on the suite with `phase1_d`:
+
+| Stage | Round `c` | Round `d` |
+|---|---|---|
+| prior top-16 coverage | 0.83 | **0.990** |
+| survives Gumbel noise into the considered set | — | 0.925 |
+| solved given considered | 0.954 | 0.941 |
+| **gate** (product) | 0.77 | **0.870–0.900** |
+
+**Round `d` did exactly what it was designed to do and the gate still fails.** Prior coverage went 0.83 → 0.990 — there is no headroom left on that axis. The residual is now split between two *search-side* losses that no amount of anchor training touches:
+
+1. **Gumbel noise costs 6.5 points of consideration** (0.990 → 0.925). The considered set is top-m by `g + logits`, so a move the prior ranks *first* can still be knocked out by an unlucky draw. At round `c`'s 0.83 coverage this was invisible under the prior's own deficit; at 0.990 it is the dominant term.
+2. **Selection given consideration is 0.941**, essentially unchanged from round `c`'s 0.954 — the search's ability to convert a considered forcing move into a chosen one was never the thing round `d` addressed.
+
+**Decision taken:** the permitted escalation (`phase1_epochs: 3` *or* mixes 0.10/0.10) targets prior coverage, which is at 0.990 and saturated after one epoch. Spending it would buy at most ~0.5 points against a 6-point gap. Recorded as evidence in `BLOCKED-2026-08-08-mate2-gate.md` rather than spent. **Phase 1 is NOT re-closed; `runs/phase1_anchor.pt` is unchanged.**
 
 ---
 
