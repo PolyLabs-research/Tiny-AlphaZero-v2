@@ -926,29 +926,32 @@ separately produced a nine-position bug with a one-line remedy.
 
 ## Chunks 5–7 external review — conditions and outcomes (2026-08-09)
 
-**The review document itself (`REVIEW-2026-08-09-chunks-5-7.md`) was never delivered to this
-machine** — it is absent from the repo, both worktrees, `~/Downloads` and any `outputs`
-directory, and two successive briefs have asked for it to be committed. This section is
-therefore *this repo's* record of the conditions **as relayed in the briefs**, plus what was
-actually done about each. It is not a substitute for the review and does not reproduce its
-reasoning; commit the real document alongside this when it turns up.
+**The review is now in the repo: `REVIEW-2026-08-09-chunks-5-7.md`**, with its outcome
+addendum. Read that for the reviewer's reasoning; this section is the short status table.
+
+*(It arrived late — the document was written at the chain tip but did not reach this machine
+until after the fixes had shipped, so S1–S3 were implemented from the briefs' summaries alone.
+That turned out to be useful rather than costly: the S2 parity probe and the `m=5, sims=6`
+repro were re-derived independently, which is why the addendum can call that finding
+"independently reproduced twice" rather than "reviewer-reported and then taken on trust".)*
 
 | # | Condition | Status | Where |
 |---|---|---|---|
 | S1 | One Gumbel root implementation; both drivers consume it | **Applied** | `gumbel.form_considered_set` / `halve_survivors` / `force_include_proven_wins` / `phase_visit_queue` |
 | S2 | Batched driver must allocate phase visits, not round-robin | **Applied** — defect reproduced first (8 → 0 probe disagreements) | `BatchRunner._next_forced_edge`, `scripts/parity_probe.py` |
 | S3 | Trace tokens must encode the real repetition count | **Applied** (chunk 7) + ownership completed in chunk 8 | `_commit_move`, per-game history counter |
-| S4 | Promotion priors via the promo sub-head | **Deferred at review time; delivered in chunk 8** | evaluator interface v2 |
+| S4 | Promotion priors via the promo sub-head | **Interface delivered chunk 8; behaviour behind a flag, default off** — the Phase 1 head ranks queen *last* and enabling it costs the gate 0.985 → 0.960 | `MCTSConfig.promo_prior_from_head` |
 | N3 | Zero the tiled region in `_grow_nodes` | **Applied** | `Tree._grow_nodes` |
 | N1/N2 | Perf notes | **Open**, awaiting profile evidence | — |
 
-**What the review did not catch**, recorded because it bounds how much assurance a review of
-this kind buys: the nine-position **proven-win ordering** defect (search proved a mate-in-2 and
-played a proven mate-in-5). It was not visible in the code under review — every line was
-individually correct, `IMMEDIATE_WIN_BONUS` looked like it covered the case, and the failure
-only appears when two proven wins exist in one position, which needed round `d`'s coverage
-improvement to become common. It was found by *triaging gate failures*, not by reading code.
-Reviews catch defects of construction; measurement catches defects of interaction.
+**What the review did not catch** — the nine-position proven-win ordering defect — is on the
+record in its own addendum, which is the right place for it. The generalisable half is worth
+keeping here: every line under review was individually correct, `IMMEDIATE_WIN_BONUS` had been
+analysed and correctly cleared *for depth 1*, and the failure needs two proven wins in one
+position, which only became common after round `d` raised coverage. It was found by triaging
+gate failures, not by reading code. **Reviews catch defects of construction; measurement
+catches defects of interaction** — which is the argument for keeping both, and for the review's
+own instruction to triage rather than theorise about a residual.
 
 ---
 
