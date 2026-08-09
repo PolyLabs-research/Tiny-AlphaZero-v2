@@ -96,7 +96,7 @@ class BatchRunner:
         device: str = "cpu",
         max_plies: int = 160,
     ) -> None:
-        """``evaluate_batch(tokens (B,72) int64) -> (policy (B,64,64), value (B,))``.
+        """``evaluate_batch(tokens (B,72)) -> (policy (B,64,64), promo (B,64,64,4), value (B,))``.
 
         Raw policy logits: the legal mask is applied runner-side, because the mask
         is cheap on CPU exactly when the leaf yields and would otherwise have to be
@@ -124,7 +124,7 @@ class BatchRunner:
         if not pending:
             return
         tokens = np.stack([r.tokens for r in pending]).astype(np.int64)
-        policies, values = self.evaluate_batch(tokens)
+        policies, promos, values = self.evaluate_batch(tokens)
         self.stats["forwards"] += 1
         self.stats["leaves"] += len(pending)
 
@@ -136,10 +136,11 @@ class BatchRunner:
             if np.isfinite(m):
                 e = np.exp(masked - m)
                 probs = (e / e.sum()).astype(np.float32)
-            self._resume(games[req.game], (probs, float(values[i])))
+            promo = np.asarray(promos[i], dtype=np.float32).reshape(64, 64, 4)
+            self._resume(games[req.game], (probs, promo, float(values[i])))
         pending.clear()
 
-    def _resume(self, gs: _GameState, answer: tuple[np.ndarray, float]) -> None:
+    def _resume(self, gs: _GameState, answer: tuple[np.ndarray, np.ndarray, float]) -> None:
         try:
             gs.gen.send(answer)
         except StopIteration as stop:
@@ -368,7 +369,7 @@ class BatchRunner:
         self._start_move(gs, search, num_sims, base_reps)
 
 
-def _unused_evaluator(_tokens: np.ndarray) -> tuple[np.ndarray, float]:
+def _unused_evaluator(_tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
     """Search's inline evaluator is never called on the batched path.
 
     Loud rather than silent: if a simulation ever evaluates inline here, the
@@ -379,6 +380,29 @@ def _unused_evaluator(_tokens: np.ndarray) -> tuple[np.ndarray, float]:
     )
 
 
+def uniform_stub_batch(
+    tokens: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Batched analogue of ``uniform_stub_evaluator``: flat logits, zero value.
+
+    Flat logits become a uniform distribution once the runner applies the legal
+    mask, and the 0.25 promo plane divides a promotion cell exactly as the old
+    split-by-count did — so the two evaluators agree by construction and any
+    sync-vs-batched divergence is the scheduler's, not the evaluator's.
+
+    Lives here, once. It previously existed as three separate copies (the tests,
+    the benchmark, the parity probe) that had to be kept in step by hand, which
+    is the duplication rule in AGENTS.md §5 and the thing that made the
+    evaluator signature change touch three files it should not have.
+    """
+    b = tokens.shape[0]
+    return (
+        np.zeros((b, 64, 64), dtype=np.float32),
+        np.full((b, 64, 64, 4), 0.25, dtype=np.float32),
+        np.zeros(b, dtype=np.float32),
+    )
+
+
 def torch_evaluate_batch(net: Any, device: Any) -> Any:
     """Adapt a ChessNet into an ``evaluate_batch`` callable."""
     import torch
@@ -386,7 +410,7 @@ def torch_evaluate_batch(net: Any, device: Any) -> Any:
     from tinyalphazero.model import value_scalar
 
     @torch.inference_mode()
-    def evaluate(tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def evaluate(tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         t = torch.from_numpy(np.ascontiguousarray(tokens)).to(device)
         use_bf16 = getattr(device, "type", str(device)) == "cuda"
         ctx = (
@@ -396,8 +420,14 @@ def torch_evaluate_batch(net: Any, device: Any) -> Any:
         )
         with ctx:
             out = net(t)
+        # Promotions are softmaxed on device: it is a (B,64,64,4) reduction over
+        # the last axis, and doing it here rather than per-leaf on the CPU keeps
+        # the scatter loop free of per-cell work. The transfer grows by 4x over
+        # the policy plane, which the §10 erratum's decomposition says is not
+        # where the time goes (GPU ~28% of a simulation; movegen dominates).
         return (
             out.policy_ft.float().cpu().numpy(),
+            torch.softmax(out.promo, dim=-1).float().cpu().numpy(),
             value_scalar(out.value_wdl).float().cpu().numpy(),
         )
 

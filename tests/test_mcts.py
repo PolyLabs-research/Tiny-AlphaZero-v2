@@ -20,6 +20,7 @@ from tinyalphazero.config import MCTSConfig
 from tinyalphazero.mcts.gumbel import allocate_within_phase, halving_phase_budgets
 from tinyalphazero.mcts.search import (
     EXACT_WIN_BONUS,
+    UNIFORM_PROMO,
     WIN_DEPTH_STEP,
     Search,
     _forces_mate_in_2,
@@ -842,13 +843,13 @@ def test_eval_profile_considers_the_prior_top_m_exactly() -> None:
     n_legal = board.legal_moves.count()
     ranked = sorted(board.legal_moves, key=lambda mv: (mv.from_square, mv.to_square))
 
-    def skewed(tokens: np.ndarray) -> tuple[np.ndarray, float]:
+    def skewed(tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
         # Geometric prior over a fixed move order: unambiguous, well-separated
         # ranking, no ties for the considered-set boundary to arbitrate.
         policy = np.zeros((64, 64), dtype=np.float32)
         for i, mv in enumerate(ranked):
             policy[mv.from_square, mv.to_square] = 0.5 ** (i + 1)
-        return policy / policy.sum(), 0.0
+        return policy / policy.sum(), UNIFORM_PROMO, 0.0
 
     m = 8
     search = Search(uniform_stub_evaluator, _eval_cfg(eval_m=m), np.random.default_rng(0))
@@ -970,6 +971,91 @@ def test_exact_win_bonus_dominates_prior_and_sigma() -> None:
     """
     assert WIN_DEPTH_STEP > 500
     assert EXACT_WIN_BONUS - 900 * WIN_DEPTH_STEP > 0
+
+
+# ---------------------------------------------------------------------------
+# 10. Promotion priors (review S4, delivered chunk 8)
+# ---------------------------------------------------------------------------
+
+PROMO_FEN = "1n2k3/P6P/8/8/8/8/6K1/R6R w - - 0 1"
+
+
+def test_promo_fixture_audit_covers_both_kinds() -> None:
+    """The audit that the S4 change required — and what it found.
+
+    Every fixture in this file and in the equivalence set had **zero** legal
+    promotions before chunk 8: `MIDGAME_FEN`, `TACTICAL_FEN`, `mate_in_1[0]`,
+    `mate_in_2[0]`, `multi_mate`. The whole mate-in-1 suite has none either.
+    So no pin needed re-deriving when the promotion branch changed — not because
+    the change was safe, but because nothing tested it. That is the finding.
+
+    This asserts coverage of both kinds now exists, so a future change to the
+    promotion branch cannot again pass by never being executed.
+    """
+    with_promos = [f for f in (PROMO_FEN,) if any(
+        m.promotion for m in chess.Board(f).legal_moves)]
+    without = [f for f in (MIDGAME_FEN, TACTICAL_FEN) if not any(
+        m.promotion for m in chess.Board(f).legal_moves)]
+    assert with_promos, "no promotion fixture — the S4 branch is untested"
+    assert without, "no promotion-free fixture — invariance is unasserted"
+
+
+def test_stub_priors_are_uniform_on_a_promotion_position() -> None:
+    """Chunk 5 behaviour, unchanged by the S4 interface (the default path).
+
+    With the uniform stub every legal action — promotions included — must come
+    out with exactly equal prior. That was true before the promo plane existed
+    and must stay true, since every gate in chunks 5 and 6 runs on this
+    evaluator. It is what "the interface change is behaviour-neutral for Phase
+    1" actually means, asserted rather than asserted-in-a-docstring.
+    """
+    board = chess.Board(PROMO_FEN)
+    search = Search(uniform_stub_evaluator, _eval_cfg(), np.random.default_rng(0))
+    tree, root, _ = search.run_tree(board, None, 0)
+    sl = tree.edge_slice(root)
+    priors = tree.prior[sl]
+    n = int(tree.num_edges[root])
+    assert n == board.legal_moves.count() == 41
+    assert sum(1 for m in board.legal_moves if m.promotion) == 12
+    np.testing.assert_allclose(priors, np.full(n, 1.0 / n), rtol=1e-5)
+
+
+def test_promo_prior_from_head_redistributes_only_promotion_cells() -> None:
+    """With the flag on, a promotion cell is divided by the head's distribution.
+
+    Uses a synthetic evaluator so the assertion is about the *mechanism* rather
+    than about any checkpoint's opinions: the head is told queen=0.7, and the
+    queen promotion must end up with 0.7 of what the four promotions share,
+    while non-promotion edges keep their relative weights.
+    """
+    board = chess.Board(PROMO_FEN)
+    skew = np.zeros((64, 64, 4), dtype=np.float32)
+    skew[..., 3] = 0.7  # queen
+    skew[..., 0] = skew[..., 1] = skew[..., 2] = 0.1
+
+    def evaluator(tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+        policy, _promo, value = uniform_stub_evaluator(tokens)
+        return policy, skew, value
+
+    cfg = _eval_cfg()
+    cfg.promo_prior_from_head = True
+    search = Search(evaluator, cfg, np.random.default_rng(0))
+    tree, root, _ = search.run_tree(board, None, 0)
+    sl = tree.edge_slice(root)
+
+    moves = [
+        chess.Move(int(tree.move_ft[sl.start + i]) // 64,
+                   int(tree.move_ft[sl.start + i]) % 64,
+                   promotion=[None, chess.KNIGHT, chess.BISHOP, chess.ROOK,
+                              chess.QUEEN][int(tree.promo[sl.start + i])])
+        for i in range(int(tree.num_edges[root]))
+    ]
+    priors = tree.prior[sl]
+    queens = [p for m, p in zip(moves, priors, strict=True) if m.promotion == chess.QUEEN]
+    knights = [p for m, p in zip(moves, priors, strict=True) if m.promotion == chess.KNIGHT]
+    assert queens and knights
+    # 0.7 vs 0.1 in, 7x out.
+    assert queens[0] / knights[0] == pytest.approx(7.0, rel=1e-4)
 
 
 def test_root_completed_q_prefers_exact_over_estimate() -> None:

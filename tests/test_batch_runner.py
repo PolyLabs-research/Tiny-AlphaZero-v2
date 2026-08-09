@@ -12,7 +12,13 @@ import numpy as np
 import pytest
 
 from tinyalphazero.config import MCTSConfig
-from tinyalphazero.mcts.batch_runner import BatchRunner, GameTrace
+from tinyalphazero.mcts.batch_runner import (
+    BatchRunner,
+    GameTrace,
+)
+from tinyalphazero.mcts.batch_runner import (
+    uniform_stub_batch as stub_batch,
+)
 from tinyalphazero.mcts.gumbel import (
     allocate_within_phase,
     halving_phase_budgets,
@@ -24,17 +30,6 @@ from tinyalphazero.mcts.tree import Tree
 MATE_IN_1 = "tests/suites/mate_in_1.epd"
 MATE_IN_2 = "tests/suites/mate_in_2.epd"
 MIDGAME = "r1bq1rk1/pp2bppp/2n1pn2/2pp4/3P1B2/2PBPN2/PP1N1PPP/R2Q1RK1 w - - 0 9"
-
-
-def stub_batch(tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Batched analogue of the uniform stub: flat logits, zero value.
-
-    Flat logits become a uniform distribution once the runner applies the legal
-    mask, which is exactly what `uniform_stub_evaluator` produces — so the two
-    paths are comparable by construction.
-    """
-    b = tokens.shape[0]
-    return np.zeros((b, 64, 64), dtype=np.float32), np.zeros(b, dtype=np.float32)
 
 
 def _board(epd_or_fen: str) -> chess.Board:
@@ -54,6 +49,12 @@ FIXTURES = {
     "mate_in_1": load_epd(MATE_IN_1)[0][0],
     "mate_in_2": load_epd(MATE_IN_2)[0][0],
     "multi_mate": "6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1",
+    # Added by the chunk 8 promo audit. Before it, NO fixture in either the
+    # equivalence set or the pinned-visit set contained a single legal
+    # promotion — so the promotion branch of _build_node, which chunk 8 changed,
+    # had never been exercised by the gate that exists to keep the two drivers
+    # in step. Pawn on a7 with a capture-promotion available: 8 promotion edges.
+    "promotions": "1n2k3/P6P/8/8/8/8/6K1/R6R w - - 0 1",
 }
 
 

@@ -20,16 +20,14 @@ import subprocess
 import time
 from pathlib import Path
 
-import numpy as np
-
 from tinyalphazero.config import MCTSConfig, load_config
-from tinyalphazero.mcts.batch_runner import BatchRunner, torch_evaluate_batch
-
-
-def stub_batch(tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Zero-cost evaluator: isolates runner overhead from network cost."""
-    b = tokens.shape[0]
-    return np.zeros((b, 64, 64), dtype=np.float32), np.zeros(b, dtype=np.float32)
+from tinyalphazero.mcts.batch_runner import (
+    BatchRunner,
+    torch_evaluate_batch,
+)
+from tinyalphazero.mcts.batch_runner import (
+    uniform_stub_batch as stub_batch,
+)
 
 
 def _git_sha() -> str:

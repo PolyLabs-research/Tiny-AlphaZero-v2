@@ -172,7 +172,7 @@ def main(argv: list[str] | None = None) -> int:
                 # Value head on the position AFTER the key move, opponent to
                 # move: the number self-play has to sharpen for this position to
                 # survive halving. Negated into our perspective.
-                key_child_value = -float(evaluate_fn(encode_board(board, 0))[1])
+                key_child_value = -float(evaluate_fn(encode_board(board, 0))[2])
             finally:
                 board.pop()
 

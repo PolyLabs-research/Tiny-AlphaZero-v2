@@ -30,20 +30,10 @@ import numpy as np
 
 from tinyalphazero.config import MCTSConfig
 from tinyalphazero.mcts.batch_runner import BatchRunner
+from tinyalphazero.mcts.batch_runner import uniform_stub_batch as stub_batch
 from tinyalphazero.mcts.search import Search, load_epd, uniform_stub_evaluator
 
 REPO = Path(__file__).resolve().parents[1]
-
-
-def stub_batch(tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Batched analogue of ``uniform_stub_evaluator``.
-
-    Flat logits become uniform once the runner applies the legal mask, so the
-    two evaluators agree by construction and any divergence below is the
-    scheduler's, not the evaluator's.
-    """
-    b = tokens.shape[0]
-    return np.zeros((b, 64, 64), dtype=np.float32), np.zeros(b, dtype=np.float32)
 
 # Positions with enough branching that m < n_legal actually bites, plus the
 # tactical ones where the solver and force-include interact with the schedule.

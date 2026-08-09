@@ -51,6 +51,20 @@ class MCTSConfig:
     # noise. The default here is the *self-play* value, so anything that forgets
     # to choose keeps generating diverse data rather than silently freezing it.
     root_noise: bool = True
+    # Split a promotion cell's prior by the promo head's distribution instead of
+    # equally over the four pieces. OFF for Phase 1 checkpoints, ON from Phase 2.
+    #
+    # Not a preference — measured. Phase 1 trains on random play, where the four
+    # promotion pieces are sampled uniformly, so the head has no promotion signal
+    # and its deviations from uniform are fitted noise. On `phase1_anchor` it
+    # ranks QUEEN last (0.165–0.217 vs 0.25 uniform) and turning this on costs
+    # 2.5 points on the chunk 6 gate: 0.985 → 0.960, five new failures, zero
+    # fixed, and on every one of the five the key move is a queen promotion.
+    # Equal division is the correct prior for a head that knows nothing.
+    #
+    # Flip to True once self-play has trained the head on its own promotion
+    # choices, and re-measure the gate when doing so.
+    promo_prior_from_head: bool = False
     # Overrides applied only when root_noise is False. None means "inherit the
     # self-play value". Scoped deliberately: retuning search constants for a
     # measurement must not retune the constants that generate training data --

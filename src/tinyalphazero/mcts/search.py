@@ -34,8 +34,18 @@ from tinyalphazero.encoding import decode_board, encode_board
 from tinyalphazero.mcts import gumbel
 from tinyalphazero.mcts.tree import Tree
 
-# evaluate_fn(tokens (72,)) -> (policy_ft (64,64) probs already legal-masked, value float)
-EvaluateFn = Callable[[np.ndarray], tuple[np.ndarray, float]]
+# evaluate_fn(tokens (72,)) -> (policy_ft (64,64) probs already legal-masked,
+#                               promo (64,64,4) per-cell promotion distribution,
+#                               value float)
+#
+# The promo plane is read **only** on cells that carry a promotion move, and it
+# exists because a (from, to) cell is not one action when it is a promotion — it
+# is four. Splitting that cell's prior by count treats a queen promotion and an
+# underpromotion as equally likely, which is wrong on essentially every position
+# where promotions are legal and is exactly the kind of prior error Gumbel's
+# considered set has no way to recover from. Dense (64,64,4) costs two linears
+# and a broadcast; the model already computes it in `forward`.
+EvaluateFn = Callable[[np.ndarray], tuple[np.ndarray, np.ndarray, float]]
 # repetitions_fn(board) -> times this position already occurred in game history
 # *before* the search started. In-search repetitions are counted separately.
 RepetitionsFn = Callable[[chess.Board], int]
@@ -140,9 +150,9 @@ class RootResult:
 def network_evaluator(ckpt_path: str | Path, device: str | None = None) -> EvaluateFn:
     """Build an ``evaluate_fn`` backed by a trained checkpoint.
 
-    Returns legal-masked policy probabilities and a scalar value in the
-    side-to-move perspective (``P(win) - P(loss)``), matching the sign
-    convention the tree backs up.
+    Returns legal-masked policy probabilities, a per-cell promotion
+    distribution, and a scalar value in the side-to-move perspective
+    (``P(win) - P(loss)``), matching the sign convention the tree backs up.
     """
     import torch
 
@@ -155,24 +165,36 @@ def network_evaluator(ckpt_path: str | Path, device: str | None = None) -> Evalu
     net.eval()
 
     @torch.no_grad()
-    def evaluate(tokens: np.ndarray) -> tuple[np.ndarray, float]:
+    def evaluate(tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
         board = decode_board(tokens)
         t = torch.from_numpy(np.ascontiguousarray(tokens, dtype=np.int64)).unsqueeze(0).to(dev)
         out = net(t)
         mask = torch.from_numpy(legal_mask_ft(board)).unsqueeze(0).to(dev)
         probs = masked_policy(out.policy_ft, mask)[0].reshape(64, 64).float().cpu().numpy()
+        promo = torch.softmax(out.promo[0], dim=-1).float().cpu().numpy()
         value = float(value_scalar(out.value_wdl)[0].item())
-        return probs, value
+        return probs, promo, value
 
     return evaluate
 
 
-def uniform_stub_evaluator(tokens: np.ndarray) -> tuple[np.ndarray, float]:
-    """Uniform policy over legal moves, zero value.
+# Promotion pieces in the order the codec numbers them (promo 1..4), so a promo
+# plane index is `_PROMO_OF[piece] - 1`.
+UNIFORM_PROMO = np.full((64, 64, 4), 0.25, dtype=np.float32)
+
+
+def uniform_stub_evaluator(tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """Uniform policy over legal moves, uniform promotions, zero value.
 
     Decodes the board from ``tokens`` — legitimate precisely because the
     encoding is Markovian (spec §3.1); if this ever stops working, the Markov
     invariant is broken and that is the bug worth finding.
+
+    The 0.25-everywhere promo plane is chosen so the stub's behaviour is
+    **unchanged** by the interface: splitting a promotion cell's mass by a
+    uniform distribution over four pieces is arithmetically identical to the
+    split-by-count it replaces. Every stub-evaluator gate — which is every gate
+    in chunks 5 and 6 — therefore measures the same search it did before.
     """
     board = decode_board(tokens)
     policy = np.zeros((64, 64), dtype=np.float32)
@@ -181,7 +203,7 @@ def uniform_stub_evaluator(tokens: np.ndarray) -> tuple[np.ndarray, float]:
         for mv in legal:
             policy[mv.from_square, mv.to_square] = 1.0
         policy /= policy.sum()
-    return policy, 0.0
+    return policy, UNIFORM_PROMO, 0.0
 
 
 class Search:
@@ -271,9 +293,11 @@ class Search:
         before speed (plan §chunk-5) and chunk 7 can revisit it after profiling.
         """
         tokens = encode_board(board, _prior_occurrences(board, path_reps, base_reps))
-        policy, value = self.evaluate_fn(tokens)
+        policy, promo_probs, value = self.evaluate_fn(tokens)
         self._evaluations += 1
-        return self._build_node(tree, board, path_reps, base_reps, policy, value)
+        return self._build_node(
+            tree, board, path_reps, base_reps, policy, promo_probs, value
+        )
 
     def expand_root_gen(
         self,
@@ -290,8 +314,10 @@ class Search:
         any real batch forms, which is the throughput this chunk exists to fix.
         """
         tokens = self.leaf_tokens(board, path_reps, base_reps)
-        policy, value = yield tokens
-        node, _ = self._build_node(tree, board, path_reps, base_reps, policy, value)
+        policy, promo_probs, value = yield tokens
+        node, _ = self._build_node(
+            tree, board, path_reps, base_reps, policy, promo_probs, value
+        )
         return node
 
     def leaf_tokens(
@@ -307,6 +333,7 @@ class Search:
         path_reps: Counter,
         base_reps: RepetitionsFn,
         policy: np.ndarray,
+        promo_probs: np.ndarray,
         value: float,
     ) -> tuple[int, float]:
         """Create the node given an already-computed evaluation.
@@ -330,11 +357,37 @@ class Search:
             path_reps[key] -= 1
             board.pop()
 
-            edges.append((ft, promo, float(policy[mv.from_square, mv.to_square])))
+            # A promotion cell holds four distinct actions sharing one (from, to)
+            # score, so the cell's mass is divided by the promo head's own
+            # distribution rather than equally. Equal division says a rook
+            # promotion is as likely as a queen, which is wrong nearly always and
+            # occasionally wrong in the other direction — an underpromotion that
+            # is the only winning move gets a quarter of the mass it deserves,
+            # and Gumbel's considered set has no mechanism to recover a prior
+            # error. `promo` is 0 for non-promotions, and index 0 of the plane is
+            # never read, so the branch is only taken where it means something.
+            cell = float(policy[mv.from_square, mv.to_square])
+            if promo and self.cfg.promo_prior_from_head:
+                # Phase 2 path: the four promotions *share* the cell's mass,
+                # divided by the head's distribution over pieces.
+                cell *= float(promo_probs[mv.from_square, mv.to_square, promo - 1])
+
+            edges.append((ft, promo, cell))
             terminal_flags.append((tv is not None, 0.0 if tv is None else tv))
 
-        # Normalize priors over the edges actually created. Promotions share a
-        # (from, to) cell, so the four of them split that cell's mass by count.
+        # Normalize priors over the edges actually created.
+        #
+        # Note what happens to a promotion cell when `promo_prior_from_head` is
+        # off: all four promotion edges take the *full* cell score, so the cell
+        # contributes 4x its weight to this sum and each promotion ends with the
+        # same prior a normal move of equal score would get. That is the chunk 5
+        # behaviour, and its docstring described it as "the four of them split
+        # that cell's mass by count" — which is not what the code did, and not
+        # what it does now. It is load-bearing: making promotions genuinely share
+        # the cell (x0.25 each) drops the chunk 6 gate 0.985 -> 0.965, because on
+        # four gate positions the key promotion falls out of Gumbel's top-16.
+        # Kept deliberately rather than "fixed", and revisited when Phase 2 turns
+        # the flag on and the head has real signal to divide by.
         total = sum(p for _, _, p in edges)
         if total > 0:
             edges = [(ft, pr, p / total) for ft, pr, p in edges]
@@ -693,12 +746,12 @@ class Search:
                 if use_vloss:
                     for pe in path:
                         tree.vloss[pe] += 1
-                policy, value_est = yield tokens
+                policy, promo_probs, value_est = yield tokens
                 if use_vloss:
                     for pe in path:
                         tree.vloss[pe] -= 1
                 child, value = self._build_node(
-                    tree, board, path_reps, base_reps, policy, value_est
+                    tree, board, path_reps, base_reps, policy, promo_probs, value_est
                 )
                 tree.child[e] = child
                 break
