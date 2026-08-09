@@ -118,11 +118,16 @@ def main() -> None:
     _write_epd(args.out / "mate_in_2.epd", m2)
     print(f"wrote {len(m1)} mate-in-1 and {len(m2)} mate-in-2 positions to {args.out}")
 
+    # Guarded: --mate1 0 is a legitimate call (harvest a mate-in-2 tuning suite
+    # only), and this stats line used to crash on the empty list *after* both
+    # files were already written — a traceback on a run that had in fact
+    # succeeded, which is the kind of thing that gets a good artefact thrown away.
     branching = [len(list(b.legal_moves)) for b, _, _ in m1]
-    print(
-        f"mate-in-1 legal-move counts: min={min(branching)} median="
-        f"{int(np.median(branching))} max={max(branching)}"
-    )
+    if branching:
+        print(
+            f"mate-in-1 legal-move counts: min={min(branching)} median="
+            f"{int(np.median(branching))} max={max(branching)}"
+        )
 
 
 if __name__ == "__main__":

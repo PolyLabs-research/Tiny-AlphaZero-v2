@@ -697,6 +697,39 @@ def _delivers_mate(board: chess.Board, mv: chess.Move) -> bool:
     return out
 
 
+def solve_positions(
+    positions: list[tuple[str, str]],
+    sims: int,
+    evaluate_fn: EvaluateFn,
+    cfg: MCTSConfig | None = None,
+    mate_in: int = 1,
+    rng: np.random.Generator | None = None,
+) -> tuple[int, int, list[str]]:
+    """Solve a list of ``(epd_line, id)`` entries. Returns ``(solved, total, failed)``.
+
+    Split out from ``run_suite`` so a caller can shard a suite across worker
+    processes and sum the parts. That is only a legitimate thing to do because
+    each position gets an independent search — which is exactly true under the
+    evaluation profile, and *not* true under self-play noise, where the shards
+    would consume different draws from their own RNGs and the total would depend
+    on how the work happened to be divided.
+    """
+    search = Search(evaluate_fn, cfg, rng)
+    solved = 0
+    failed: list[str] = []
+    for epd_line, ident in positions:
+        board = chess.Board()
+        board.set_epd(epd_line)
+        result = search.run(board, None, sims)
+        mv = result.best_move()
+        ok = _delivers_mate(board, mv) if mate_in == 1 else _forces_mate_in_2(board, mv)
+        if ok:
+            solved += 1
+        else:
+            failed.append(ident or board.epd())
+    return solved, len(positions), failed
+
+
 def run_suite(
     epd_path: str | Path,
     sims: int,
@@ -712,21 +745,7 @@ def run_suite(
     ``bm``. Several positions have more than one solution and pinning one of them
     would be testing the suite, not the search.
     """
-    search = Search(evaluate_fn, cfg, rng)
-    positions = load_epd(epd_path)
-    solved = 0
-    failed: list[str] = []
-    for epd_line, ident in positions:
-        board = chess.Board()
-        board.set_epd(epd_line)
-        result = search.run(board, None, sims)
-        mv = result.best_move()
-        ok = _delivers_mate(board, mv) if mate_in == 1 else _forces_mate_in_2(board, mv)
-        if ok:
-            solved += 1
-        else:
-            failed.append(ident or board.epd())
-    return solved, len(positions), failed
+    return solve_positions(load_epd(epd_path), sims, evaluate_fn, cfg, mate_in, rng)
 
 
 def main(argv: list[str] | None = None) -> int:
