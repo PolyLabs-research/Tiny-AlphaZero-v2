@@ -805,4 +805,45 @@ silently on whichever consumer forgot to read it.**
 
 ---
 
+## Session 2026-08-09 — tree state, and the push is deferred again
+
+Nothing merged, nothing tagged. That is the pre-registered consequence of the gate landing at
+0.940: promotion, the `round-d` → `main` merge and the `phase1-closed-r2` tag were all
+conditional on ≥ 0.95.
+
+| Branch | Tip | vs `main` | State |
+|---|---|---|---|
+| `main` | `29b2294` | — | untouched all session |
+| `round-d` | `17625b0` | +7 | Phase 1 docs + contamination gate. **Unmerged, untagged** |
+| `chunk-05-mcts` | `73abbf9` | +3 | unmerged, pending review |
+| `chunk-06-gumbel` | `67e6025` | +7 | eval profile, sweep, diagnosis. Unmerged |
+| `chunk-07-batched` | `e7a5c8d` | +10 | contains `chunk-06-gumbel`. Unmerged |
+
+`runs/phase1_anchor.pt` is byte-identical to `runs/phase1_c/final.pt` (md5
+`d58045a6865bd5c973336db21296b8ee`) — **not promoted**, and `ANCHORS.sha256` is unchanged with
+its single dated v1 line. `runs/phase1_d/final.pt` remains the strictly better checkpoint on
+every held-out gate, available to promote whenever the gate conversation resolves.
+
+Only pre-existing tag is `phase1-closed`. Both worktrees clean (`/chess` on `round-d`,
+`/chess-c7` on `chunk-07-batched`).
+
+**Where the work landed, and why not all on one branch.** `round-d` has no
+`src/tinyalphazero/mcts/` at all — the search package lives only on the `chunk-05/06/07` chain,
+which is a diverged sibling off `main` — so the evaluation profile could not physically be
+built there. It is a chunk 6 feature and went to `chunk-06-gumbel`, then forward into
+`chunk-07-batched`; the Phase 1 documents and the contamination gate stayed on `round-d`. The
+`position_key` helper and `test_contamination.py` exist only on `round-d`, which is why the
+tuning suite's disjointness was verified there and the sweep was run on `chunk-06-gumbel`. The
+tuning suite itself lives under `runs/` (gitignored), so it survives checkouts; only its
+`meta.json` is tracked, on both branches.
+
+**Push deferred — fourth consecutive session.** `origin` is
+`git@github.com:tripptytrip/Tiny-AlphaZero-v2.git` and `~/.ssh/` still holds no private key
+(`git ls-remote origin` → `Permission denied (publickey)`). Everything since the initial commit
+is local-only: `main`, four branches, one tag, and the ~6.8 G of untracked
+checkpoints/datasets that no remote would carry anyway. Tom asked to be reminded of this — it
+is now the single largest unmitigated risk to the project, well ahead of any gate.
+
+---
+
 ## Next: chunk 6 gate-number conversation is back with Tom (see BLOCKED-2026-08-08)
