@@ -20,6 +20,10 @@ mcts:
   dirichlet_frac: 0.25
   gumbel_m: 16
   root_mode: gumbel
+  # Self-play explores; evaluation does not. Suites, the anchor ladder and match
+  # play override this to false (the runner defaults to it). See
+  # BLOCKED-2026-08-08-mate2-gate.md.
+  root_noise: true
   sims: 48
   temperature_ply_cutoff: 30
 
