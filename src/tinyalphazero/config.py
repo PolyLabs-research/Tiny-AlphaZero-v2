@@ -7,7 +7,7 @@ so results are reproducible from the config alone.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,26 @@ class MCTSConfig:
     gumbel_m: int = 16  # top-m root actions to consider
     c_visit: float = 50.0  # sigma scaling: (c_visit + max_N) * c_scale * q
     c_scale: float = 1.0
+    # --- evaluation profile (BLOCKED-2026-08-08) ------------------------
+    # Gumbel's root draw exists to diversify *self-play data*. Carrying it into
+    # a suite, a ladder rung, or a match measures exploration noise on a
+    # match-play question: a forcing move the prior ranks first can still be
+    # knocked out of the considered set by an unlucky g. Deterministic acting at
+    # evaluation is standard Gumbel-AZ practice (Danihelka et al. 2022 §5), and
+    # chunk 10's ladder needs it regardless -- rungs that move by +/-2.5 points
+    # under reseeding cannot resolve Elo.
+    #
+    # Rule: suites, ladder, and match play run the eval profile; self-play runs
+    # noise. The default here is the *self-play* value, so anything that forgets
+    # to choose keeps generating diverse data rather than silently freezing it.
+    root_noise: bool = True
+    # Overrides applied only when root_noise is False. None means "inherit the
+    # self-play value". Scoped deliberately: retuning search constants for a
+    # measurement must not retune the constants that generate training data --
+    # that is Phase 2 evidence territory, not a gate conversation.
+    eval_m: int | None = None
+    eval_c_visit: float | None = None
+    eval_c_scale: float | None = None
     # PUCT (ablation control)
     c_puct: float = 1.25
     dirichlet_alpha: float = 0.3
@@ -45,6 +65,26 @@ class MCTSConfig:
     temperature_ply_cutoff: int = 30  # move visit sampling: T=1.0 before, 0.1 after
     # Batched leaf evaluation
     batch_leaves: int = 512
+
+    def resolved(self) -> MCTSConfig:
+        """The config search actually runs with, after applying the eval profile.
+
+        Folding ``eval_*`` down onto ``gumbel_m`` / ``c_visit`` / ``c_scale``
+        here — rather than teaching ``sigma()`` and ``improved_policy()`` to pick
+        a branch — keeps exactly one definition of each constant in the search
+        hot path. Two call sites consuming σ under two different rules is the
+        shape of bug that produced ``IMMEDIATE_WIN_BONUS``.
+
+        Idempotent: ``cfg.resolved().resolved() == cfg.resolved()``.
+        """
+        if self.root_noise:
+            return self
+        return replace(
+            self,
+            gumbel_m=self.gumbel_m if self.eval_m is None else self.eval_m,
+            c_visit=self.c_visit if self.eval_c_visit is None else self.eval_c_visit,
+            c_scale=self.c_scale if self.eval_c_scale is None else self.eval_c_scale,
+        )
 
 
 @dataclass

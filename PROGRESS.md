@@ -628,4 +628,101 @@ silently changes what every existing test of the old path measures.
 
 ---
 
-## Next: chunk 6 gate decision (see BLOCKED-2026-08-08), then Chunk 7
+## Chunk 6 — evaluation profile + bounded tuning ⚠️ STILL BLOCKED (2026-08-09)
+
+Tom's decision on the round-`d` split result: **the gate number does not move.** Two staged
+interventions, pre-registered in `BLOCKED-2026-08-08-mate2-gate.md` *before* any measurement.
+Both were run. **The gate is 0.940 and the ≥0.95 threshold is not met.** Nothing was promoted,
+merged or tagged; the gate-number conversation goes back to Tom.
+
+Authoritative write-up (with the argument, not just the numbers): `BLOCKED-2026-08-08` and the
+round-`d` result block in `TRAINING_STRATEGY.md`, both on branch `round-d`.
+
+### Stage 1 — the evaluation profile
+
+`MCTSConfig.root_noise` (default `true` = self-play). At `false`: root candidates are the
+deterministic top-m by raw logits, and the acting argmax is `logits + σ(q̂)` — Sequential
+Halving, σ, the solver and the budget convention unchanged. Implemented as `g ≡ 0` rather than
+a second selection path. Suites, ladder and match play run this profile; self-play runs noise.
+
+```
+$ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_2.epd --sims 128 \
+      --ckpt runs/phase1_d/final.pt --no-root-noise --seed 1
+mate_in_2.epd: 188/200 solved at 128 sims (94.0%) | eval=runs/phase1_d/final.pt root=gumbel profile=eval(deterministic) m=16 c_visit=50 c_scale=1 | gate >= 95%
+
+$ ... --seed 2
+mate_in_2.epd: 188/200 solved at 128 sims (94.0%) | ... (identical, including the failure list)
+
+$ ... --suite tests/suites/mate_in_1.epd --sims 16 --ckpt runs/phase1_d/final.pt --no-root-noise
+mate_in_1.epd: 100/100 solved at 16 sims (100.0%) | gate >= 100%
+```
+
+0.890 → **0.940**, and the ±2.5-point seed spread is gone: both seeds agree exactly, on the
+score *and* on which twelve positions failed. **Pre-registered projection was 0.93 ± 0.02**;
+0.940 sits at the top edge of that window, so the three-factor decomposition was right and
+stage 2 was authorised rather than triggered by surprise.
+
+### Stage 2 — one bounded sweep, on a disjoint 500-position tuning suite
+
+`runs/data/mate2_tune_500` (seed 102), verified disjoint from both gate suites, all four
+held-out eval sets and all five anchor sets — including the superseded ones, since `phase1_d`
+warm-started from `phase1_c` (`tests/test_contamination.py`, 29 pass). Full grid, 128 sims,
+eval profile, ~98 s per config:
+
+| c_visit | c_scale | m=16 | m=32 |
+|---|---|---|---|
+| 25 | 0.5 | 91.2 | 92.6 |
+| 25 | 1.0 | 91.8 | 92.8 |
+| 25 | 2.0 | 92.2 | **93.2** |
+| 50 | 0.5 | 91.8 | 92.8 |
+| 50 | 1.0 | 92.2ᵈ | **93.2** |
+| 50 | 2.0 | 92.4 | 92.2 |
+| 100 | 0.5 | 92.2 | **93.4** ← selected |
+| 100 | 1.0 | 92.4 | 92.2 |
+| 100 | 2.0 | 92.6 | 90.6 |
+
+ᵈ = paper defaults. Selection by tuning-suite solve alone, ties toward defaults; 93.4% was a
+unique maximum. **Single-shot gate with the chosen config, the one permitted touch:**
+
+```
+$ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_2.epd --sims 128 \
+      --ckpt runs/phase1_d/final.pt --no-root-noise --eval-m 32 --eval-c-visit 100 --eval-c-scale 0.5 --seed 1
+mate_in_2.epd: 188/200 solved at 128 sims (94.0%) | ... m=32 c_visit=100 c_scale=0.5 | gate >= 95%
+   (seed 2 identical)
+```
+
+**188/200 — the same score as the untuned profile, on a different set of twelve failures.**
+The +1.2 points the sweep bought on the tuning suite transferred as exactly zero. That is the
+firewall doing its job: the whole 18-config grid spans 90.6–93.4%, and the binomial standard
+error at n=500, p≈0.93 is ±1.14 points, so the grid's spread is ~2.5 SE and picking its
+maximum is mostly picking noise. Had the sweep been run on the gate suite, 93.4% would have
+been reported as a tuning win.
+
+### The decomposition now closes exactly, and names what is left
+
+`scripts/diagnose_mate2.py` against the gate suite, eval profile:
+
+| Factor | m=16 (defaults) | m=32 (selected) |
+|---|---|---|
+| prior coverage @ top-m | 0.990 | 0.995 |
+| solved given considered | 0.949 | 0.945 |
+| **product** | **0.940** | **0.940** |
+| measured gate | 0.940 | 0.940 |
+
+Under noise the chain was `0.990 × 0.925 × 0.941`; the middle factor is now 1.000 by
+construction. Prior coverage is at 0.990 (top-1 0.660, top-8 0.975, top-32 0.995, median
+forcing-move rank 0). **The entire residual is conversion — solved *given* the winning move
+was simulated — and raising m trades against it almost exactly: +0.005 coverage, −0.004
+conversion, product unchanged to three places.**
+
+Twelve failures = 2 never considered + 10 considered but not converted. To reach 0.95 at
+coverage 0.990, conversion must rise from 0.949 to ≥0.960.
+
+**What is now known that was not on 2026-08-09 morning:** the gate is not prior-limited (round
+`d` settled that), not noise-limited (stage 1 settled that), and not σ/m-limited (stage 2
+settled that, at the cost of one burned tuning suite). It is limited by what the search does
+with 128 simulations once the right move is already in front of it.
+
+---
+
+## Next: chunk 6 gate-number conversation is back with Tom (see BLOCKED-2026-08-08)

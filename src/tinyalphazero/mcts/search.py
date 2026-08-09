@@ -7,6 +7,14 @@ model quality, which is why every gate runs against a stub evaluator.
 Run the mate-in-1 suite:
 
     python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_1.epd --sims 16 --stub
+
+**Evaluation profile.** Suites, the anchor ladder, and match play run with
+``root_noise=False``; self-play runs with noise. Gumbel's root draw is a
+data-diversity device, and leaving it on turns a strength measurement into a
+measurement of exploration noise — on the mate-in-2 suite it costs 6.5 points of
+consideration and gives the gate a ±2.5-point spread under reseeding
+(``BLOCKED-2026-08-08-mate2-gate.md``). This runner therefore defaults to the
+eval profile; pass ``--root-noise`` to measure the self-play profile instead.
 """
 
 from __future__ import annotations
@@ -179,7 +187,11 @@ class Search:
         rng: np.random.Generator | None = None,
     ) -> None:
         self.evaluate_fn = evaluate_fn
-        self.cfg = cfg if cfg is not None else MCTSConfig()
+        # Resolve the eval profile once, here, so every downstream reader of
+        # cfg.gumbel_m / c_visit / c_scale sees the constants this search is
+        # actually running with. Mutating ``search.cfg`` afterwards is therefore
+        # not a supported way to switch profile — build a new Search.
+        self.cfg = (cfg if cfg is not None else MCTSConfig()).resolved()
         self.rng = rng if rng is not None else np.random.default_rng(0)
         self._evaluations = 0
         # Post-search tree, for tests that must compare more than the chosen move.
@@ -438,7 +450,19 @@ class Search:
             return self._root_result(tree, root, sl, 0)
 
         logits = gumbel.prior_logits(tree.prior[sl])
-        g = gumbel.gumbel_noise(self.rng, n_actions)
+        # The whole evaluation profile is this one substitution. Setting g ≡ 0
+        # makes the considered set the deterministic top-m by raw logits, and
+        # makes the acting argmax `logits + σ(q̂)` — both required behaviours —
+        # while Sequential Halving, σ, the solver and the budget convention read
+        # exactly the same code in both profiles. A second selection path would
+        # have to be kept in step with this one forever; a zero vector cannot
+        # drift. It also consumes no RNG, so eval runs are seed-independent by
+        # construction rather than by convention.
+        g = (
+            gumbel.gumbel_noise(self.rng, n_actions)
+            if self.cfg.root_noise
+            else np.zeros(n_actions, dtype=np.float32)
+        )
 
         # Considered set: top-m by g + logits, but a *proven win* is never
         # dropped for noise — see _force_include_proven_wins.
@@ -769,6 +793,39 @@ def _delivers_mate(board: chess.Board, mv: chess.Move) -> bool:
     return out
 
 
+def solve_positions(
+    positions: list[tuple[str, str]],
+    sims: int,
+    evaluate_fn: EvaluateFn,
+    cfg: MCTSConfig | None = None,
+    mate_in: int = 1,
+    rng: np.random.Generator | None = None,
+) -> tuple[int, int, list[str]]:
+    """Solve a list of ``(epd_line, id)`` entries. Returns ``(solved, total, failed)``.
+
+    Split out from ``run_suite`` so a caller can shard a suite across worker
+    processes and sum the parts. That is only a legitimate thing to do because
+    each position gets an independent search — which is exactly true under the
+    evaluation profile, and *not* true under self-play noise, where the shards
+    would consume different draws from their own RNGs and the total would depend
+    on how the work happened to be divided.
+    """
+    search = Search(evaluate_fn, cfg, rng)
+    solved = 0
+    failed: list[str] = []
+    for epd_line, ident in positions:
+        board = chess.Board()
+        board.set_epd(epd_line)
+        result = search.run(board, None, sims)
+        mv = result.best_move()
+        ok = _delivers_mate(board, mv) if mate_in == 1 else _forces_mate_in_2(board, mv)
+        if ok:
+            solved += 1
+        else:
+            failed.append(ident or board.epd())
+    return solved, len(positions), failed
+
+
 def run_suite(
     epd_path: str | Path,
     sims: int,
@@ -784,21 +841,7 @@ def run_suite(
     ``bm``. Several positions have more than one solution and pinning one of them
     would be testing the suite, not the search.
     """
-    search = Search(evaluate_fn, cfg, rng)
-    positions = load_epd(epd_path)
-    solved = 0
-    failed: list[str] = []
-    for epd_line, ident in positions:
-        board = chess.Board()
-        board.set_epd(epd_line)
-        result = search.run(board, None, sims)
-        mv = result.best_move()
-        ok = _delivers_mate(board, mv) if mate_in == 1 else _forces_mate_in_2(board, mv)
-        if ok:
-            solved += 1
-        else:
-            failed.append(ident or board.epd())
-    return solved, len(positions), failed
+    return solve_positions(load_epd(epd_path), sims, evaluate_fn, cfg, mate_in, rng)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -821,7 +864,42 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--root-mode", choices=["gumbel", "puct"], default=None, help="Override cfg.root_mode"
     )
-    ap.add_argument("--seed", type=int, default=0, help="Gumbel noise seed")
+    ap.add_argument(
+        "--root-noise",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Draw Gumbel noise at the root (the SELF-PLAY profile). Suites default "
+        "to --no-root-noise, the evaluation profile: deterministic top-m by raw "
+        "logits and an acting argmax of logits + sigma(q), which is what a "
+        "strength measurement should read. Turning this on makes the result "
+        "seed-dependent.",
+    )
+    ap.add_argument(
+        "--eval-m",
+        type=int,
+        default=None,
+        help="Considered-set size m for the evaluation profile only; self-play's "
+        "gumbel_m is untouched. Default: inherit gumbel_m (16).",
+    )
+    ap.add_argument(
+        "--eval-c-visit",
+        type=float,
+        default=None,
+        help="sigma c_visit for the evaluation profile only. Default: inherit (50.0).",
+    )
+    ap.add_argument(
+        "--eval-c-scale",
+        type=float,
+        default=None,
+        help="sigma c_scale for the evaluation profile only. Default: inherit (1.0).",
+    )
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Gumbel noise seed. Has no effect under the evaluation profile, which "
+        "draws no noise at all — two seeds must give byte-identical results.",
+    )
     ap.add_argument(
         "--mate-in",
         type=int,
@@ -847,6 +925,11 @@ def main(argv: list[str] | None = None) -> int:
     cfg = MCTSConfig()
     if args.root_mode:
         cfg.root_mode = args.root_mode
+    cfg.root_noise = bool(args.root_noise)
+    cfg.eval_m = args.eval_m
+    cfg.eval_c_visit = args.eval_c_visit
+    cfg.eval_c_scale = args.eval_c_scale
+    active = cfg.resolved()
 
     if args.stub:
         evaluate_fn = uniform_stub_evaluator
@@ -864,9 +947,15 @@ def main(argv: list[str] | None = None) -> int:
         rng=np.random.default_rng(args.seed),
     )
     frac = solved / total if total else 0.0
+    # The profile and the active constants go in the result line because these
+    # numbers get pasted into gate documents, where "77.0%" with no profile
+    # attached is exactly the ambiguity this whole investigation is about.
+    profile = "selfplay(noise)" if cfg.root_noise else "eval(deterministic)"
     print(
         f"{args.suite.name}: {solved}/{total} solved at {args.sims} sims "
         f"({100 * frac:.1f}%) | eval={which} root={cfg.root_mode} "
+        f"profile={profile} m={active.gumbel_m} "
+        f"c_visit={active.c_visit:g} c_scale={active.c_scale:g} "
         f"| gate >= {100 * threshold:.0f}%"
     )
     if failed:
