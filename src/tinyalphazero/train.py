@@ -91,6 +91,77 @@ def _legality_loss(
     return F.binary_cross_entropy_with_logits(legality, legal_mask.float())
 
 
+def _soft_policy_loss(
+    policy_ft: torch.Tensor,    # (B, 64, 64) raw logits
+    target: torch.Tensor,       # (B, 4096) distribution over from*64+to
+    legal_mask: torch.Tensor,   # (B, 64, 64) bool
+    masked: bool = True,
+) -> torch.Tensor:
+    """Cross-entropy against a *distribution* — Phase 2's improved-policy target.
+
+    Phase 1's :func:`_policy_loss` scores a single played move; the Gumbel
+    improved policy is supported on every considered root action, and collapsing
+    it to its argmax would throw away the part of the target that search produced.
+
+    The masked softmax puts ``-inf`` on illegal cells, so ``target * log p`` would
+    be ``0 * -inf = nan`` there. Zeroing the illegal terms is exact rather than a
+    guard: the target has no mass off the legal set, because it came from the root
+    edges.
+    """
+    b = policy_ft.size(0)
+    logits = policy_ft.reshape(b, 4096)
+    mask = legal_mask.reshape(b, 4096)
+    if masked:
+        logits = logits.masked_fill(~mask, float("-inf"))
+    logp = F.log_softmax(logits, dim=-1)
+    logp = torch.where(mask, logp, torch.zeros_like(logp))
+    return -(target * logp).sum(dim=-1).mean()
+
+
+def _soft_promo_loss(
+    promo_out: torch.Tensor,     # (B, 64, 64, 4) logits
+    from_sq: torch.Tensor,       # (B,) long
+    to_sq: torch.Tensor,         # (B,) long
+    promo_target: torch.Tensor,  # (B, 4) distribution over N/B/R/Q
+    promo_mask: torch.Tensor,    # (B,) bool — rows where a promotion carried mass
+) -> torch.Tensor:
+    """Promotion CE on the rows that are promotions, at the acted (from, to) cell."""
+    if not bool(promo_mask.any()):
+        return torch.zeros((), device=promo_out.device, dtype=promo_out.dtype)
+    idx = torch.where(promo_mask)[0]
+    logits = promo_out[idx, from_sq[idx], to_sq[idx], :]  # (K, 4)
+    return -(promo_target[idx] * F.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
+
+
+def _apply_update(
+    total: torch.Tensor,
+    net: ChessNet,
+    optimizer: torch.optim.Optimizer,
+    grad_clip: float,
+) -> tuple[float, bool]:
+    """Backward, clip, and step — unless the gradient is non-finite.
+
+    A single non-finite gradient permanently poisons the weights: every subsequent
+    step is then NaN. This was observed on ROCm/gfx1151, where the backward went
+    NaN nondeterministically on a batch whose forward loss was finite and
+    bit-identical to a clean run. Skipping the update costs one batch instead of
+    the whole run. Callers should track the skip rate — a rising one is a real
+    problem, not a transient.
+
+    Shared by both phases on purpose: this is the guard that let round `d` finish
+    (0 skips in 56K steps), and a second copy of it in the Phase 2 loop is a
+    second thing to keep in step. Returns ``(grad_norm, skipped)``.
+    """
+    total.backward()
+    grad_norm = torch.nn.utils.clip_grad_norm_(net.parameters(), grad_clip)
+    skipped = not (torch.isfinite(grad_norm) and torch.isfinite(total))
+    if skipped:
+        optimizer.zero_grad(set_to_none=True)
+    else:
+        optimizer.step()
+    return grad_norm.item(), skipped
+
+
 # ---------------------------------------------------------------------------
 # Training step
 # ---------------------------------------------------------------------------
@@ -145,20 +216,7 @@ def train_step(
         leg_w = cfg_train.legality_loss_weight
         total = p_w * p_loss + pr_w * pr_loss + v_w * v_loss + leg_w * leg_loss
 
-    total.backward()
-    grad_norm = torch.nn.utils.clip_grad_norm_(net.parameters(), cfg_train.grad_clip)
-
-    # A single non-finite gradient permanently poisons the weights: every subsequent
-    # step is then NaN. This was observed on ROCm/gfx1151, where the backward went
-    # NaN nondeterministically on a batch whose forward loss was finite and
-    # bit-identical to a clean run. Skipping the update costs one batch instead of
-    # the whole run. Callers should track the skip rate — a rising one is a real
-    # problem, not a transient.
-    skipped = not (torch.isfinite(grad_norm) and torch.isfinite(total))
-    if skipped:
-        optimizer.zero_grad(set_to_none=True)
-    else:
-        optimizer.step()
+    grad_norm, skipped = _apply_update(total, net, optimizer, cfg_train.grad_clip)
 
     return {
         "loss": total.item(),
@@ -166,7 +224,80 @@ def train_step(
         "promo_loss": pr_loss.item(),
         "value_loss": v_loss.item(),
         "legality_loss": leg_loss.item(),
-        "grad_norm": grad_norm.item(),
+        "grad_norm": grad_norm,
+        "skipped": float(skipped),
+    }
+
+
+def train_step_phase2(
+    batch: dict[str, torch.Tensor],
+    net: ChessNet,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    cfg_train: Any,
+    use_bf16: bool = False,
+    masked_policy: bool = True,
+) -> dict[str, float]:
+    """Single Phase 2 step on a replay batch (spec §7 loss row).
+
+    ``batch`` is exactly what :meth:`ReplayBuffer.sample` returns: tokens, legals,
+    outcome, the dense improved policy, the promotion target and its mask, and the
+    acted (from, to) cell.
+
+    Two differences from Phase 1, both of which are the point of Phase 2:
+    the policy target is a search-improved *distribution* rather than one played
+    move, and the value target is a real game outcome, so there is no
+    ``value_weight`` — nothing here is down-weighted random play.
+
+    The legality auxiliary is skipped when its weight is zero (§7 turns it off),
+    which keeps its head out of the backward pass rather than multiplying its
+    gradient by nothing.
+    """
+    tokens = batch["tokens"].to(device)
+    legals = batch["legals"].to(device)
+    policy_target = batch["policy"].to(device)
+    promo_target = batch["promo_target"].to(device)
+    promo_mask = batch["promo_mask"].to(device)
+    from_sq = batch["from_sq"].to(device)
+    to_sq = batch["to_sq"].to(device)
+    outcome = batch["outcome"].to(device)
+
+    legal_mask = unpack_legal_mask(legals)  # (B, 64, 64) bool
+
+    optimizer.zero_grad()
+
+    ctx = (
+        torch.amp.autocast(device.type, dtype=torch.bfloat16)
+        if use_bf16
+        else contextlib.nullcontext()
+    )
+    leg_w = cfg_train.legality_loss_weight
+    with ctx:
+        out = net(tokens)
+        p_loss = _soft_policy_loss(out.policy_ft, policy_target, legal_mask, masked=masked_policy)
+        pr_loss = _soft_promo_loss(out.promo, from_sq, to_sq, promo_target, promo_mask)
+        v_loss = F.cross_entropy(out.value_wdl, outcome + 1)
+        leg_loss = (
+            _legality_loss(out.legality, legal_mask)
+            if out.legality is not None and leg_w > 0
+            else torch.zeros((), device=device)
+        )
+        total = (
+            cfg_train.policy_loss_weight * p_loss
+            + cfg_train.promo_loss_weight * pr_loss
+            + cfg_train.value_loss_weight * v_loss
+            + leg_w * leg_loss
+        )
+
+    grad_norm, skipped = _apply_update(total, net, optimizer, cfg_train.grad_clip)
+
+    return {
+        "loss": total.item(),
+        "policy_loss": p_loss.item(),
+        "promo_loss": pr_loss.item(),
+        "value_loss": v_loss.item(),
+        "legality_loss": leg_loss.item(),
+        "grad_norm": grad_norm,
         "skipped": float(skipped),
     }
 

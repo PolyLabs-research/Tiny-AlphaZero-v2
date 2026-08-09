@@ -36,6 +36,16 @@ MUST_TRACK: list[str] = [
     "PROGRESS.md",
 ]
 
+# Records that do not exist yet but must be reachable when they do. MUST_TRACK
+# needs a file on disk, which cannot cover a rule written *before* the run that
+# produces it — and "we'll remember to add the negation later" is how three of the
+# four incidents above happened. `git check-ignore -q` answers for a hypothetical
+# path, so the rule can be tested the day it is written.
+MUST_REACH: list[str] = [
+    "runs/p2_a/iterations.jsonl",   # a Phase 2 campaign's only durable narrative
+    "runs/p2_a/provenance.json",    # the SHA and fingerprint that make it readable
+]
+
 # The counterpart: things that must STAY ignored. A well-meant negation that
 # accidentally starts tracking 75 MB checkpoints is the opposite failure.
 MUST_IGNORE: list[str] = [
@@ -75,6 +85,15 @@ def test_must_track_paths_are_not_ignored(pattern: str) -> None:
     assert not ignored, (
         f"{pattern!r} is gitignored: {ignored}\n"
         "These are project records, not build output. Add a negation to .gitignore."
+    )
+
+
+@pytest.mark.parametrize("path", MUST_REACH)
+def test_future_records_are_already_reachable(path: str) -> None:
+    """The negation must be in place before the run that produces the record."""
+    assert not _check_ignored(path), (
+        f"{path!r} would be gitignored. A run that writes it would produce a record "
+        "git silently drops — add a negation to .gitignore."
     )
 
 

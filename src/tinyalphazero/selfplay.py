@@ -28,16 +28,21 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import chess
 import numpy as np
 
 from tinyalphazero.config import Config, MCTSConfig, SelfPlayConfig, load_config
 from tinyalphazero.encoding import legal_moves_packed
+from tinyalphazero.mcts import gumbel
 from tinyalphazero.mcts.batch_runner import BatchRunner, GameTrace, uniform_stub_batch
 from tinyalphazero.replay import ReplayBuffer
 
 RESIGN_RESULT = "resign"
+
+#: Opponent key standing for "the current learner weights" in a league assignment.
+LATEST = "latest"
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +83,72 @@ class CheckpointPool:
         if len(self.snapshots) == 1 or rng.random() < self.cfg.league_latest_frac:
             return self.snapshots[-1]
         return self.snapshots[int(rng.integers(len(self.snapshots)))]
+
+
+@dataclass(frozen=True)
+class GameAssignment:
+    """Which weights play which colour in one game (§7's 80/20 league).
+
+    §7 says *latest-vs-pool*, not pool-vs-pool: in a league game the learner plays
+    one colour and a snapshot the other, so the two sides of a single game are
+    searched by different networks. That is why the replay tag is per position
+    (``mover_is_latest``) rather than per game, and why the batched runner needed
+    a per-(game, colour) evaluator rather than one call per opponent.
+    """
+
+    white: str = LATEST
+    black: str = LATEST
+
+    def key_for(self, side: bool) -> str:
+        """``side`` is ``chess.WHITE`` / ``chess.BLACK`` (i.e. ``board.turn``)."""
+        return self.white if side == chess.WHITE else self.black
+
+
+def assign_league(
+    pool: CheckpointPool,
+    num_games: int,
+    rng: np.random.Generator,
+    max_opponents: int = 4,
+) -> list[GameAssignment]:
+    """Per-game league draw, coalesced onto at most ``max_opponents`` snapshots.
+
+    The draw itself is ``CheckpointPool.sample`` per game — chunk 8's contract,
+    unchanged — so the *count* of league games is exactly §7's 20%. What the
+    coalescing changes is only how many distinct snapshots one iteration spans:
+    games that drew a snapshot outside the ``max_opponents`` most-drawn are
+    reassigned uniformly among the ones that survived.
+
+    The reason is wall clock, not statistics. A 20-snapshot pool spreads ~102
+    league games over 20 networks, and a forward over five leaves costs the same
+    GPU latency as one over 256; coalescing keeps each network's share wide enough
+    to be worth a batch. Across a campaign every snapshot still appears — the
+    marginal is preserved, only within-iteration diversity is traded.
+
+    The learner's colour is drawn per game, so a systematic first-move advantage
+    cannot accumulate on one side of the league.
+    """
+    latest = pool.latest
+    draws = [pool.sample(rng) for _ in range(num_games)]
+
+    counts: dict[str, int] = {}
+    for d in draws:
+        if d is not None and d != latest:
+            counts[d] = counts.get(d, 0) + 1
+    kept = sorted(counts, key=lambda k: (-counts[k], k))[: max(1, max_opponents)]
+
+    out: list[GameAssignment] = []
+    for d in draws:
+        if d is None or d == latest:
+            out.append(GameAssignment())
+            continue
+        opponent = d if d in kept else kept[int(rng.integers(len(kept)))]
+        learner_is_white = bool(rng.random() < 0.5)
+        out.append(
+            GameAssignment(white=LATEST, black=opponent)
+            if learner_is_white
+            else GameAssignment(white=opponent, black=LATEST)
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +250,13 @@ class SelfPlayStats:
     would_have_resigned: int = 0
     false_resigns: int = 0
     seconds: float = 0.0
+    sims: int = 0
+    forwards: int = 0
+    pool_positions: int = 0  # positions whose mover was a league opponent
+    plies: list[int] = field(default_factory=list)
+    decisive_plies: list[int] = field(default_factory=list)
+    move1_entropies: list[float] = field(default_factory=list)
+    move1_prior_entropies: list[float] = field(default_factory=list)
 
     @property
     def false_resign_rate(self) -> float | None:
@@ -191,6 +269,69 @@ class SelfPlayStats:
             return None
         return self.false_resigns / self.would_have_resigned
 
+    @property
+    def sims_per_s(self) -> float:
+        return self.sims / self.seconds if self.seconds > 0 else 0.0
+
+    @property
+    def mean_plies(self) -> float:
+        return float(np.mean(self.plies)) if self.plies else 0.0
+
+    @property
+    def mean_plies_decisive(self) -> float | None:
+        """None, not 0.0, when no game was decided — see logschema's None rule."""
+        return float(np.mean(self.decisive_plies)) if self.decisive_plies else None
+
+    @property
+    def move1_policy_entropy(self) -> float:
+        """Mean entropy (nats) of the *improved policy* at each game's first move.
+
+        This is the sharpness of the training target, and it is **not** spec §8's
+        collapse detector — read ``move1_prior_entropy`` for that. Measured on the
+        GPU smoke: between iterations 1 and 2 this fell 2.909 → 0.226 while the
+        prior at the start position barely moved (2.972 → 2.778 of a 2.996 max).
+        The cause is σ, which scales by ``(c_visit + max_N)`` ≈ 70: the value head
+        went from indifferent (child-value range 0.010) to discriminating (0.885),
+        and 0.885 × 70 is 62 logits of spread. That is Gumbel working as designed.
+        """
+        return float(np.mean(self.move1_entropies)) if self.move1_entropies else 0.0
+
+    @property
+    def move1_prior_entropy(self) -> float:
+        """Mean entropy (nats) of the network's *prior* at each game's first move.
+
+        Spec §8's collapse detector: the question is whether the policy still
+        considers alternatives at all, and only the pre-search prior answers it.
+        A network whose prior has collapsed onto one move cannot recover, because
+        nothing outside its top-m is ever simulated.
+        """
+        return (
+            float(np.mean(self.move1_prior_entropies)) if self.move1_prior_entropies else 0.0
+        )
+
+    def absorb(self, other: SelfPlayStats) -> None:
+        """Fold another wave's stats into this one (spec §7 generates in waves).
+
+        Per-game lists are concatenated rather than averaged: a mean of two means
+        is only the mean when the waves are equal-sized, and the last wave of an
+        iteration is a remainder.
+        """
+        self.games += other.games
+        self.positions += other.positions
+        self.resign_disabled_games += other.resign_disabled_games
+        self.would_have_resigned += other.would_have_resigned
+        self.false_resigns += other.false_resigns
+        self.seconds += other.seconds
+        self.sims += other.sims
+        self.forwards += other.forwards
+        self.pool_positions += other.pool_positions
+        self.plies.extend(other.plies)
+        self.decisive_plies.extend(other.decisive_plies)
+        self.move1_entropies.extend(other.move1_entropies)
+        self.move1_prior_entropies.extend(other.move1_prior_entropies)
+        for k, v in other.results.items():
+            self.results[k] = self.results.get(k, 0) + v
+
     def to_dict(self) -> dict:
         return {
             "games": self.games,
@@ -200,6 +341,10 @@ class SelfPlayStats:
             "would_have_resigned": self.would_have_resigned,
             "false_resigns": self.false_resigns,
             "false_resign_rate": self.false_resign_rate,
+            "sims": self.sims,
+            "forwards": self.forwards,
+            "sims_per_s": round(self.sims_per_s, 1),
+            "mean_plies": round(self.mean_plies, 1),
             "seconds": round(self.seconds, 2),
             "games_per_hour": (
                 round(self.games / self.seconds * 3600, 1) if self.seconds > 0 else None
@@ -216,8 +361,18 @@ def play_games(
     device: str = "cpu",
     iteration: int = 0,
     buffer: ReplayBuffer | None = None,
+    evaluators: dict[str, Any] | None = None,
+    assignments: list[GameAssignment] | None = None,
 ) -> tuple[list[GameTrace], SelfPlayStats]:
-    """Play ``num_games`` self-play games, score them, and optionally store them."""
+    """Play ``num_games`` self-play games, score them, and optionally store them.
+
+    ``assignments`` turns on league play (§7): with it, ``evaluators`` must map
+    every key the assignments name — including ``LATEST`` — to an
+    ``evaluate_batch`` callable, and each leaf is answered by the network of the
+    side that is *searching*. Without it every game is latest-vs-latest and every
+    stored position is tagged ``mover_is_latest=True``, which is exactly chunk 8's
+    behaviour.
+    """
     cfg = cfg or Config()
     mcts: MCTSConfig = cfg.mcts
     sp: SelfPlayConfig = cfg.selfplay
@@ -256,6 +411,19 @@ def play_games(
                     break
         return tr(trace) if tr is not None else None
 
+    evaluator_for = None
+    if assignments is not None:
+        if evaluators is None:
+            raise ValueError("league assignments given without an evaluators map")
+        missing = {a.key_for(s) for a in assignments for s in (chess.WHITE, chess.BLACK)} - set(
+            evaluators
+        )
+        if missing:
+            raise ValueError(f"no evaluator supplied for league key(s): {sorted(missing)}")
+
+        def evaluator_for(gi: int, root_side: bool):  # noqa: F811
+            return evaluators[assignments[gi].key_for(root_side)]
+
     runner = BatchRunner(evaluate_batch, mcts, device=device, max_plies=sp.max_plies)
     boards = [chess.Board() for _ in range(num_games)]
     seeds = [game_seed(seed, i) for i in range(num_games)]
@@ -263,7 +431,12 @@ def play_games(
     # The runner creates its _GameState list up front, so the trackers can be
     # bound before the first committed move.
     produced = runner.play_games(
-        num_games, seeds=seeds, num_sims=num_sims, boards=boards, stop_fn=stop_fn
+        num_games,
+        seeds=seeds,
+        num_sims=num_sims,
+        boards=boards,
+        stop_fn=stop_fn,
+        evaluator_for=evaluator_for,
     )
     for i, trace in enumerate(produced):
         gs = runner._games_debug[i]
@@ -277,6 +450,13 @@ def play_games(
         stats.games += 1
         stats.positions += len(trace.positions)
         stats.results[trace.result] = stats.results.get(trace.result, 0) + 1
+        stats.plies.append(trace.plies)
+        if winner is not None:
+            stats.decisive_plies.append(trace.plies)
+        if trace.positions:
+            first = trace.positions[0]
+            stats.move1_entropies.append(gumbel.entropy([e[2] for e in first.improved_policy]))
+            stats.move1_prior_entropies.append(first.root_prior_entropy)
         if tr.disabled:
             stats.resign_disabled_games += 1
             if tr.would_resign_ply is not None:
@@ -286,31 +466,46 @@ def play_games(
                 lost = winner is not None and winner != tr.would_resign_side
                 stats.false_resigns += not lost
 
+        assignment = assignments[i] if assignments is not None else GameAssignment()
         if buffer is not None:
-            _store(buffer, trace, gs, iteration, tr.disabled)
+            stats.pool_positions += _store(
+                buffer, trace, gs, iteration, tr.disabled, assignment
+            )
         traces.append(trace)
 
     stats.seconds = time.perf_counter() - t0
+    stats.sims = int(runner.stats["sims"])
+    stats.forwards = int(runner.stats["forwards"])
     if buffer is not None:
         buffer.flush()
     return traces, stats
 
 
 def _store(
-    buffer: ReplayBuffer, trace: GameTrace, gs, iteration: int, resign_disabled: bool
-) -> None:
+    buffer: ReplayBuffer,
+    trace: GameTrace,
+    gs,
+    iteration: int,
+    resign_disabled: bool,
+    assignment: GameAssignment,
+) -> int:
     """Write a scored trace into the ring.
 
     Legal masks are recomputed from the decoded position rather than carried on
     the trace: the trace holds tokens, the encoding is Markovian, and storing a
     512-byte mask per position through the runner would double the trace's
     memory for something reconstructible in microseconds.
+
+    Returns the number of positions whose mover was a league opponent.
     """
     from tinyalphazero.encoding import decode_board
 
+    pool_positions = 0
     for pos in trace.positions:
         board = decode_board(pos.tokens)
         acted = max(pos.improved_policy, key=lambda e: e[2]) if pos.improved_policy else (0, 0, 0.0)
+        mover_is_latest = assignment.key_for(pos.side_to_move) == LATEST
+        pool_positions += not mover_is_latest
         buffer.add(
             tokens=pos.tokens,
             legals=legal_moves_packed(board),
@@ -320,7 +515,9 @@ def _store(
             improved_policy=pos.improved_policy,
             iteration=iteration,
             resign_disabled=resign_disabled,
+            mover_is_latest=mover_is_latest,
         )
+    return pool_positions
 
 
 def main(argv: list[str] | None = None) -> int:

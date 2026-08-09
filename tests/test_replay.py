@@ -16,13 +16,22 @@ from tinyalphazero.replay import MAX_POLICY_ENTRIES, POLICY_DIM, ReplayBuffer
 
 
 def _row(i: int, policy: list[tuple[int, int, float]] | None = None) -> dict:
+    """One stored position, with the acted move derived exactly as ``_store`` does.
+
+    The acted move must be the heaviest improved-policy entry, because that is the
+    only relationship the producer can ever create — and ``sample`` conditions the
+    promotion target on the acted cell, so a fixture that stored an unrelated
+    ``move_ft`` would be testing a row shape the buffer never sees.
+    """
+    policy = policy if policy is not None else [((i * 7) % 4096, 0, 1.0)]
+    acted = max(policy, key=lambda e: e[2])
     return {
         "tokens": np.full(72, i % 43, dtype=np.int8),
         "legals": np.full(512, i % 256, dtype=np.uint8),
-        "move_ft": (i * 7) % 4096,
-        "promo": i % 5,
+        "move_ft": acted[0],
+        "promo": acted[1],
         "outcome": (i % 3) - 1,
-        "improved_policy": policy if policy is not None else [((i * 7) % 4096, 0, 1.0)],
+        "improved_policy": policy,
         "iteration": i,
         "resign_disabled": bool(i % 2),
     }
@@ -136,6 +145,34 @@ def test_sample_densifies_policy_and_promo_targets(tmp_path: Path) -> None:
     # queen (class 4 -> index 3) got 0.75, knight (class 1 -> index 0) 0.25
     np.testing.assert_allclose(batch["promo_target"][:, 3].numpy(), 0.75, atol=1e-3)
     np.testing.assert_allclose(batch["promo_target"][:, 0].numpy(), 0.25, atol=1e-3)
+    # ...and the head is read at the cell the target belongs to
+    np.testing.assert_array_equal(batch["from_sq"].numpy(), np.full(6, 5))
+    np.testing.assert_array_equal(batch["to_sq"].numpy(), np.full(6, 6))
+
+
+def test_promo_target_is_conditioned_on_the_acted_cell(tmp_path: Path) -> None:
+    """A promotable pawn does not make every other move a promotion target.
+
+    ``P(promo | from, to)`` is a conditional. If the search prefers a rook move in
+    a position where a pawn *could* promote, the promotion entries belong to the
+    pawn's square pair, and attaching them to the rook's would train the head to
+    predict a promotion distribution for a move that promotes nothing. Nothing
+    downstream would complain: the batch stays well-formed and the loss stays
+    finite.
+    """
+    buf = ReplayBuffer.create(tmp_path / "r", capacity=4)
+    rook_ft = 8 * 64 + 16
+    pawn_ft = 55 * 64 + 63
+    buf.add(**_row(0, [(rook_ft, 0, 0.7), (pawn_ft, 4, 0.2), (pawn_ft, 1, 0.1)]))
+    batch = buf.sample(1, np.random.default_rng(0))
+
+    assert int(batch["from_sq"][0]) == 8 and int(batch["to_sq"][0]) == 16, "acted move is the rook"
+    assert not bool(batch["promo_mask"][0]), "the rook move is not a promotion"
+    np.testing.assert_allclose(batch["promo_target"][0].numpy(), 0.0)
+    # The policy target keeps all three moves — only the promo conditional is scoped.
+    dense = batch["policy"][0].numpy()
+    assert dense[rook_ft] == pytest.approx(0.7, abs=1e-3)
+    assert dense[pawn_ft] == pytest.approx(0.3, abs=1e-3)
 
 
 def test_sample_on_empty_buffer_raises(tmp_path: Path) -> None:

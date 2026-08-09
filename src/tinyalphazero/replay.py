@@ -19,6 +19,7 @@ need):
     promo_cls.dat     int8    (C, 96)     promo class per sparse entry
     iteration.dat     int32   (C,)        producing iteration
     resign_off.dat    int8    (C,)        1 if resignation was disabled for the game
+    mover_latest.dat  int8    (C,)        1 if this position's mover searched with the latest weights
     meta.json                             capacity, total_written, dtypes, version
 
 The improved policy is stored **sparse** because it is supported only on legal
@@ -27,6 +28,23 @@ moves — a dense (4096,) float32 row would be 16 KB of which ~99% is zero, and
 hard cap, not a guess: a position with more than 96 legal moves keeps its
 96 highest-probability entries and renormalises, which is recorded rather than
 silent (see ``_pack_policy``).
+
+**Crash-safety is a write-ordering contract, and this is it (chunk 9).**
+
+1. **Single writer.** One process owns a buffer directory. Nothing here locks;
+   the orchestrator is alternating and single-process by §7, and the contract is
+   stated rather than enforced because enforcing it would mean inventing a
+   locking protocol for a concurrency mode the design does not have.
+2. **Position data is written before the head advances.** ``add`` fills every
+   field of slot ``i`` and only then increments ``total_written``, which lives in
+   RAM; the *durable* head is ``meta.json`` and moves only in ``flush``. A
+   process killed between the two is indistinguishable from one that never wrote
+   the rows: the slots hold bytes nothing points at, and the next writer
+   overwrites them.
+3. **A torn iteration loses at most its own partial games.** Everything written
+   before the last ``flush`` is intact and readable, because the head never moved
+   backwards over it. Resume uses :meth:`rewind_to` to discard a *flushed* but
+   uncommitted iteration — see that method for the one honest caveat.
 """
 
 from __future__ import annotations
@@ -37,7 +55,10 @@ from typing import Any
 
 import numpy as np
 
-VERSION = 1
+# v2 (chunk 9) adds mover_latest. Bumping rather than defaulting: a Phase 2 run
+# that silently read a chunk-8 ring would see mover_is_latest=0 everywhere and,
+# with train_on_pool_moves=False, sample from an empty set.
+VERSION = 2
 MAX_POLICY_ENTRIES = 96
 SEQ_LEN = 72
 LEGAL_BYTES = 512
@@ -55,6 +76,7 @@ _FIELDS: dict[str, tuple[str, tuple[int, ...]]] = {
     "promo_cls": ("int8", (MAX_POLICY_ENTRIES,)),
     "iteration": ("int32", ()),
     "resign_off": ("int8", ()),
+    "mover_latest": ("int8", ()),
 }
 
 
@@ -163,6 +185,7 @@ class ReplayBuffer:
         improved_policy: list[tuple[int, int, float]],
         iteration: int = 0,
         resign_disabled: bool = False,
+        mover_is_latest: bool = True,
     ) -> None:
         i = self.total_written % self.capacity
         ft, pr, cls, n = _pack_policy(improved_policy)
@@ -177,25 +200,76 @@ class ReplayBuffer:
         self._arr["policy_n"][i] = n
         self._arr["iteration"][i] = iteration
         self._arr["resign_off"][i] = int(resign_disabled)
+        self._arr["mover_latest"][i] = int(mover_is_latest)
+        # Last: every field of slot `i` is on the page before anything points at
+        # it. See the write-ordering contract in the module docstring.
         self.total_written += 1
+
+    def rewind_to(self, total_written: int) -> None:
+        """Restore the write position recorded at the end of the last iteration.
+
+        Resume-only repair. If a process died after ``play_games`` flushed but
+        before its iteration was committed, the durable head is ahead of the last
+        committed state; rewinding drops those games so the re-run does not store
+        them twice and ``replay_size`` in the log stays consistent with the
+        iteration count.
+
+        **The honest caveat:** this restores the write *position*, it does not
+        un-write bytes. If the torn iteration wrapped past the end of the ring,
+        the slots it overwrote now hold valid, newer-than-expected rows until
+        writing catches up again. Uniform sampling cannot tell the difference —
+        every row is still a real position with a real search target — but the
+        buffer is not byte-identical to one that never saw the crash.
+        """
+        if total_written > self.total_written:
+            raise ValueError(
+                f"rewind_to({total_written}) is ahead of the current head "
+                f"{self.total_written}; the ring only ever moves forward"
+            )
+        self.total_written = int(total_written)
+        self._write_meta()
 
     # -- reading ---------------------------------------------------------
 
-    def sample(self, batch_size: int, rng: np.random.Generator) -> dict[str, Any]:
+    def sample(
+        self,
+        batch_size: int,
+        rng: np.random.Generator,
+        latest_only: bool = False,
+    ) -> dict[str, Any]:
         """Uniform sample, densified into training tensors.
 
-        Returns torch tensors so the caller can feed ``train_step`` directly;
-        ``policy`` is (B, 4096) over from*64+to, and ``promo_target`` is (B, 4)
-        over the promotion classes with ``promo_mask`` marking the rows where any
-        promotion carried mass. Densifying here rather than in the training loop
-        keeps the 4096-wide array off disk and out of every other consumer.
+        Returns torch tensors so the caller can feed ``train_step_phase2``
+        directly; ``policy`` is (B, 4096) over from*64+to, and ``promo_target`` is
+        (B, 4) over the promotion classes at the **acted** (from, to) cell, with
+        ``promo_mask`` marking the rows where the acted move is itself a
+        promotion. Densifying here rather than in the training loop keeps the
+        4096-wide array off disk and out of every other consumer.
+
+        ``latest_only`` restricts the draw to positions whose mover searched with
+        the latest weights (``phase2.train_on_pool_moves=False``). It is a filter
+        over what is already stored, which is the entire reason the tag is written
+        for every row rather than inferred later: the ablation costs a config flag,
+        not a regenerated buffer.
         """
         import torch
 
         n = len(self)
         if n == 0:
             raise ValueError("replay buffer is empty")
-        idx = rng.integers(0, n, size=batch_size)
+        if latest_only:
+            eligible = np.flatnonzero(np.asarray(self._arr["mover_latest"][:n]))
+            if eligible.size == 0:
+                raise ValueError(
+                    "replay buffer holds no latest-weights positions "
+                    "(phase2.train_on_pool_moves=False with a pool-only buffer)"
+                )
+            idx = eligible[rng.integers(0, eligible.size, size=batch_size)]
+        else:
+            idx = rng.integers(0, n, size=batch_size)
+
+        moves = self._arr["moves"][idx].astype(np.int64)  # (B, 2) from, to
+        acted_ft = moves[:, 0] * 64 + moves[:, 1]
 
         policy = np.zeros((batch_size, POLICY_DIM), dtype=np.float32)
         promo_target = np.zeros((batch_size, 4), dtype=np.float32)
@@ -208,10 +282,17 @@ class ReplayBuffer:
             pr = self._arr["policy_pr"][j, :k].astype(np.float32)
             cls = self._arr["promo_cls"][j, :k].astype(np.int64)
             np.add.at(policy[b], ft, pr)  # promotions share a (from,to) cell
-            is_promo = cls > 0
-            if is_promo.any():
+            # The promotion head models P(promo | from, to) — a *conditional*. Its
+            # target therefore has to be built from the promotion entries sitting
+            # on the acted cell, not from every promotion entry in the row: a
+            # position where the search prefers a rook move but a pawn could also
+            # promote would otherwise train the head at the rook's square pair
+            # toward the pawn's promotion distribution. Legal, well-formed, and
+            # teaching the wrong conditional — the S3 defect family exactly.
+            on_acted = (cls > 0) & (ft == acted_ft[b])
+            if on_acted.any():
                 promo_mask[b] = True
-                np.add.at(promo_target[b], cls[is_promo] - 1, pr[is_promo])
+                np.add.at(promo_target[b], cls[on_acted] - 1, pr[on_acted])
                 s = promo_target[b].sum()
                 if s > 0:
                     promo_target[b] /= s
@@ -223,7 +304,15 @@ class ReplayBuffer:
             "policy": torch.from_numpy(policy),
             "promo_target": torch.from_numpy(promo_target),
             "promo_mask": torch.from_numpy(promo_mask),
+            # The (from, to) cell the promotion head is read at. The promo head is
+            # conditioned on a square pair, so a (B, 4) target is meaningless
+            # without saying which cell it belongs to.
+            "from_sq": torch.from_numpy(moves[:, 0]),
+            "to_sq": torch.from_numpy(moves[:, 1]),
             "iteration": torch.from_numpy(self._arr["iteration"][idx].astype(np.int64)),
+            "mover_is_latest": torch.from_numpy(
+                self._arr["mover_latest"][idx].astype(np.int64)
+            ),
         }
 
     def densify_one(self, i: int) -> np.ndarray:
