@@ -1314,4 +1314,41 @@ noticed later.
 
 ---
 
+## Housekeeping before chunk 10 (2026-08-10)
+
+### Repository formatted, and `make lint` green for the first time
+
+`ruff format` over 30 files, as its own commit ahead of any chunk-10 diff.
+Verified inert: **474 tests before, 474 after.** `make lint` already ran
+`ruff format --check` — the target was green in intent and red in fact since the
+day it was written. It is now green in fact.
+
+### The M3 no-regress baseline, re-measured rather than inherited
+
+```
+$ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_2.epd \
+      --sims 128 --ckpt runs/phase1_anchor.pt --seed 0     # and --seed 7
+mate_in_2.epd: 197/200 solved at 128 sims (98.5%) | eval=runs/phase1_anchor.pt root=gumbel profile=eval(deterministic) m=16 c_visit=50 c_scale=1 | gate >= 95%
+  failed: mate2_129, mate2_165, mate2_166
+```
+
+**0.985**, identical on both seeds down to the failure list. Pinned in
+TRAINING_STRATEGY.md as the M3 no-regress baseline; the M3 clause itself stays
+**≥ 0.95 absolute**.
+
+**The brief expected ≈0.965, on the premise that 0.985 had been produced by code
+since corrected. It had not been.** The promotion cell-mass change — giving each
+of a promotion cell's four edges a quarter of the mass, as chunk 5's docstring
+claimed and its code did not — was scoped to `promo_prior_from_head=True` and
+deliberately *not* made unconditional, because unconditional costs 0.985 → 0.965:
+on four gate positions the key promotion drops out of Gumbel's top-16. The
+reasoning is in `search.py:370-380`, and this measurement is it holding.
+
+So nothing is retired to history. What the re-run does establish is worth more
+than a confirmation of the count: the three failures are **the same three
+watchlist FENs**, so the watchlist is still measuring the residual it was built
+to measure rather than three positions that happen to number three.
+
+---
+
 ## Next: **chunk 10** — opponents, the fixed 4-ply book, Elo with paired-bootstrap CIs, and the suites on ladder cadence. Then the one-sentence brief: run `p2_a` for 24 hours.

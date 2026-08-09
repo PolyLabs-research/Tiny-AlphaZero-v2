@@ -259,6 +259,48 @@ Two things this adds to the campaign record, both of which outlive this gate:
 
 **Round `d` final verdict: the round did its job.** Its own gate (`mate2_top16_coverage` 0.977) passed, `phase1_d` is the strictly better checkpoint on every held-out metric, and it is now **anchor v2**. The operative gate it was launched to clear needed two further search fixes that round `d` could not have made — but coverage at 0.990 is what allowed the mis-ordering to surface at all, because at 0.83 the search rarely proved two wins in the same position.
 
+### The M3 no-regress baseline, pinned by measurement (2026-08-10)
+
+Re-run before chunk 10 so the number the campaign is judged against is one this
+build produced, not one inherited from a document.
+
+```
+$ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_2.epd \
+      --sims 128 --ckpt runs/phase1_anchor.pt --seed 0
+mate_in_2.epd: 197/200 solved at 128 sims (98.5%) | eval=runs/phase1_anchor.pt root=gumbel profile=eval(deterministic) m=16 c_visit=50 c_scale=1 | gate >= 95%
+  failed: mate2_129, mate2_165, mate2_166
+$ ... --seed 7                                      # identical, as the profile requires
+mate_in_2.epd: 197/200 solved at 128 sims (98.5%) | ... | gate >= 95%
+  failed: mate2_129, mate2_165, mate2_166
+```
+
+| | |
+|---|---|
+| **M3 no-regress baseline** | **0.985** (197/200), anchor v2 `27dcdd05…`, 128 sims, eval profile |
+| M3 clause (unchanged) | mate-in-2 **≥ 0.95 absolute** on the frozen gate suite |
+| Seed identity | 0 and 7 byte-identical, including the failure list — the eval profile draws no noise |
+
+**The brief expected ≈0.965 and the correction it anticipated had not in fact
+been applied to this path.** The promotion cell-mass change — dividing a
+promotion cell's prior by 0.25 across its four edges, as chunk 5's docstring
+described but its code did not — was deliberately scoped to
+`promo_prior_from_head=True` and **not** made unconditional, because making it
+unconditional costs 0.985 → 0.965: on four gate positions the key promotion falls
+out of Gumbel's top-16. `search.py:370-380` carries that reasoning in the code.
+So there is nothing to retire: 0.985 is not a stale number produced by superseded
+code, it is what the default path produces today, twice, deterministically.
+
+The three failures are exactly the three watchlist FENs below — the same
+2 COVERAGE + 1 CAPABILITY rows, unchanged. That is the useful part of this
+re-measurement: it confirms the residual is still the *same three positions*,
+so the watchlist remains a valid instrument rather than a coincidence of counts.
+
+**Both promotion questions are M3-end events, judged together on trained
+weights:** flipping `promo_prior_from_head` (review S4) and revisiting the
+cell-mass division. Neither is a mid-campaign change, and the second only becomes
+answerable once the first is — the ×0.25 division is correct arithmetic applied to
+a head that currently has no promotion signal to divide by.
+
 ### M3 watchlist — the three residual gate positions
 
 The three positions the 0.985 gate still misses, carried forward so chunk 10's ladder can track
