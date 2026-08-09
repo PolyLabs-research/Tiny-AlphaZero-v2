@@ -44,6 +44,12 @@ class Tree:
         self.prior = np.zeros(cap_edges, dtype=np.float32)
         self.N = np.zeros(cap_edges, dtype=np.int32)
         self.W = np.zeros(cap_edges, dtype=np.float32)
+        # Virtual loss: count of simulations currently in flight through this edge.
+        # Selection uses Q_eff = (W - vloss) / (N + vloss), EXCEPT on edges with an
+        # exact value (terminal or proven), which ignore vloss completely -- a proven
+        # mate is +1 regardless of how many sims are traversing it, and discounting a
+        # certainty by in-flight traffic would make the search agree with itself less
+        # the harder it looked. Always 0 outside a batched runner's flight window.
         self.vloss = np.zeros(cap_edges, dtype=np.int16)
         # --- additions (see module docstring) ---
         # terminal: the child position is game-over (set once, at expansion).

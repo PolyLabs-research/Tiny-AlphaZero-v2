@@ -182,6 +182,9 @@ class Search:
         self.cfg = cfg if cfg is not None else MCTSConfig()
         self.rng = rng if rng is not None else np.random.default_rng(0)
         self._evaluations = 0
+        # Post-search tree, for tests that must compare more than the chosen move.
+        self._last_tree: Tree | None = None
+        self._last_root = -1
 
     # -- root value completion (spec §6.2) --------------------------------
 
@@ -251,6 +254,49 @@ class Search:
         tokens = encode_board(board, _prior_occurrences(board, path_reps, base_reps))
         policy, value = self.evaluate_fn(tokens)
         self._evaluations += 1
+        return self._build_node(tree, board, path_reps, base_reps, policy, value)
+
+    def expand_root_gen(
+        self,
+        tree: Tree,
+        board: chess.Board,
+        path_reps: Counter,
+        base_reps: RepetitionsFn,
+    ):
+        """Root expansion as a coroutine, so it can be batched like any other leaf.
+
+        A root is a leaf awaiting evaluation exactly like the ones inside a
+        simulation. Evaluating it inline would mean one unbatched forward per game
+        per move -- at 256 concurrent games that is 256 single-row forwards before
+        any real batch forms, which is the throughput this chunk exists to fix.
+        """
+        tokens = self.leaf_tokens(board, path_reps, base_reps)
+        policy, value = yield tokens
+        node, _ = self._build_node(tree, board, path_reps, base_reps, policy, value)
+        return node
+
+    def leaf_tokens(
+        self, board: chess.Board, path_reps: Counter, base_reps: RepetitionsFn
+    ) -> np.ndarray:
+        """Encoding of a leaf awaiting evaluation (batched path)."""
+        return encode_board(board, _prior_occurrences(board, path_reps, base_reps))
+
+    def _build_node(
+        self,
+        tree: Tree,
+        board: chess.Board,
+        path_reps: Counter,
+        base_reps: RepetitionsFn,
+        policy: np.ndarray,
+        value: float,
+    ) -> tuple[int, float]:
+        """Create the node given an already-computed evaluation.
+
+        Split out of ``_expand`` so the synchronous and batched runners share one
+        implementation: the only difference between them is *where* the policy and
+        value came from, and equivalence at batch_leaves=1 is then structural
+        rather than something a test has to keep rediscovering.
+        """
 
         edges: list[tuple[int, int, float]] = []
         terminal_flags: list[tuple[bool, float]] = []
@@ -303,18 +349,28 @@ class Search:
         w = tree.W[sl]
         prior = tree.prior[sl]
 
+        # Virtual loss: in-flight simulations count as pending losses so concurrent
+        # sims diverge instead of stacking on one path. Q_eff = (W - vloss)/(N + vloss).
+        # With no sims in flight vloss is 0 everywhere and this reduces exactly to
+        # the synchronous formula -- which is what keeps batch_leaves=1 equivalent.
+        vl = tree.vloss[sl].astype(np.float32)
+        n_eff = n + vl
         parent_q = tree.node_q(node)
-        q = np.where(n > 0, w / np.maximum(n, 1.0), parent_q)
+        q = np.where(n_eff > 0, (w - vl) / np.maximum(n_eff, 1.0), parent_q)
         # Terminal edges have an exactly known value, which strictly dominates
         # both the running average and the completed-Q estimate. terminal_value
         # is from the child's perspective; negate for this node's. Without this
         # the search would rediscover a proven mate by sampling, which at small
         # sim budgets it simply cannot do: the mate-in-1 suite has a median of 43
         # legal moves, so 16 simulations touch under 40% of the root edges.
+        # Exact values override, and they ignore vloss entirely: a proven mate is
+        # worth +1 no matter how many simulations are currently traversing it.
+        # Deducting virtual loss from a proven value would make a *certainty*
+        # look worse the more the search agreed with it.
         has_exact, exact = tree.exact_value(sl)
         if has_exact.any():
             q = np.where(has_exact, -exact, q)
-        u = self.cfg.c_puct * prior * np.sqrt(max(float(n.sum()), 1.0)) / (1.0 + n)
+        u = self.cfg.c_puct * prior * np.sqrt(max(float(n_eff.sum()), 1.0)) / (1.0 + n_eff)
         return int(np.argmax(q + u)) + sl.start
 
     # -- the loop ---------------------------------------------------------
@@ -338,6 +394,7 @@ class Search:
             raise ValueError(f"unknown root_mode {self.cfg.root_mode!r}; use gumbel|puct")
         tree, root, sims_run = self.run_tree(board, repetitions_fn, num_sims)
         root_slice = tree.edge_slice(root)
+        self._last_tree, self._last_root = tree, root
         return self._root_result(tree, root, root_slice, sims_run)
 
     def _root_result(
@@ -416,6 +473,7 @@ class Search:
                     : max(1, (len(survivors) + 1) // 2)
                 ]
 
+        self._last_tree, self._last_root = tree, root
         result = self._root_result(tree, root, sl, sims_run)
         completed_q = self._root_completed_q(tree, root)
         max_n = int(tree.N[sl].max()) if n_actions else 0
@@ -566,14 +624,45 @@ class Search:
         base_reps: RepetitionsFn,
         forced_edge: int | None = None,
     ) -> None:
-        """One simulation: descend, expand or short-circuit, back up, unwind.
+        """Drive one simulation to completion, evaluating leaves inline.
 
-        ``forced_edge`` overrides selection at the root only — Sequential
-        Halving dictates which root action this simulation spends itself on.
-        Below the root, selection is unchanged from chunk 5: deterministic
-        PUCT, no noise (spec §6.2).
+        The work lives in ``simulate_gen``; this is the zero-latency driver that
+        answers each evaluation request immediately. ``BatchRunner`` drives the
+        same generator but defers the answer until a batch is full, which is why
+        batch_leaves=1 reproduces this exactly.
         """
-        path: list[int] = []  # edge indices traversed
+        gen = self.simulate_gen(tree, root, board, path_reps, base_reps, forced_edge)
+        try:
+            tokens = next(gen)
+            while True:
+                self._evaluations += 1
+                tokens = gen.send(self.evaluate_fn(tokens))
+        except StopIteration:
+            pass
+
+    def simulate_gen(
+        self,
+        tree: Tree,
+        root: int,
+        board: chess.Board,
+        path_reps: Counter,
+        base_reps: RepetitionsFn,
+        forced_edge: int | None = None,
+        use_vloss: bool = False,
+    ):
+        """One simulation as a coroutine: yields leaf tokens, receives (policy, value).
+
+        Suspends at most once — a simulation either short-circuits on a terminal
+        edge (no evaluation at all) or expands exactly one leaf. That single
+        suspension point is what makes the batched runner a scheduling change
+        rather than a second search implementation.
+
+        ``use_vloss`` applies virtual loss along the in-flight path so concurrent
+        simulations in the same tree diverge; it is removed on resume. Terminal
+        short-circuits never yield, so they never apply or remove vloss — the
+        buffer accounting stays balanced with terminals present (review Q4).
+        """
+        path: list[int] = []
         node = root
         pushed = 0
         value: float
@@ -591,17 +680,24 @@ class Search:
             path_reps[board._transposition_key()] += 1
 
             if tree.terminal[e]:
-                # Exact outcome — never touches the evaluator (spec §6.3).
                 value = float(tree.terminal_value[e])
                 break
             if tree.child[e] == -1:
-                child, value = self._expand(tree, board, path_reps, base_reps)
+                tokens = self.leaf_tokens(board, path_reps, base_reps)
+                if use_vloss:
+                    for pe in path:
+                        tree.vloss[pe] += 1
+                policy, value_est = yield tokens
+                if use_vloss:
+                    for pe in path:
+                        tree.vloss[pe] -= 1
+                child, value = self._build_node(
+                    tree, board, path_reps, base_reps, policy, value_est
+                )
                 tree.child[e] = child
                 break
             node = int(tree.child[e])
 
-        # Back up. `value` is from the perspective of the side to move at the
-        # leaf; flip once per ply on the way up.
         for e in reversed(path):
             value = -value
             tree.N[e] += 1
