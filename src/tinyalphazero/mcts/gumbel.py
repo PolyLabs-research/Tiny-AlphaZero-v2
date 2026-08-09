@@ -10,6 +10,7 @@ different copies. PUCT is retained behind ``cfg.mcts.root_mode`` as the control.
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
 
@@ -108,6 +109,111 @@ def allocate_within_phase(budget: int, n_survivors: int) -> list[int]:
         return [0] * max(n_survivors, 0)
     base, extra = divmod(budget, n_survivors)
     return [base + (1 if i < extra else 0) for i in range(n_survivors)]
+
+
+def force_include_proven_wins(
+    tree: Any, root: int, considered: list[int], rank_score: np.ndarray
+) -> list[int]:
+    """Ensure exactly-known wins are in the considered set.
+
+    Measured, not assumed: with uniform stub priors, top-m by ``g + logits`` is
+    a uniform random m-subset, so on the mate-in-1 suite (median 43 legal moves,
+    m=16) the mating move is simply not considered most of the time. Built as
+    specified first, the plan's "Gumbel at 48 sims still solves mate-in-1 100%"
+    gate scored **46/100**; with this it scores 100/100. Discarding a proven win
+    in favour of a sampled estimate makes the search strictly weaker than its
+    own knowledge.
+
+    Swaps rather than appends, so ``len(considered)`` is unchanged and the
+    halving schedule's budget arithmetic still lands exactly on num_sims.
+    """
+    sl = tree.edge_slice(root)
+    wins = [
+        i
+        for i in range(int(tree.num_edges[root]))
+        if tree.terminal[sl.start + i] and -tree.terminal_value[sl.start + i] >= 1.0
+    ]
+    missing = [w for w in wins if w not in considered]
+    if not missing:
+        return considered
+
+    out = list(considered)
+    # Evict the weakest considered actions that are not themselves wins.
+    evictable = sorted((a for a in out if a not in wins), key=lambda a: rank_score[a])
+    for win, victim in zip(missing, evictable, strict=False):
+        out[out.index(victim)] = win
+    for win in missing[len(evictable) :]:
+        if win not in out:
+            out.append(win)
+    return out
+
+
+def form_considered_set(
+    tree: Any,
+    root: int,
+    cfg: MCTSConfig,
+    rng: np.random.Generator | None,
+    num_sims: int,
+) -> tuple[np.ndarray, np.ndarray, list[int]]:
+    """The root's ``(g, logits, considered)`` — for **both** search drivers.
+
+    ``Search.run_gumbel`` and ``BatchRunner._finish_root`` each derived this
+    independently, in code that had to be read side by side to confirm it
+    agreed. Review S1: one definition, two consumers, neither re-deriving any
+    part of it.
+
+    ``rng`` may be None under the evaluation profile, which draws no noise —
+    ``g ≡ 0`` then makes the considered set the deterministic top-m by raw
+    logits, at no RNG cost.
+
+    Takes ``num_sims`` because the considered-set size is
+    ``min(gumbel_m, n_actions, num_sims)``: without the third term a 6-sim
+    search would consider 16 actions it cannot afford to sample even once,
+    which is the guarantee ``halving_phase_budgets`` is built on.
+    """
+    sl = tree.edge_slice(root)
+    n_actions = int(tree.num_edges[root])
+    logits = prior_logits(tree.prior[sl])
+    if cfg.root_noise:
+        if rng is None:
+            raise ValueError("root_noise=True requires an rng")
+        g = gumbel_noise(rng, n_actions)
+    else:
+        g = np.zeros(n_actions, dtype=np.float32)
+
+    m = min(cfg.gumbel_m, n_actions, max(num_sims, 1))
+    order = np.argsort(-(g + logits), kind="stable")
+    considered = force_include_proven_wins(tree, root, list(order[:m]), g + logits)
+    return g, logits, considered
+
+
+def halve_survivors(survivors: list[int], scores: np.ndarray) -> list[int]:
+    """Keep the better half by ``scores``, rounding up — the halving step itself."""
+    return sorted(survivors, key=lambda a: -scores[a])[
+        : max(1, (len(survivors) + 1) // 2)
+    ]
+
+
+def phase_visit_queue(budget: int, n_survivors: int) -> list[int]:
+    """Flatten an allocation into the order the visits are actually spent.
+
+    Survivor-local indices, best-ranked first, each repeated by its allocation:
+    ``allocate_within_phase(5, 3) == [2, 2, 1]`` becomes ``[0, 0, 1, 1, 2]``.
+
+    Exists because the batched driver cannot loop over the allocation the way
+    the synchronous one does — it hands out one forced edge per call and resumes
+    later. It previously improvised with ``survivors[sims_run % k]``, a
+    round-robin, which agrees with the allocation only when the budget divides
+    evenly across survivors. At ``m=5, sims=6`` the schedule is ``[5, 1, 0]``
+    and phase 2's single visit belongs to the *best* survivor; the round-robin
+    gave it to ``survivors[5 % 3]``, the worst of the three. Every divergence
+    the parity probe found was a remainder landing on the wrong action.
+    """
+    return [
+        local
+        for local, visits in enumerate(allocate_within_phase(budget, n_survivors))
+        for _ in range(visits)
+    ]
 
 
 def improved_policy(

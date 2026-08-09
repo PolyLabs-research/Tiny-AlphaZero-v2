@@ -1,13 +1,17 @@
 # TinyAlphaZero v2 — Build Progress
 
-## Status: Phase 1 CLOSED (2026-08-06, tag `phase1-closed`); Chunk 5 is next
+## Status: Phase 1 CLOSED (r2) on anchor v2 (2026-08-09, tag `phase1-closed-r2`); chunks 0–7 done; **chunk 8 is next**
 
-Chunks 0–4 are **done and signed off**. Phase 1 closed on `runs/phase1_anchor.pt`
-(= `runs/phase1_c/final.pt`, step 56,484) after three rounds; two of the four original
-§5 gates were retired to informational rather than lowered — reasoning in
-`BLOCKED-2026-08-06-phase1-gates.md`, campaign log in `TRAINING_STRATEGY.md`. Chunks
-5–12 are not started. See "Phase 1 post-mortem" below before touching training code,
-and "Readiness 2026-08-06" at the end for the close-out audit.
+Chunks **0–7** are done, reviewed and merged to `main`. Phase 1 first closed 2026-08-06 on
+`phase1_c/final.pt`, was reopened 2026-08-08 by the chunk 6 mate-in-2 gate, and re-closed
+2026-08-09 on **anchor v2 = `runs/phase1_d/final.pt`** with that gate at **98.5%** against its
+original, never-moved 0.95 threshold. Two of the four original §5 gates remain retired to
+informational rather than lowered — reasoning in `BLOCKED-2026-08-06-phase1-gates.md`, campaign
+log in `TRAINING_STRATEGY.md`, gate story in `BLOCKED-2026-08-08-mate2-gate.md`.
+
+Chunks 8–12 are not started; the intake register for chunk 8 is near the end of this file. See
+"Phase 1 post-mortem" below before touching training code, and "Readiness 2026-08-06" for the
+first close-out audit.
 
 ---
 
@@ -628,7 +632,11 @@ silently changes what every existing test of the old path measures.
 
 ---
 
-## Chunk 6 — evaluation profile + bounded tuning ⚠️ STILL BLOCKED (2026-08-09)
+## Chunk 6 — evaluation profile + bounded tuning (2026-08-09, superseded same day)
+
+> **Superseded by "Gate RESOLVED" below.** This section records the state at 0.940, when the
+> residual was believed to be a capability limit. It was a bug. Kept unedited because the
+> reasoning that reached the wrong conclusion is the useful part.
 
 Tom's decision on the round-`d` split result: **the gate number does not move.** Two staged
 interventions, pre-registered in `BLOCKED-2026-08-08-mate2-gate.md` *before* any measurement.
@@ -725,4 +733,273 @@ with 128 simulations once the right move is already in front of it.
 
 ---
 
-## Next: chunk 6 gate-number conversation is back with Tom (see BLOCKED-2026-08-08)
+## Chunk 7 — Batched leaf evaluation ✅ code + gates; ⚠️ throughput target missed (2026-08-09)
+
+Both DONE-WHENs green. The deferred GPU benchmark has now been run at the spec §10
+configuration. **Recorded as measurements, not as pass/fail** — the escalation rule keys off
+1,500 sims/s, which was not crossed.
+
+```
+$ pytest tests/test_batch_runner.py -q
+30 passed in 1.87s
+
+$ python benchmarks/bench_selfplay.py --games 32 --sims 16 --device cpu
+sims/s 2847.6 | leaves/s 3021.6 | mean fill 31.36/512   # DONE-WHEN: runs to completion ✅
+
+$ python benchmarks/bench_selfplay.py --games 256 --sims 48 --device cuda --ckpt runs/phase1_anchor.pt
+games=256 plies=5120 in 128.21s
+  sims/s 1916.9 | leaves/s 1955.2 | forwards/s 7.64 | mean fill 255.79/512 | terminal s-c 201
+
+$ python benchmarks/bench_selfplay.py --games 256 --sims 48 --device cpu     # stub evaluator
+games=256 plies=5080 in 91.13s
+  sims/s 2675.7 | leaves/s 2726.5 | mean fill 253.54/512
+
+$ python benchmarks/bench_inference.py --ckpt runs/phase1_anchor.pt --device cuda
+batch   64: median   7.195 ms  p95   7.503 ms   8895.5 pos/s
+batch  256: median  37.980 ms  p95  38.403 ms   6740.4 pos/s
+batch  512: median  81.997 ms  p95  83.085 ms   6244.1 pos/s
+```
+
+| §10 target | Measured | |
+|---|---|---|
+| ≥ 3,000 sims/s aggregate | **1,917** | misses (above the 1,500 escalation floor) |
+| < 8 ms forward at batch 512 | **82.0 ms** | misses by ~10× |
+
+### The 3,000 sims/s target is unreachable on this box, and not because of the GPU
+
+The stub run is the decisive one: **with a zero-cost evaluator the runner still only reaches
+2,676 sims/s.** The §10 aggregate target sits above the ceiling of the runner with no network
+in the loop at all, so no amount of GPU or batching work can reach it — python-chess move
+generation and tree ops are the binding constraint. That is exactly the bottleneck ordering
+§10 predicted ("movegen first, tree ops second, GPU last"); it is now measured rather than
+assumed. The network costs the difference: 1/1917 − 1/2676 ≈ 0.15 ms per simulation, ~28% on
+top of runner overhead.
+
+**No py-spy profile was run** — chunk 7's escalation path triggers below 1,500 sims/s and 1,917
+is above it. The stub decomposition already localises the cost to the same place a flame graph
+would, and the plan is explicit that a movegen backend swap is a *new negotiated chunk*, not an
+improvisation. Flagging for Tom rather than acting: **§10's 3,000 sims/s needs either a
+renegotiated target or that new chunk.**
+
+### The forward-latency target was calibrated for different hardware
+
+82 ms at batch 512 against an 8 ms target is not a tuning gap. Per-position throughput *falls*
+with batch size — 8,896 pos/s at 64, 6,244 at 512 — so the trunk is already compute-bound by
+batch 64 and there is no batching headroom left to find. Same iGPU characteristic the Phase 1
+record notes (batch 2048 is a training throughput *cliff*; the trunk runs at ~8% of theoretical
+bf16). Measured with `inference_mode` + bf16 autocast, matching `torch_evaluate_batch` exactly;
+the ~8 MB device→host copy the real path also pays is *excluded*, since §10 asks about the
+forward.
+
+Practical consequence for chunk 8/12, not a defect: `batch_leaves=512` never fills. Mean fill
+is 255.8/512 with 256 concurrent games, because the buffer flushes when every game is blocked —
+one leaf per game. Fill tracks `concurrent_games`, not `batch_leaves`, so the former is the
+knob that matters for batch efficiency.
+
+### The eval profile had to be wired into the batched path too
+
+`BatchRunner` reimplements the Gumbel root rather than calling `Search.run_gumbel`, and it drew
+Gumbel noise unconditionally — so `root_noise=False` was **silently ignored here**. Chunk 10's
+ladder plays its matches through this path, so suite numbers would have been deterministic
+while ladder numbers stayed noisy, with nothing in the code to say the two disagreed. Fixed by
+resolving the profile in `__init__` (as `Search` does) and repeating the `g ≡ 0` substitution.
+
+The equivalence gate is now parametrized over **both** profiles, which is the only place the
+two independent root implementations are compared directly. 30 tests pass; 211 pass overall.
+
+Third instance of one failure family, after `root_mode` re-pointing three chunk-5 tests and
+`phase1_lr` silently not existing: **a defaulted config field with more than one consumer fails
+silently on whichever consumer forgot to read it.**
+
+---
+
+## Gate RESOLVED — review fixes, then 0.940 → 0.985 ✅ (2026-08-09)
+
+Review conditions S1–S3 accepted as merge conditions (S4 deferred), then the gate re-measured
+and its failures triaged. **The chunk 6 mate-in-2 gate passes at 98.5% on its original 0.95
+threshold and original frozen suite.** Phase 1 re-closed on **anchor v2 = `phase1_d/final.pt`**.
+
+### Review fixes (S1, S2, S3, N3)
+
+The reviewed defect was **verified before being fixed**. `scripts/parity_probe.py` sweeps
+m × sims comparing `BatchRunner` (batch_leaves=1, one game) against `Search`:
+
+```
+BEFORE:  8 disagreement(s)   — all at sims=6, m ∈ {3,5}
+AFTER:   0 disagreement(s)   — 4 fixtures × m ∈ {3,5,12,16} × sims ∈ {6,16,31,48}
+```
+
+The batched driver picked its forced edge with `survivors[sims_run % len(survivors)]` — a
+round-robin — where the synchronous one uses `allocate_within_phase`, which gives a phase's
+remainder to the **best-ranked** survivors. At `m=5, sims=6` the schedule is `[5, 1, 0]` and
+phase 2's single visit belongs to `survivors[0]`; the round-robin spent it on `survivors[5 % 3]`,
+the worst of the three. A second divergence surfaced while fixing it: the old loop halved
+survivors on zero-budget phases, which the synchronous `continue` skips.
+
+**Why it hid for a whole chunk:** the equivalence gate only ran m=16 × sims ∈ {16,48}. At
+(128,16) *and* at those pairs, every phase budget divides evenly across its survivors —
+remainder 0 throughout — so a round-robin and a correct allocation agree by accident. The gate
+was real but its parametrization was the comfortable case.
+
+S1 moved `form_considered_set`, `halve_survivors`, `force_include_proven_wins` and
+`phase_visit_queue` into `gumbel.py`; both drivers consume them and neither re-derives any
+part. S3 gave `_commit_move` the real `base_reps` — every trace row previously claimed to be a
+first occurrence, which would have entered Phase 2 as silently corrupt training data rather
+than as a crash. N3 zeroes `_grow_nodes`' tiled region.
+
+### B1 — post-fix gate, and why the number did not move
+
+```
+mate_in_2.epd: 188/200 solved at 128 sims (94.0%)   (seeds 1 and 2 identical)
+```
+
+Unchanged from before the fix, and that is the expected result rather than a disappointment:
+at (128, 16) `halving_phase_budgets` returns `[32,32,32,32]` against 16/8/4/2 survivors, so
+every phase divides evenly and the allocation fix **provably cannot** change this
+configuration — and the suite runner drives `Search`, not `BatchRunner`, in any case. What the
+re-measurement actually established is that the S1 refactor is behaviour-preserving on the
+synchronous path: identical score *and* identical failure list. 0.940 ∈ [0.93, 0.95) → the
+pre-registered "proceed as planned" branch.
+
+### B2 — triage: 9 BUG, 2 COVERAGE, 1 CAPABILITY
+
+`scripts/triage_mate2.py`, reproduction check **0 mismatches vs `Search.run`**:
+
+| id | verdict | key-edge visits | replies expanded | sims for proof | value head | reason |
+|---|---|---|---|---|---|---|
+| mate2_004 | BUG | 30 | — | — | +0.030 | key edge proven but not selected |
+| mate2_006 | BUG | 30 | — | — | +0.039 | key edge proven but not selected |
+| mate2_008 | BUG | 30 | — | — | +0.032 | key edge proven but not selected |
+| mate2_054 | BUG | 30 | — | — | +0.046 | key edge proven but not selected |
+| mate2_055 | BUG | 30 | — | — | +0.088 | key edge proven but not selected |
+| mate2_056 | BUG | 30 | — | — | +0.082 | key edge proven but not selected |
+| mate2_070 | BUG | 30 | — | — | +0.079 | key edge proven but not selected |
+| mate2_129 | CAPABILITY | 2 | 1/16 | 17 | +0.036 | reply set never fully expanded |
+| mate2_139 | BUG | 30 | — | — | −0.004 | key edge proven but not selected |
+| mate2_165 | COVERAGE | 0 | — | — | +0.030 | no key move in the considered set |
+| mate2_166 | COVERAGE | 0 | — | — | +0.032 | no key move in the considered set |
+| mate2_196 | BUG | 30 | — | — | +0.092 | key edge proven but not selected |
+
+**The nine BUGs were one defect, and it was not the solver.** The proof chain for `mate2_006`
+was walked to its leaf and is sound — nine plies, every defender node holding exactly one legal
+reply, tree edge counts matching python-chess at every step, bottoming out on a real
+checkmate. The search's proofs were correct. What was missing was an **order over them**:
+
+```
+ply  1: b3e3  prov pv=-1.0 | truth: legal_replies=1
+ply  3: g1g5  prov pv=-1.0 | truth: legal_replies=1
+ply  5: e3e5  prov pv=-1.0 | truth: legal_replies=1
+ply  7: g5g7  prov pv=-1.0 | truth: legal_replies=1
+ply  9: e5e7  TERM tv=-1.0 | truth: checkmate=True   <- proof bottoms out correctly
+```
+
+Every proven win sits at q̂ = +1, so σ(q̂) ties them and the acting argmax fell through to
+`g + logits` — noise under self-play, the raw **policy prior** under the evaluation profile.
+The search played a proven mate-in-5 over a proven mate-in-2 because the network's prior
+preferred it. `IMMEDIATE_WIN_BONUS` already encoded the right principle but only for depth 1.
+
+Fixed by inducting mate distance through the solver (`Tree.proven_depth`; winner takes the
+fastest proved line, defender the slowest) and scoring `EXACT_WIN_BONUS − depth × WIN_DEPTH_STEP`.
+
+### B1 re-run (the one permitted) — PASS
+
+```
+mate_in_2.epd: 197/200 solved at 128 sims (98.5%) | profile=eval(deterministic) | gate >= 95%
+  failed: mate2_129, mate2_165, mate2_166        (identical under seeds 1 and 2)
+mate_in_1.epd: 100/100 at 16 sims and at 48 sims (stub) — no regression
+```
+
+The three survivors are exactly the three non-BUG triage rows — the consistency check that the
+classification was real, not a story fitted to the outcome. **340 passed, ruff clean, parity
+probe 0 disagreements.**
+
+**What made this findable:** the bug was invisible while the prior was the binding constraint —
+at round `c`'s 0.83 coverage the search rarely proved two wins in the same position, so there
+was nothing to mis-order. Each earlier intervention that removed a *different* limitation moved
+this one closer to the surface, and the evaluation profile made the tie-break fall through to
+the prior *deterministically* rather than sometimes. The three "failed" interventions were what
+made the real defect legible. Generalisable: **an aggregate residual is not a diagnosis** —
+three rounds treated "conversion" as one quantity; one script that classified each failure
+separately produced a nine-position bug with a one-line remedy.
+
+---
+
+## Chunk 8 intake — carried forward, not actioned (2026-08-09)
+
+Register for the next brief. Nothing here is a defect in merged code.
+
+- **S4 — promotion priors via the promo sub-head.** Deferred because it is an *interface*
+  change, not a tweak: `EvaluateFn` returns no promo distribution, so wiring it touches both
+  evaluators, the batch adapter and `_build_node`. Bundle with chunk 8's evaluator work.
+- **Repetition / adjudication ownership** (from S3). Per-game history `repetitions_fn` built
+  from the move stack; claim-draw (threefold, 50-move) adjudication at game level. The
+  `REP_1` trace test armed in this session (`test_trace_tokens_carry_the_repetition_count`)
+  passes today via an injected `repetitions_fn` and goes green natively here.
+- **M3 watchlist** — `benchmarks/m3_watchlist.json`: `mate2_129`, `_165`, `_166`. The value
+  head reads ≈ +0.03 on positions that are in fact won: not merely imprecise but nearly
+  indifferent, which is what self-play value training is for. `mate2_129` needs 17 sims on the
+  key edge to reach a proof and got 2.
+- **`improved_policy` does not know about mate distance.** The acting argmax now prefers the
+  shorter mate; the *policy target* still spreads equally across proven wins, because it is
+  built from completed-Q (±1) alone. Harmless in Phase 1, but in Phase 2 it teaches the network
+  that a mate-in-5 is as good as a mate-in-2. Decide deliberately in chunk 8/9 — it is a
+  training-target question, not a search one.
+- **Resignation calibration** per spec §7; **`CheckpointPool` single-implementation rule**;
+  **N1/N2 perf notes** awaiting profile evidence.
+- **§10 erratum 6** — targets replaced by "Phase 2 iteration ≤ ~35 min at default config",
+  which the current build meets with ~no margin. Escalate on a *regression* in sims/sec, not
+  on the absolute number.
+
+---
+
+## Session 2026-08-09 — tree state, and the push finally happened
+
+Nothing merged, nothing tagged. That is the pre-registered consequence of the gate landing at
+0.940: promotion, the `round-d` → `main` merge and the `phase1-closed-r2` tag were all
+conditional on ≥ 0.95.
+
+| Branch | Tip | vs `main` | State |
+|---|---|---|---|
+| `main` | `29b2294` | — | untouched all session |
+| `round-d` | `17625b0` | +7 | Phase 1 docs + contamination gate. **Unmerged, untagged** |
+| `chunk-05-mcts` | `73abbf9` | +3 | unmerged, pending review |
+| `chunk-06-gumbel` | `67e6025` | +7 | eval profile, sweep, diagnosis. Unmerged |
+| `chunk-07-batched` | `e7a5c8d` | +10 | contains `chunk-06-gumbel`. Unmerged |
+
+`runs/phase1_anchor.pt` is byte-identical to `runs/phase1_c/final.pt` (md5
+`d58045a6865bd5c973336db21296b8ee`) — **not promoted**, and `ANCHORS.sha256` is unchanged with
+its single dated v1 line. `runs/phase1_d/final.pt` remains the strictly better checkpoint on
+every held-out gate, available to promote whenever the gate conversation resolves.
+
+Only pre-existing tag is `phase1-closed`. Both worktrees clean (`/chess` on `round-d`,
+`/chess-c7` on `chunk-07-batched`).
+
+**Where the work landed, and why not all on one branch.** `round-d` has no
+`src/tinyalphazero/mcts/` at all — the search package lives only on the `chunk-05/06/07` chain,
+which is a diverged sibling off `main` — so the evaluation profile could not physically be
+built there. It is a chunk 6 feature and went to `chunk-06-gumbel`, then forward into
+`chunk-07-batched`; the Phase 1 documents and the contamination gate stayed on `round-d`. The
+`position_key` helper and `test_contamination.py` exist only on `round-d`, which is why the
+tuning suite's disjointness was verified there and the sweep was run on `chunk-06-gumbel`. The
+tuning suite itself lives under `runs/` (gitignored), so it survives checkouts; only its
+`meta.json` is tracked, on both branches.
+
+**Pushed — the four-session backlog is cleared.** Tom generated an ed25519 keypair and pushed
+during this session. `origin` (`git@github.com:tripptytrip/Tiny-AlphaZero-v2.git`) now carries
+all five branches and the `phase1-closed` tag, each remote ref identical to its local tip;
+`git log --branches --tags --not --remotes` is empty. Verified after the fact rather than
+assumed, because "I pushed" and "everything is on the remote" are different claims — a bare
+`git push` from a branch with no upstream is the usual way they come apart.
+
+Still local-only and unprotected by this: the ~6.8 G of untracked checkpoints and datasets,
+including `runs/phase1_d/final.pt` (the strictly-better-but-unpromoted checkpoint) and
+`runs/phase1_anchor.pt` itself. `runs/ANCHORS.sha256` is committed, so the anchor's *identity*
+survives a disk loss — its *bytes* do not. Regenerating `phase1_d` costs ~3 h of GPU time and
+`phase1_c` considerably more.
+
+Note for the next session: only `main` has an upstream set. The other four branches were pushed
+by explicit refspec, so a bare `git push` from them will not do what it looks like it does.
+
+---
+
+## Next: **chunk 8** — self-play actor + replay buffer. Chunks 5–7 reviewed, fixed, and merged; Phase 1 closed (r2) on anchor v2.

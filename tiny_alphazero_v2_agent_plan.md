@@ -222,7 +222,7 @@ python scripts/generate_phase1.py --mate1 500 --out runs/data/eval_mate1 --seed 
 python scripts/train_phase1.py --data runs/data/phase1 --mate1 runs/data/mate1 \
     --eval-data runs/data/eval_rand --eval-mate1 runs/data/eval_mate1 \
     --out runs/phase1_a --epochs 3
-python scripts/eval_phase1.py --ckpt runs/phase1_a/final.pt --data runs/data/eval_rand \
+python scripts/eval_phase1.py --ckpt runs/phase1_anchor.pt --data runs/data/eval_rand \
     --mate1 runs/data/eval_mate1   # exits 0
 ```
 If the full-run gates fail: first suspect the encoding (re-run chunk 1 fuzz), then the legality auxiliary wiring, then lr. Do not lower the gates.
@@ -436,8 +436,10 @@ ruff check src/ tests/ scripts/ benchmarks/
 
 This chunk is operational, executed on the Strix Halo. The agent's job is to launch, monitor, and write up — not to change code unless a gate fails.
 
-1. **Throughput check:** `make bench` on GPU; confirm ≥ 3,000 sims/sec and < 8 ms forwards. If not, stop and profile (chunk 7 escalation path; a movegen backend swap is a *new negotiated chunk*, not an improvisation).
-2. **24h run (M3 gate):** default config, `scripts/train_phase2.py --out runs/m3`. Ladder eval vs {random, greedy, phase1-anchor} every 10 iterations. **Pass:** final Elo vs phase1-anchor exceeds iteration-0 Elo with non-overlapping 95% CIs, and value ECE < 0.15. **Fail:** write `RUNLOG.md` with curves and the three most plausible causes ranked by evidence; check the §12 open-question levers (z/q mix, aux legality re-enable, m/sims sweep) before touching architecture.
+1. **Throughput check:** `make bench` on GPU. **Measured 2026-08-09 and both §10 targets miss — see the §10 erratum; the operative constraint is now "Phase 2 iteration ≤ ~35 min at default config", not the raw sims/sec number.** Do not treat 1,917 sims/s as a failure to profile: with a zero-cost stub evaluator the runner reaches 2,676 sims/s, so 3,000 was never achievable here and the escalation floor (1,500) is not crossed. A movegen backend swap remains a *new negotiated chunk*, not an improvisation.
+2. **24h run (M3 gate):** default config, `scripts/train_phase2.py --out runs/m3`. Ladder eval vs {random, greedy, phase1-anchor} every 10 iterations, **the ladder running the evaluation profile (`root_noise=false`)** — a rung that moves ±2.5 points under reseeding cannot resolve Elo. **Pass:** final Elo vs phase1-anchor exceeds iteration-0 Elo with non-overlapping 95% CIs, **and `mate-in-2 ≥ 0.95` at 128 sims, eval profile, on the frozen gate suite**, and value ECE < 0.15. **Fail:** write `RUNLOG.md` with curves and the three most plausible causes ranked by evidence; check the §12 open-question levers (z/q mix, aux legality re-enable, m/sims sweep) before touching architecture.
+
+   The mate-in-2 clause is a **no-regress check, already met at entry** (0.985 with anchor v2, 2026-08-09) — not a target to reach. It was going to be M3's *deadline* under the accepted gate-relocation decision, until the residual turned out to be a search-ordering bug that Phase 1 now clears; `BLOCKED-2026-08-08-mate2-gate.md` records why the relocation is moot. It stays because Phase 2 trains the policy prior that feeds Gumbel's considered set, and this is the cheapest measurement that would catch that prior degrading. Watch `benchmarks/m3_watchlist.json`: `mate2_129` / `_165` / `_166` are the three positions Phase 2 value learning should *convert*, and the value head currently reads ≈ +0.03 on all three.
 3. **Ablation:** identical 24h budget with `root_mode=puct`; ladder both against the same anchors; add the comparison to `RUNLOG.md`.
 4. **5-day run (M4):** extend ladder with Stockfish skill {0, 3}. Pass: beat skill 0 with CI clear of 50%.
 5. Deliverable: `RUNLOG.md` per run (config fingerprint, git sha, curves, ladder table, incidents) — the raw material for the write-up.

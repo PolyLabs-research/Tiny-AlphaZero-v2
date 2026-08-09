@@ -44,10 +44,17 @@ RepetitionsFn = Callable[[chess.Board], int]
 FIFTY_MOVE_PLIES = 100
 THREEFOLD_COUNT = 3
 
-# Separates immediate mates from deeper proven wins, which both sit at q=+1.
-# Must exceed the g+logits spread (Gumbel noise is O(1), logits O(10)) so the
-# tiebreak is decided by mate distance rather than by noise.
-IMMEDIATE_WIN_BONUS = 1e3
+# Lifts every exactly-known win above every estimate, and orders wins by mate
+# distance. All proven wins sit at q̂ = +1, so without this the acting argmax
+# falls through to `g + logits` — noise under self-play, the raw policy prior
+# under the evaluation profile. Either way the search discards what it has
+# *proved* in favour of what the network *guesses*.
+#
+# Scale: logits are O(10) and σ is O(100), so WIN_DEPTH_STEP dominates both and
+# one extra ply of mate distance always outweighs any prior preference. The
+# bonus stays positive out past 900 plies, well beyond any reachable mate.
+EXACT_WIN_BONUS = 1e6
+WIN_DEPTH_STEP = 1e3
 
 
 # --- repetition counting ----------------------------------------------------
@@ -194,6 +201,9 @@ class Search:
         self.cfg = (cfg if cfg is not None else MCTSConfig()).resolved()
         self.rng = rng if rng is not None else np.random.default_rng(0)
         self._evaluations = 0
+        # Post-search tree, for tests that must compare more than the chosen move.
+        self._last_tree: Tree | None = None
+        self._last_root = -1
 
     # -- root value completion (spec §6.2) --------------------------------
 
@@ -263,6 +273,49 @@ class Search:
         tokens = encode_board(board, _prior_occurrences(board, path_reps, base_reps))
         policy, value = self.evaluate_fn(tokens)
         self._evaluations += 1
+        return self._build_node(tree, board, path_reps, base_reps, policy, value)
+
+    def expand_root_gen(
+        self,
+        tree: Tree,
+        board: chess.Board,
+        path_reps: Counter,
+        base_reps: RepetitionsFn,
+    ):
+        """Root expansion as a coroutine, so it can be batched like any other leaf.
+
+        A root is a leaf awaiting evaluation exactly like the ones inside a
+        simulation. Evaluating it inline would mean one unbatched forward per game
+        per move -- at 256 concurrent games that is 256 single-row forwards before
+        any real batch forms, which is the throughput this chunk exists to fix.
+        """
+        tokens = self.leaf_tokens(board, path_reps, base_reps)
+        policy, value = yield tokens
+        node, _ = self._build_node(tree, board, path_reps, base_reps, policy, value)
+        return node
+
+    def leaf_tokens(
+        self, board: chess.Board, path_reps: Counter, base_reps: RepetitionsFn
+    ) -> np.ndarray:
+        """Encoding of a leaf awaiting evaluation (batched path)."""
+        return encode_board(board, _prior_occurrences(board, path_reps, base_reps))
+
+    def _build_node(
+        self,
+        tree: Tree,
+        board: chess.Board,
+        path_reps: Counter,
+        base_reps: RepetitionsFn,
+        policy: np.ndarray,
+        value: float,
+    ) -> tuple[int, float]:
+        """Create the node given an already-computed evaluation.
+
+        Split out of ``_expand`` so the synchronous and batched runners share one
+        implementation: the only difference between them is *where* the policy and
+        value came from, and equivalence at batch_leaves=1 is then structural
+        rather than something a test has to keep rediscovering.
+        """
 
         edges: list[tuple[int, int, float]] = []
         terminal_flags: list[tuple[bool, float]] = []
@@ -315,18 +368,28 @@ class Search:
         w = tree.W[sl]
         prior = tree.prior[sl]
 
+        # Virtual loss: in-flight simulations count as pending losses so concurrent
+        # sims diverge instead of stacking on one path. Q_eff = (W - vloss)/(N + vloss).
+        # With no sims in flight vloss is 0 everywhere and this reduces exactly to
+        # the synchronous formula -- which is what keeps batch_leaves=1 equivalent.
+        vl = tree.vloss[sl].astype(np.float32)
+        n_eff = n + vl
         parent_q = tree.node_q(node)
-        q = np.where(n > 0, w / np.maximum(n, 1.0), parent_q)
+        q = np.where(n_eff > 0, (w - vl) / np.maximum(n_eff, 1.0), parent_q)
         # Terminal edges have an exactly known value, which strictly dominates
         # both the running average and the completed-Q estimate. terminal_value
         # is from the child's perspective; negate for this node's. Without this
         # the search would rediscover a proven mate by sampling, which at small
         # sim budgets it simply cannot do: the mate-in-1 suite has a median of 43
         # legal moves, so 16 simulations touch under 40% of the root edges.
+        # Exact values override, and they ignore vloss entirely: a proven mate is
+        # worth +1 no matter how many simulations are currently traversing it.
+        # Deducting virtual loss from a proven value would make a *certainty*
+        # look worse the more the search agreed with it.
         has_exact, exact = tree.exact_value(sl)
         if has_exact.any():
             q = np.where(has_exact, -exact, q)
-        u = self.cfg.c_puct * prior * np.sqrt(max(float(n.sum()), 1.0)) / (1.0 + n)
+        u = self.cfg.c_puct * prior * np.sqrt(max(float(n_eff.sum()), 1.0)) / (1.0 + n_eff)
         return int(np.argmax(q + u)) + sl.start
 
     # -- the loop ---------------------------------------------------------
@@ -350,6 +413,7 @@ class Search:
             raise ValueError(f"unknown root_mode {self.cfg.root_mode!r}; use gumbel|puct")
         tree, root, sims_run = self.run_tree(board, repetitions_fn, num_sims)
         root_slice = tree.edge_slice(root)
+        self._last_tree, self._last_root = tree, root
         return self._root_result(tree, root, root_slice, sims_run)
 
     def _root_result(
@@ -392,27 +456,12 @@ class Search:
         if n_actions == 0:
             return self._root_result(tree, root, sl, 0)
 
-        logits = gumbel.prior_logits(tree.prior[sl])
-        # The whole evaluation profile is this one substitution. Setting g ≡ 0
-        # makes the considered set the deterministic top-m by raw logits, and
-        # makes the acting argmax `logits + σ(q̂)` — both required behaviours —
-        # while Sequential Halving, σ, the solver and the budget convention read
-        # exactly the same code in both profiles. A second selection path would
-        # have to be kept in step with this one forever; a zero vector cannot
-        # drift. It also consumes no RNG, so eval runs are seed-independent by
-        # construction rather than by convention.
-        g = (
-            gumbel.gumbel_noise(self.rng, n_actions)
-            if self.cfg.root_noise
-            else np.zeros(n_actions, dtype=np.float32)
+        # Shared with BatchRunner (review S1): the noise draw or its g ≡ 0
+        # substitute, top-m by g + logits, and force-include of proven wins all
+        # live in one place so the two drivers cannot drift apart.
+        g, logits, considered = gumbel.form_considered_set(
+            tree, root, self.cfg, self.rng, num_sims
         )
-
-        # Considered set: top-m by g + logits, but a *proven win* is never
-        # dropped for noise — see _force_include_proven_wins.
-        m = min(self.cfg.gumbel_m, n_actions, max(num_sims, 1))
-        order = np.argsort(-(g + logits), kind="stable")
-        considered = list(order[:m])
-        considered = self._force_include_proven_wins(tree, root, considered, g + logits)
 
         base_reps: RepetitionsFn = (
             repetitions_fn if repetitions_fn is not None else (lambda _b: 0)
@@ -436,10 +485,9 @@ class Search:
                     sims_run += 1
             if len(survivors) > 1:
                 scores = self._gumbel_scores(tree, root, g, logits)
-                survivors = sorted(survivors, key=lambda a: -scores[a])[
-                    : max(1, (len(survivors) + 1) // 2)
-                ]
+                survivors = gumbel.halve_survivors(survivors, scores)
 
+        self._last_tree, self._last_root = tree, root
         result = self._root_result(tree, root, sl, sims_run)
         completed_q = self._root_completed_q(tree, root)
         max_n = int(tree.N[sl].max()) if n_actions else 0
@@ -449,44 +497,6 @@ class Search:
         final_scores = self._gumbel_scores(tree, root, g, logits)
         result.chosen = int(max(survivors, key=lambda a: final_scores[a]))
         return result
-
-    def _force_include_proven_wins(
-        self, tree: Tree, root: int, considered: list[int], rank_score: np.ndarray
-    ) -> list[int]:
-        """Ensure exactly-known wins are in the considered set.
-
-        Measured, not assumed: with uniform stub priors, top-m by ``g + logits``
-        is a uniform random m-subset, so on the mate-in-1 suite (median 43 legal
-        moves, m=16) the mating move is simply not considered most of the time.
-        Built as specified first, the plan's "Gumbel at 48 sims still solves
-        mate-in-1 100%" gate scored **46/100**; with this it scores 100/100.
-        Discarding a proven win in favour of a sampled estimate makes the search
-        strictly weaker than its own knowledge.
-
-        Swaps rather than appends, so ``len(considered)`` is unchanged and the
-        halving schedule's budget arithmetic still lands exactly on num_sims.
-        """
-        sl = tree.edge_slice(root)
-        wins = [
-            i
-            for i in range(int(tree.num_edges[root]))
-            if tree.terminal[sl.start + i] and -tree.terminal_value[sl.start + i] >= 1.0
-        ]
-        missing = [w for w in wins if w not in considered]
-        if not missing:
-            return considered
-
-        out = list(considered)
-        # Evict the weakest considered actions that are not themselves wins.
-        evictable = sorted(
-            (a for a in out if a not in wins), key=lambda a: rank_score[a]
-        )
-        for win, victim in zip(missing, evictable, strict=False):
-            out[out.index(victim)] = win
-        for win in missing[len(evictable) :]:
-            if win not in out:
-                out.append(win)
-        return out
 
     def _solve_edge(self, tree: Tree, e: int) -> None:
         """Backward induction on ``e``'s child (MCTS-Solver, Winands et al. 2008).
@@ -503,7 +513,13 @@ class Search:
         and immune to elimination.
 
         Kept separate from ``terminal`` so an immediate mate still outranks a
-        longer forced one (see ``IMMEDIATE_WIN_BONUS``).
+        longer forced one (see ``EXACT_WIN_BONUS``).
+
+        Mate distance is inducted alongside the value: the winning side takes
+        the **fastest** proved line, the losing side the **slowest**. Without a
+        distance every proven win ties at q̂ = +1, and the acting argmax then
+        breaks the tie on the prior — which is how a proven mate-in-5 was played
+        over a proven mate-in-2 on nine positions of the gate suite.
         """
         c = int(tree.child[e])
         if c < 0 or tree.terminal[e] or tree.proven[e]:
@@ -513,34 +529,58 @@ class Search:
             return
         has_exact, val = tree.exact_value(sl)
         mover_view = -val  # child's own side-to-move perspective
+        depths = tree.exact_depth(sl)
 
         if has_exact.any() and (mover_view[has_exact] >= 1.0).any():
             solved = 1.0
+            winning = has_exact & (mover_view >= 1.0)
+            depth = 1 + int(depths[winning].min())  # winner mates as fast as it can
         elif has_exact.all():
             solved = float(mover_view.max())
+            # Losing: every line is refuted, so the defender picks the longest.
+            # Otherwise the distance belongs to the line actually chosen.
+            depth = 1 + int(
+                depths.max() if solved <= -1.0 else depths[int(np.argmax(mover_view))]
+            )
         else:
             return
         tree.proven[e] = True
         tree.proven_value[e] = solved
+        tree.proven_depth[e] = min(depth, np.iinfo(np.int16).max)
 
     def _gumbel_scores(
         self, tree: Tree, root: int, g: np.ndarray, logits: np.ndarray
     ) -> np.ndarray:
         """``g + logits + σ(q̂)`` over all root actions, q̂ exact where known.
 
-        Immediate mates additionally get ``IMMEDIATE_WIN_BONUS``. Once deeper
-        proven wins also reach q̂ = +1 the two tie, and ``g + logits`` then breaks
-        the tie by *noise* — which cost 2/100 on the mate-in-1 suite by choosing a
-        mate-in-2 over the mate-in-1 sitting right there. A shorter forced mate is
-        strictly better play, and an exactly-known immediate win should never lose
-        a coin-flip to a longer one. The bonus only ever separates values already
-        tied at the +1 ceiling, so it cannot promote a worse action.
+        **Every exactly-known win** — immediate mate or deeper proven line —
+        gets ``EXACT_WIN_BONUS``, reduced by ``WIN_DEPTH_STEP`` per ply to mate.
+        Two properties follow, and both are load-bearing:
+
+        1. an exactly-known win always outranks a merely-estimated move, however
+           good the prior thinks the estimate is;
+        2. among wins, the shorter mate is always preferred.
+
+        (1) is the fix for nine gate-suite failures where the search *proved* a
+        mate-in-2 and played a proven mate-in-5 instead: all proven wins tie at
+        q̂ = +1, so the acting argmax fell through to ``g + logits`` and picked
+        whichever line the policy prior happened to like. (2) is the older
+        ``IMMEDIATE_WIN_BONUS`` argument — a shorter forced mate is strictly
+        better play — now stated over mate distance rather than over the single
+        special case of depth 1.
+
+        The bonus only ever reorders actions already at the +1 ceiling relative
+        to each other, and lifts that whole group above everything else, so it
+        cannot promote a worse action.
         """
         sl = tree.edge_slice(root)
         max_n = int(tree.N[sl].max()) if int(tree.num_edges[root]) else 0
         scores = g + logits + gumbel.sigma(self._root_completed_q(tree, root), max_n, self.cfg)
-        immediate_win = tree.terminal[sl] & (-tree.terminal_value[sl] >= 1.0)
-        return np.where(immediate_win, scores + IMMEDIATE_WIN_BONUS, scores)
+        exact_win = (tree.terminal[sl] & (-tree.terminal_value[sl] >= 1.0)) | (
+            tree.proven[sl] & (-tree.proven_value[sl] >= 1.0)
+        )
+        depth = tree.exact_depth(sl)
+        return np.where(exact_win, scores + EXACT_WIN_BONUS - depth * WIN_DEPTH_STEP, scores)
 
     def run_tree(
         self,
@@ -590,14 +630,45 @@ class Search:
         base_reps: RepetitionsFn,
         forced_edge: int | None = None,
     ) -> None:
-        """One simulation: descend, expand or short-circuit, back up, unwind.
+        """Drive one simulation to completion, evaluating leaves inline.
 
-        ``forced_edge`` overrides selection at the root only — Sequential
-        Halving dictates which root action this simulation spends itself on.
-        Below the root, selection is unchanged from chunk 5: deterministic
-        PUCT, no noise (spec §6.2).
+        The work lives in ``simulate_gen``; this is the zero-latency driver that
+        answers each evaluation request immediately. ``BatchRunner`` drives the
+        same generator but defers the answer until a batch is full, which is why
+        batch_leaves=1 reproduces this exactly.
         """
-        path: list[int] = []  # edge indices traversed
+        gen = self.simulate_gen(tree, root, board, path_reps, base_reps, forced_edge)
+        try:
+            tokens = next(gen)
+            while True:
+                self._evaluations += 1
+                tokens = gen.send(self.evaluate_fn(tokens))
+        except StopIteration:
+            pass
+
+    def simulate_gen(
+        self,
+        tree: Tree,
+        root: int,
+        board: chess.Board,
+        path_reps: Counter,
+        base_reps: RepetitionsFn,
+        forced_edge: int | None = None,
+        use_vloss: bool = False,
+    ):
+        """One simulation as a coroutine: yields leaf tokens, receives (policy, value).
+
+        Suspends at most once — a simulation either short-circuits on a terminal
+        edge (no evaluation at all) or expands exactly one leaf. That single
+        suspension point is what makes the batched runner a scheduling change
+        rather than a second search implementation.
+
+        ``use_vloss`` applies virtual loss along the in-flight path so concurrent
+        simulations in the same tree diverge; it is removed on resume. Terminal
+        short-circuits never yield, so they never apply or remove vloss — the
+        buffer accounting stays balanced with terminals present (review Q4).
+        """
+        path: list[int] = []
         node = root
         pushed = 0
         value: float
@@ -615,17 +686,24 @@ class Search:
             path_reps[board._transposition_key()] += 1
 
             if tree.terminal[e]:
-                # Exact outcome — never touches the evaluator (spec §6.3).
                 value = float(tree.terminal_value[e])
                 break
             if tree.child[e] == -1:
-                child, value = self._expand(tree, board, path_reps, base_reps)
+                tokens = self.leaf_tokens(board, path_reps, base_reps)
+                if use_vloss:
+                    for pe in path:
+                        tree.vloss[pe] += 1
+                policy, value_est = yield tokens
+                if use_vloss:
+                    for pe in path:
+                        tree.vloss[pe] -= 1
+                child, value = self._build_node(
+                    tree, board, path_reps, base_reps, policy, value_est
+                )
                 tree.child[e] = child
                 break
             node = int(tree.child[e])
 
-        # Back up. `value` is from the perspective of the side to move at the
-        # leaf; flip once per ply on the way up.
         for e in reversed(path):
             value = -value
             tree.N[e] += 1

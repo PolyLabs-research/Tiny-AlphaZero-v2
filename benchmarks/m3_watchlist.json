@@ -1,0 +1,32 @@
+[
+  {
+    "id": "mate2_129",
+    "verdict": "CAPABILITY",
+    "fen": "2r3n1/4N3/p4p1r/k5p1/b1P1PPPp/7P/1RNPB1R1/R2K4 w - - 0 1",
+    "n_key_moves": 1,
+    "value_head_on_key_child": 0.036,
+    "key_edge_visits": 2,
+    "key_edge_proven": false,
+    "key_edge_q": 0.518,
+    "chosen_was_key": false,
+    "replies_expanded": "1/16",
+    "sims_needed_for_proof": 17,
+    "reason": "reply set never fully expanded"
+  },
+  {
+    "id": "mate2_165",
+    "verdict": "COVERAGE",
+    "fen": "8/k7/B7/3R1p1p/R2P1P2/3K4/8/1N2Bn2 w - - 0 1",
+    "n_key_moves": 1,
+    "value_head_on_key_child": 0.0297,
+    "reason": "no key move in the considered set"
+  },
+  {
+    "id": "mate2_166",
+    "verdict": "COVERAGE",
+    "fen": "8/k7/B7/4Rp1p/R2P1P2/3K2n1/8/1N2B3 w - - 0 1",
+    "n_key_moves": 1,
+    "value_head_on_key_child": 0.0321,
+    "reason": "no key move in the considered set"
+  }
+]
