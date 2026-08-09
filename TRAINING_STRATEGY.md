@@ -2,7 +2,7 @@
 
 This is the **campaign document**: which runs exist, why each was launched, the exact call that launched it, what it produced, and what gets launched next. `HOW_TO_TRAIN.md` explains *how the machinery works*; this file records *what we are doing with it and why*. One round = one entry here, written **before** the run starts (pre-registered expectations) and completed after it ends (results + decision).
 
-**Current status:** **Phase 1 REOPENED — round `d` in flight.** The 2026-08-06 closure was reopened on 2026-08-08 via its own return condition 1: the chunk 6 mate-in-2 gate scored 77.0% < 95% with `runs/phase1_anchor.pt`. Decision (Tom): fix the model, the gate does not move — `BLOCKED-2026-08-08-mate2-gate.md`. Round `d` targets the measured binding constraint, prior rank coverage of mate-in-2 key moves.
+**Current status:** **Phase 1 REOPENED — round `d` complete: proxy gates PASS, operative gate 0.890; evaluation-profile investigation in flight.** The 2026-08-06 closure was reopened on 2026-08-08 via its own return condition 1: the chunk 6 mate-in-2 gate scored 77.0% < 95% with `runs/phase1_anchor.pt`. Decision (Tom): fix the model, the gate does not move — `BLOCKED-2026-08-08-mate2-gate.md`. Round `d` targets the measured binding constraint, prior rank coverage of mate-in-2 key moves.
 
 ---
 

@@ -81,6 +81,79 @@ result than "it didn't work" and the reason the escalation was recorded rather t
 sims with this checkpoint**."* The mate-in-1 half did **not** fire (100/100). The mate-in-2
 half has. Per that document, the Phase 1 gate-retirement decision is now formally reopened.
 
+## Resolution path — pre-registered 2026-08-09, before any measurement
+
+**Tom's decision on the round-`d` split result: the gate number does not move.** Not to 0.93,
+not to "conditional on considered". Two staged interventions, both aimed at the search-side
+losses the round-`d` decomposition exposed, with a measurement firewall between them.
+
+### Stage 1 — an explicit evaluation profile
+
+The gate has been testing **self-play exploration mode on a match-play question**. Gumbel's
+root noise exists to diversify self-play data; it has no business in a suite, a ladder match,
+or any other measurement of strength. Deterministic acting at evaluation is orthodox
+Gumbel-AlphaZero practice (Danihelka et al. 2022 §5), and chunk 10's anchor ladder needs it
+regardless — a ladder whose rungs move by ±2.5 points under reseeding cannot resolve Elo.
+
+So this is not a gate dodge: it is a contract that should have existed from chunk 6, and it
+happens to remove the single largest term in the decomposition (0.990 → 0.925, the 6.5 points
+lost to noise knocking a top-ranked forcing move out of the considered set).
+
+Contract — `MCTSConfig.root_noise: bool = True`, and when false:
+
+- root candidate selection is deterministic **top-m by raw logits** (no Gumbel draws);
+- final action selection is argmax over survivors of **`logits + σ(q̂)`** (no `g` term);
+- Sequential Halving, σ, the solver, and the budget convention are **unchanged**.
+
+Self-play keeps `root_noise=true`. Suites, ladder, and match play run the eval profile.
+
+**Pre-registered projection for stage 1 alone: ≈0.93 ± 0.02.** This is expected to *still
+fail*, which is why stage 2 exists. Arithmetic: removing the noise term recovers most of the
+0.990 → 0.925 loss, leaving roughly `0.99 × 0.941 ≈ 0.93`.
+
+**Stop-and-report rule:** if stage 1 lands far outside `[0.88, 0.95)`, stop before tuning and
+report. A number outside that window means the three-factor decomposition is wrong somewhere,
+and tuning on top of a wrong model of the problem is noise, not evidence.
+
+### Stage 2 — one bounded tuning pass, behind a firewall
+
+Only if stage 1 < 0.95. Sweep `eval_c_visit ∈ {25, 50, 100}` × `eval_c_scale ∈ {0.5, 1.0, 2.0}`
+× `eval_m ∈ {16, 32}` at 128 sims, **on a disjoint 500-position tuning suite**
+(`runs/data/mate2_tune_500`, seed 102), verified disjoint from both gate suites, all held-out
+eval sets, and all anchor sets.
+
+These overrides are **scoped to the eval profile** — new `eval_*` fields defaulting to the
+self-play values. The self-play constants are not touched by anything here; tuning those is
+Phase 2 evidence territory, not a gate conversation.
+
+**The firewall:** the tuning suite is burned as tuning data the moment it is used and must
+never gate anything. Selection is by tuning-suite solve rate alone, ties broken toward the
+paper defaults (m=16, c_scale=1.0, c_visit=50) — minimal delta from the published
+configuration wins. The gate suite is then touched **exactly once**, with the chosen config.
+No re-pick after seeing the gate number: a second attempt with a different config is exactly
+the overfit this firewall exists to prevent.
+
+### Decision rules (pre-registered)
+
+- **≥ 0.95** → re-close Phase 1: promote `runs/phase1_d/final.pt` to `runs/phase1_anchor.pt`,
+  append the v2 digest to `runs/ANCHORS.sha256` keeping the dated v1 line, merge `round-d` →
+  `main`, annotated tag `phase1-closed-r2` carrying the gate number and the chosen eval
+  config, both BLOCKED docs closed, strategy-doc row + result block. The chosen constants are
+  recorded as **configuration in `configs/default.yaml`, not lore**, and the plan's chunk 10
+  section states that the ladder runs the eval profile.
+- **< 0.95 after stage 2** → stop. Record the complete evidence chain here — coverage
+  saturated at 0.990, noise removed, constants tuned, full table — and hand the gate-number
+  conversation back to Tom. Do not iterate further; do not touch the threshold.
+
+### Implementation note — where this code lands
+
+The eval profile is a **chunk 6** feature (it is the Gumbel root-selection contract), and the
+`src/tinyalphazero/mcts/` package exists only on the `chunk-05/06/07` chain — `round-d` has no
+search code at all, so the work cannot physically go there. Stage 1/2 code and tests land on
+`chunk-06-gumbel`; this document and `TRAINING_STRATEGY.md` are authored on `round-d`. The
+measurement is unaffected either way: `phase1_d/final.pt` loads on both branches, because
+`_resolve_field_types` drops config keys the branch does not know (`phase1_mate2_mix` here).
+
 ## The failure
 
 ```
