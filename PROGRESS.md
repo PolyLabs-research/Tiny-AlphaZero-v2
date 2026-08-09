@@ -419,4 +419,149 @@ was removed from it — a dated, SHA-stamped record is worthless if it is not ve
 
 ---
 
-## Next: Chunk 5 — Array-tree MCTS
+## Chunk 5 — Array-tree MCTS, synchronous single game ✅ (branch `chunk-05-mcts`, 2026-08-08)
+
+Created `src/tinyalphazero/mcts/{tree,search}.py`, `scripts/generate_suites.py`,
+`tests/test_mcts.py`, `tests/suites/mate_in_{1,2}.epd`. All four §6.4 gates pass.
+
+### Gate results (verbatim)
+
+```
+$ pytest tests/test_mcts.py -q
+40 passed in 2.07s
+
+$ python -m tinyalphazero.mcts.search --suite tests/suites/mate_in_1.epd --sims 16 --stub
+mate_in_1.epd: 100/100 solved at 16 sims (100.0%)
+exit=0
+
+$ pytest -q
+159 passed, 36 warnings in 57.21s
+
+$ ruff check src/ tests/ scripts/
+All checks passed!
+```
+
+| Gate | Result |
+|---|---|
+| 1. Mate-in-1, 16 sims, stub evaluator | **100/100** |
+| 2. Invariant fuzz (`1 + ΣN(root) == sims+1`, `vloss == 0`, `W` finite) | pass, 85 random positions × {1,7,32} sims |
+| 3. Pinned visit counts, 64 sims | pass, 2 positions |
+| 4. `Board.copy` ban | pass, incl. the suite path |
+
+### The design decision that makes gate 1 meaningful
+
+The mate-in-1 suite has **min 23, median 43, max 64 legal moves**. PUCT with uniform
+priors visits one fresh root edge per simulation, so at 16 sims a lazily-expanding
+search touches under 40% of root edges and *cannot* see the mate — it would be
+measuring branching factor, not search. Measured directly: with terminal detection
+deferred to first traversal, the gate scored **49/100**.
+
+So expansion resolves each child's terminal status eagerly (one push/pop per legal
+move), and `_select_edge` uses that exact value in place of the completed-Q estimate
+where it exists. Mates are then found on simulation 1 — `test_mate_in_1_is_found_on_the_first_simulation`
+pins that. Cost is O(branching) push/pops per expansion; chunk 5 is explicitly
+correctness-before-speed and chunk 7 can revisit after profiling.
+`test_mate_in_1_suite_positions_exceed_the_sim_budget` asserts min branching > 16 so
+the gate can never quietly become passable-by-accident.
+
+### The pinned-visit gate needed two positions, not one
+
+Under a uniform-policy zero-value stub, a 47-move midgame position at 64 sims produces
+visit counts that are **all 1s and 2s** — correct behaviour (there is no signal to
+concentrate on) but a weak canary that most math changes would not move. Added a
+second pin: `6k1/5ppp/8/8/8/8/5PPP/R5K1 w` where `Ra8#` is a proven win, concentrating
+**45 of 64 visits** with Q=+1.0. That vector moves if terminal detection, terminal-value
+propagation, the backup sign, completed-Q, or `c_puct` changes. Both are asserted; the
+near-uniformity of the first is itself asserted, so signal leaking into it also fails.
+
+### Pre-existing flaky test, found and fixed
+
+`test_train_step_loss_decreases[False]` failed once in four full-suite runs, then passed
+5/5 in isolation. Cause: it seeded the *batch* but not the *model init*, so it consumed
+whatever global torch RNG state preceding tests left behind — adding any test earlier in
+the file could flip it, which is what the A2/A3 additions did. Margin measured over 10
+inits: policy-CE ratio **5.6×–25.6× unmasked** vs **12.7×–39.8× masked** against a 4×
+gate, so the unmasked path sits close enough to lose occasionally. Fixed with
+`torch.manual_seed(0)`; **the 4× threshold is unchanged** — only the uncontrolled
+variable was removed. Verified 131 passed × 4 consecutive full runs.
+
+### Repetition off-by-one — found by the review's question 1, fixed
+
+Eager terminal resolution creates a repetition hazard, and reviewing for it turned up a
+live bug. `encode_board(board, repetitions)` documents *"occurred **earlier**"* (a first
+visit is 0) while the threefold claim needs the total **including now**. Both were read
+off one counter, so **every non-root expansion passed a count one too high** — measured
+44 of 45 expansions wrong on a king-shuffle position, root the only correct one.
+
+No gate could have caught it: the stub evaluator ignores that token, so it is invisible
+until the real network arrives. It would then have fed a corrupted repetition signal to
+every non-root position — the exact input spec §12.1 flags as the thing to watch for
+shuffle-into-draw pathologies.
+
+Fixed by naming the distinction instead of computing it inline: `_total_occurrences`
+(counts now) and `_prior_occurrences` (excludes now), both derived from one stated
+invariant — *`path_reps` always includes the position the board is standing on, root
+included*. Establishing that for the root also corrected threefold detection on paths
+that return to the root position, which previously under-counted.
+
+Verified with python-chess as an independent oracle (the search pushes onto the live
+board, so `_repetitions_from_board` sees the true path): **0 mismatches over 207
+expansions** across three positions, from 44/45 wrong before.
+
+**The oracle is now a permanent gate, not a one-time check** — "no gate could have caught
+this" must not stay true. `test_repetition_token_fuzz_shuffle_heavy` fuzzes 7
+shuffle-heavy positions (sparse material, few captures, so paths revisit constantly)
+× {16, 64} sims, and `test_repetition_token_fuzz_with_real_move_history` runs the same
+assertion on boards carrying genuine history, since a self-play board's prior-occurrence
+count spans both the pre-search stack and the in-search path. Mutation-tested: with the
+off-by-one reintroduced, **16 of the repetition tests fail**, so the gate has teeth.
+
+Oracle validity condition, stated because it is load-bearing: it holds only when history
+lives in the move stack, i.e. `repetitions_fn` contributes 0. A non-zero `repetitions_fn`
+describes occurrences python-chess cannot see, and the assertion would be checking the
+wrong thing.
+
+### Chunk 6 required reading — the four terminal-interaction questions
+
+Raised at the chunk 5 review. Two are answered by the chunk 5 implementation; two are
+open and belong to chunk 6/7.
+
+1. **Repetition-aware child terminality — ANSWERED.** The eager check consults the
+   path-local counter, so terminality is path-aware, not a property of the position
+   alone. Caching it on the edge is sound *because a tree path from root to any node is
+   unique*, so the count that decided the flag cannot later change — that reasoning is
+   the load-bearing part and it breaks the moment the tree becomes a DAG (transposition
+   table), which chunk 7 should treat as a blocker, not an optimisation.
+   Pinned by `test_child_terminality_accounts_for_the_path_not_just_the_position`.
+2. **Budget accounting — ANSWERED: terminals DO consume budget.** A simulation ending on
+   a terminal edge still increments that edge's `N` and counts as one simulation, so the
+   identity is `1 + Σ N(root edges) == sims_run + 1` with no special case, and
+   `sims_run == num_sims` whenever the root has edges. Sequential Halving in chunk 6
+   must be written against *this* convention: its exact-budget arithmetic will not
+   balance if it assumes terminal hits are free.
+3. **Gumbel root interaction — OPEN.** Root terminal children need the same exact-value
+   substitution inside σ(q̂) and the improved-policy completion that `_select_edge` does.
+   A mate scored by completed-Q estimate at the root while non-root selection uses exact
+   values is an inconsistency Gumbel absorbs silently into worse policy targets.
+4. **Chunk 7 equivalence — OPEN.** Terminal short-circuits never reach the evaluator, so
+   the batched runner must not count them as leaves awaiting a forward pass, or the
+   batch-1 equivalence gate fails late and confusingly.
+
+### `.gitignore` must-track test
+
+Added `tests/test_gitignore_musttrack.py` (11 cases) after four separate incidents across
+two sessions — `BLOCKED.md` ignored outright, bare `data/` blocking descent into
+`runs/data/`, `benchmarks/results.jsonl` ignored, and `runs/**` swallowing
+`runs/ANCHORS.sha256` on the very commit that added it. It runs `git check-ignore` over a
+must-track list and, in the other direction, asserts checkpoints and `.venv` stay ignored
+so a too-wide negation cannot start committing 75 MB blobs.
+
+### Not done in this chunk (by instruction)
+
+Chunk 6 was not started. `runs/phase1_anchor.pt` is untouched — every gate above runs
+against the stub evaluator, and the network is first consumed by chunk 6's mate-in-2
+gate. The branch is **not merged**; it awaits the chunks 5–7 review checkpoint.
+
+---
+
+## Next: Chunk 6 — Gumbel root selection

@@ -223,6 +223,14 @@ def test_train_step_loss_decreases(masked: bool) -> None:
     term is what overfitting should actually drive toward zero. Single-step readings
     at lr=1e-2 bounce by 3× between adjacent steps, hence the smoothed windows.
     """
+    # Seed the weight init. The batch was already seeded but the model was not,
+    # so this test drew whatever global torch RNG state the preceding tests left
+    # behind -- adding a test anywhere earlier in the file could flip it. It is a
+    # lottery with thin odds on the unmasked path: sampled over 10 inits the
+    # policy-CE ratio spans 5.6x-25.6x unmasked vs 12.7x-39.8x masked, so the
+    # unmasked case sits close enough to the 4x gate to lose occasionally.
+    # The gate is unchanged; only the uncontrolled variable is removed.
+    torch.manual_seed(0)
     model_cfg = _mini_cfg(dropout=0.0)
     net = ChessNet(model_cfg).train()
     optimizer = torch.optim.AdamW(net.parameters(), lr=1e-2)
