@@ -17,6 +17,7 @@ disagree, and the comparison would under-report overlap.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import chess
@@ -66,9 +67,12 @@ def _dataset_keys(rel: str) -> set[str] | None:
 
 def _suite_keys(name: str) -> set[str] | None:
     """Normalise EPD positions through encode→decode so keys are comparable."""
+    return _epd_keys(SUITES / name)
+
+
+def _epd_keys(path: Path) -> set[str] | None:
     from tinyalphazero.encoding import encode_board
 
-    path = SUITES / name
     if not path.exists():
         return None
     keys = set()
@@ -110,6 +114,88 @@ def test_no_suite_contamination(anchor_rel: str, suite: str) -> None:
         f"{anchor_rel}; first: {sorted(overlap)[0]}. The gate would be measuring "
         "memorisation."
     )
+
+
+# ---------------------------------------------------------------------------
+# The stage-2 tuning suite (BLOCKED-2026-08-08)
+#
+# runs/data/mate2_tune_500 is where the evaluation-profile sweep picks its σ
+# constants and eval_m. Two distinct things have to be true of it, and only one
+# of them is the usual contamination story:
+#
+#   1. it must not overlap the *gate* suites, or the config would be chosen on
+#      the very positions it is later scored against — the firewall;
+#   2. it must not overlap the *anchor* sets, or the sweep would be ranking
+#      configs by how well they exploit memorised positions rather than by
+#      search quality.
+#
+# Legacy anchor dirs are included in (2) deliberately: phase1_d warm-started
+# from phase1_c, which trained on runs/data/mate1_100k, so "superseded" does not
+# mean "never seen by this checkpoint".
+# ---------------------------------------------------------------------------
+
+TUNING_SUITE = REPO / "runs" / "data" / "mate2_tune_500" / "mate_in_2.epd"
+
+
+def _tuning_keys() -> set[str] | None:
+    return _epd_keys(TUNING_SUITE)
+
+
+@pytest.mark.parametrize("suite", EVAL_SUITES)
+def test_tuning_suite_is_disjoint_from_the_gate_suites(suite: str) -> None:
+    """The firewall. A shared position makes the single-shot gate self-graded."""
+    tuning = _tuning_keys()
+    gate = _suite_keys(suite)
+    if tuning is None or gate is None:
+        pytest.skip("tuning suite or gate suite not present in this working tree")
+    overlap = tuning & gate
+    assert not overlap, (
+        f"{len(overlap)} position(s) shared between the tuning suite and gate suite "
+        f"{suite}; first: {sorted(overlap)[0]}. The sweep would be selecting a "
+        "config on positions the gate then scores."
+    )
+
+
+@pytest.mark.parametrize("eval_rel", EVAL_DIRS)
+def test_tuning_suite_is_disjoint_from_held_out_sets(eval_rel: str) -> None:
+    tuning = _tuning_keys()
+    held_out = _dataset_keys(eval_rel)
+    if tuning is None or held_out is None:
+        pytest.skip(f"tuning suite or {eval_rel} not present")
+    overlap = tuning & held_out
+    assert not overlap, (
+        f"{len(overlap)} position(s) shared between the tuning suite and held-out "
+        f"{eval_rel}; first: {sorted(overlap)[0]}"
+    )
+
+
+@pytest.mark.parametrize("anchor_rel", ANCHOR_DIRS + LEGACY_ANCHOR_DIRS)
+def test_tuning_suite_is_disjoint_from_anchor_sets(anchor_rel: str) -> None:
+    """Including superseded sets: phase1_d's weights descend from phase1_c's."""
+    tuning = _tuning_keys()
+    anchor = _dataset_keys(anchor_rel)
+    if tuning is None or anchor is None:
+        pytest.skip(f"tuning suite or {anchor_rel} not present")
+    overlap = tuning & anchor
+    assert not overlap, (
+        f"{len(overlap)} tuning-suite position(s) appear in anchor set {anchor_rel}; "
+        f"first: {sorted(overlap)[0]}. The sweep would rank configs by memorisation."
+    )
+
+
+def test_tuning_suite_declares_itself_tuning_only() -> None:
+    """The suite's own metadata must say it can never gate anything.
+
+    Cheap to assert and worth asserting: the risk with a 500-position suite that
+    scores well is somebody quoting it later as a result. The warning has to
+    travel with the artefact, not live only in a BLOCKED document.
+    """
+    meta_path = TUNING_SUITE.parent / "meta.json"
+    if not meta_path.exists():
+        pytest.skip("tuning suite not generated in this working tree")
+    meta = json.loads(meta_path.read_text())
+    assert "TUNING ONLY" in meta.get("PURPOSE", "").upper()
+    assert "MUST NEVER GATE" in meta.get("PURPOSE", "").upper()
 
 
 def test_position_key_normalises_both_sides_identically() -> None:

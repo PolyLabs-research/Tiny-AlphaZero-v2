@@ -1,0 +1,35 @@
+{
+  "n": 500,
+  "version": "1",
+  "git_sha": "c32b0f5",
+  "kind": "epd_suite",
+  "file": "mate_in_2.epd",
+  "PURPOSE": "TUNING ONLY — MUST NEVER GATE ANYTHING.",
+  "firewall": [
+    "Stage 2 of BLOCKED-2026-08-08-mate2-gate.md sweeps the evaluation-profile",
+    "sigma constants and eval_m against this suite. It is therefore BURNED as",
+    "tuning data: a config chosen on these 500 positions has already seen them,",
+    "so a solve rate measured here is a fitted number and not evidence of",
+    "strength. The gate is tests/suites/mate_in_2.epd, touched exactly once with",
+    "the chosen config. If a future round wants to gate on 500 positions, harvest",
+    "a fresh suite with a fresh seed -- do not promote this one."
+  ],
+  "generation_config": {
+    "mode": "mate_in_2_suite",
+    "num_positions": 500,
+    "seed": 102,
+    "harvest_seconds": 300,
+    "disjointness": "verified by tests/test_contamination.py against both gate suites, all held-out eval sets, and all anchor sets",
+    "argv": [
+      "scripts/generate_suites.py",
+      "--mate1",
+      "0",
+      "--mate2",
+      "500",
+      "--out",
+      "runs/data/mate2_tune_500",
+      "--seed",
+      "102"
+    ]
+  }
+}
