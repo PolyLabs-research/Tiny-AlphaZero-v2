@@ -53,8 +53,16 @@ FIXTURES = {
 
 
 def _cfg(**kw) -> MCTSConfig:
+    """Self-play profile by default, pinned explicitly.
+
+    ``root_noise`` is a dispatch flag on a defaulted field, which is precisely
+    the shape that silently re-pointed three chunk-5 tests when ``root_mode``
+    arrived. Set it here so a future default flip fails these tests instead of
+    quietly changing what they measure.
+    """
     cfg = MCTSConfig()
     cfg.batch_leaves = 1
+    cfg.root_noise = True
     for k, v in kw.items():
         setattr(cfg, k, v)
     return cfg
@@ -67,7 +75,10 @@ def _cfg(**kw) -> MCTSConfig:
 
 @pytest.mark.parametrize("name", sorted(FIXTURES))
 @pytest.mark.parametrize("sims", [16, 48])
-def test_gate_equivalence_with_synchronous_search(name: str, sims: int) -> None:
+@pytest.mark.parametrize("root_noise", [True, False], ids=["selfplay", "eval"])
+def test_gate_equivalence_with_synchronous_search(
+    name: str, sims: int, root_noise: bool
+) -> None:
     """batch_leaves=1, num_games=1, same seed → identical search, not merely a
     matching move.
 
@@ -75,9 +86,14 @@ def test_gate_equivalence_with_synchronous_search(name: str, sims: int) -> None:
     move. Two searches can agree on the move while disagreeing about everything
     behind it, and it is the disagreement that would surface later as an
     unreproducible self-play run.
+
+    Run under **both** profiles. The runner reimplements the Gumbel root rather
+    than calling into ``Search``, so "the eval profile works" is a claim about
+    two independent pieces of code, and this gate is the only place the two are
+    compared directly.
     """
     epd = FIXTURES[name]
-    cfg = _cfg()
+    cfg = _cfg(root_noise=root_noise)
 
     sync = Search(uniform_stub_evaluator, cfg, np.random.default_rng(7)).run(
         _board(epd), None, sims
@@ -267,3 +283,52 @@ def test_inline_evaluation_is_refused() -> None:
 
     with pytest.raises(AssertionError, match="batched path was bypassed"):
         _unused_evaluator(np.zeros(72, dtype=np.int8))
+
+
+# ---------------------------------------------------------------------------
+# The evaluation profile on the batched path (BLOCKED-2026-08-08)
+#
+# Chunk 10's ladder plays its matches through BatchRunner, so the profile has to
+# hold here as well as in Search. Before this was wired the runner drew Gumbel
+# noise unconditionally: suite numbers would have been deterministic and ladder
+# numbers noisy, with nothing to say the two disagreed.
+# ---------------------------------------------------------------------------
+
+
+def test_eval_profile_batched_is_seed_independent() -> None:
+    """Different seeds, identical trees — the property the ladder needs."""
+    cfg = _cfg(root_noise=False, batch_leaves=8)
+    trees = []
+    for seed in (11, 22):
+        runner = BatchRunner(stub_batch, cfg, max_plies=3)
+        list(runner.play_games(2, seeds=[seed, seed + 1], num_sims=24))
+        trees.append(
+            {k: tree.N[tree.edge_slice(root)].tolist()
+             for k, (tree, root, _) in runner.debug_trees.items()}
+        )
+    assert trees[0] == trees[1], "batched eval profile still depends on the seed"
+
+
+def test_selfplay_profile_batched_still_varies() -> None:
+    """The other side of it: self-play data diversity must survive."""
+    seen = set()
+    for seed in range(5):
+        runner = BatchRunner(stub_batch, _cfg(batch_leaves=8), max_plies=3)
+        list(runner.play_games(1, seeds=[seed], num_sims=24))
+        tree, root, _ = runner.debug_trees[(0, 0)]
+        seen.add(tuple(tree.N[tree.edge_slice(root)].tolist()))
+    assert len(seen) > 1, "batched self-play profile went deterministic"
+
+
+def test_batched_runner_resolves_eval_overrides() -> None:
+    """``eval_m`` must reach the runner's own considered-set arithmetic.
+
+    The runner reads ``self.cfg.gumbel_m`` directly, so without resolving the
+    profile it would consider 16 actions while ``Search`` considered 32 — the
+    two implementations disagreeing about the same config.
+    """
+    cfg = _cfg(root_noise=False, eval_m=32, eval_c_visit=25.0, eval_c_scale=2.0)
+    runner = BatchRunner(stub_batch, cfg, max_plies=1)
+    assert runner.cfg.gumbel_m == 32
+    assert runner.cfg.c_visit == 25.0
+    assert runner.cfg.c_scale == 2.0

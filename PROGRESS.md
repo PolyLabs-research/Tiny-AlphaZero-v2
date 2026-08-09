@@ -725,4 +725,84 @@ with 128 simulations once the right move is already in front of it.
 
 ---
 
+## Chunk 7 — Batched leaf evaluation ✅ code + gates; ⚠️ throughput target missed (2026-08-09)
+
+Both DONE-WHENs green. The deferred GPU benchmark has now been run at the spec §10
+configuration. **Recorded as measurements, not as pass/fail** — the escalation rule keys off
+1,500 sims/s, which was not crossed.
+
+```
+$ pytest tests/test_batch_runner.py -q
+30 passed in 1.87s
+
+$ python benchmarks/bench_selfplay.py --games 32 --sims 16 --device cpu
+sims/s 2847.6 | leaves/s 3021.6 | mean fill 31.36/512   # DONE-WHEN: runs to completion ✅
+
+$ python benchmarks/bench_selfplay.py --games 256 --sims 48 --device cuda --ckpt runs/phase1_anchor.pt
+games=256 plies=5120 in 128.21s
+  sims/s 1916.9 | leaves/s 1955.2 | forwards/s 7.64 | mean fill 255.79/512 | terminal s-c 201
+
+$ python benchmarks/bench_selfplay.py --games 256 --sims 48 --device cpu     # stub evaluator
+games=256 plies=5080 in 91.13s
+  sims/s 2675.7 | leaves/s 2726.5 | mean fill 253.54/512
+
+$ python benchmarks/bench_inference.py --ckpt runs/phase1_anchor.pt --device cuda
+batch   64: median   7.195 ms  p95   7.503 ms   8895.5 pos/s
+batch  256: median  37.980 ms  p95  38.403 ms   6740.4 pos/s
+batch  512: median  81.997 ms  p95  83.085 ms   6244.1 pos/s
+```
+
+| §10 target | Measured | |
+|---|---|---|
+| ≥ 3,000 sims/s aggregate | **1,917** | misses (above the 1,500 escalation floor) |
+| < 8 ms forward at batch 512 | **82.0 ms** | misses by ~10× |
+
+### The 3,000 sims/s target is unreachable on this box, and not because of the GPU
+
+The stub run is the decisive one: **with a zero-cost evaluator the runner still only reaches
+2,676 sims/s.** The §10 aggregate target sits above the ceiling of the runner with no network
+in the loop at all, so no amount of GPU or batching work can reach it — python-chess move
+generation and tree ops are the binding constraint. That is exactly the bottleneck ordering
+§10 predicted ("movegen first, tree ops second, GPU last"); it is now measured rather than
+assumed. The network costs the difference: 1/1917 − 1/2676 ≈ 0.15 ms per simulation, ~28% on
+top of runner overhead.
+
+**No py-spy profile was run** — chunk 7's escalation path triggers below 1,500 sims/s and 1,917
+is above it. The stub decomposition already localises the cost to the same place a flame graph
+would, and the plan is explicit that a movegen backend swap is a *new negotiated chunk*, not an
+improvisation. Flagging for Tom rather than acting: **§10's 3,000 sims/s needs either a
+renegotiated target or that new chunk.**
+
+### The forward-latency target was calibrated for different hardware
+
+82 ms at batch 512 against an 8 ms target is not a tuning gap. Per-position throughput *falls*
+with batch size — 8,896 pos/s at 64, 6,244 at 512 — so the trunk is already compute-bound by
+batch 64 and there is no batching headroom left to find. Same iGPU characteristic the Phase 1
+record notes (batch 2048 is a training throughput *cliff*; the trunk runs at ~8% of theoretical
+bf16). Measured with `inference_mode` + bf16 autocast, matching `torch_evaluate_batch` exactly;
+the ~8 MB device→host copy the real path also pays is *excluded*, since §10 asks about the
+forward.
+
+Practical consequence for chunk 8/12, not a defect: `batch_leaves=512` never fills. Mean fill
+is 255.8/512 with 256 concurrent games, because the buffer flushes when every game is blocked —
+one leaf per game. Fill tracks `concurrent_games`, not `batch_leaves`, so the former is the
+knob that matters for batch efficiency.
+
+### The eval profile had to be wired into the batched path too
+
+`BatchRunner` reimplements the Gumbel root rather than calling `Search.run_gumbel`, and it drew
+Gumbel noise unconditionally — so `root_noise=False` was **silently ignored here**. Chunk 10's
+ladder plays its matches through this path, so suite numbers would have been deterministic
+while ladder numbers stayed noisy, with nothing in the code to say the two disagreed. Fixed by
+resolving the profile in `__init__` (as `Search` does) and repeating the `g ≡ 0` substitution.
+
+The equivalence gate is now parametrized over **both** profiles, which is the only place the
+two independent root implementations are compared directly. 30 tests pass; 211 pass overall.
+
+Third instance of one failure family, after `root_mode` re-pointing three chunk-5 tests and
+`phase1_lr` silently not existing: **a defaulted config field with more than one consumer fails
+silently on whichever consumer forgot to read it.**
+
+---
+
 ## Next: chunk 6 gate-number conversation is back with Tom (see BLOCKED-2026-08-08)

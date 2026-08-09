@@ -101,7 +101,11 @@ class BatchRunner:
         shipped to the device and back.
         """
         self.evaluate_batch = evaluate_batch
-        self.cfg = cfg if cfg is not None else MCTSConfig()
+        # Resolve the evaluation profile here for the same reason Search does:
+        # this class reimplements the Gumbel root, so it is a second consumer of
+        # gumbel_m / c_visit / c_scale and would otherwise read the self-play
+        # constants while the synchronous path read the eval ones.
+        self.cfg = (cfg if cfg is not None else MCTSConfig()).resolved()
         self.device = device
         self.max_plies = max_plies
         # Counters the invariant fuzz reads; see Q4 in PROGRESS.md.
@@ -170,7 +174,16 @@ class BatchRunner:
             return
 
         gs.logits = gumbel.prior_logits(gs.tree.prior[sl])
-        gs.g = gumbel.gumbel_noise(gs.rng, n_actions)
+        # Same g ≡ 0 substitution as Search.run_gumbel. It has to be repeated
+        # because this is a separate implementation of the root, and the ladder
+        # (chunk 10) plays its matches through *this* path — an eval profile the
+        # batched runner silently ignored would give deterministic suite numbers
+        # and noisy ladder numbers, which is the worst of both.
+        gs.g = (
+            gumbel.gumbel_noise(gs.rng, n_actions)
+            if self.cfg.root_noise
+            else np.zeros(n_actions, dtype=np.float32)
+        )
         m = min(self.cfg.gumbel_m, n_actions, max(num_sims, 1))
         order = np.argsort(-(gs.g + gs.logits), kind="stable")
         considered = search._force_include_proven_wins(
