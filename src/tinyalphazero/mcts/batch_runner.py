@@ -31,7 +31,12 @@ import numpy as np
 from tinyalphazero.config import MCTSConfig
 from tinyalphazero.encoding import legal_mask_ft
 from tinyalphazero.mcts import gumbel
-from tinyalphazero.mcts.search import RepetitionsFn, Search
+from tinyalphazero.mcts.search import (
+    FIFTY_MOVE_PLIES,
+    THREEFOLD_COUNT,
+    RepetitionsFn,
+    Search,
+)
 from tinyalphazero.mcts.tree import Tree
 
 
@@ -44,14 +49,19 @@ class TracePosition:
     side_to_move: bool  # chess.WHITE / chess.BLACK
     ply: int
     root_q: float  # best root value estimate — chunk 8 reads this to decide resignation
+    outcome: int = 0  # +1/0/-1 from THIS position's mover's view; filled after the game
 
 
 @dataclass
 class GameTrace:
     positions: list[TracePosition] = field(default_factory=list)
-    result: str = "unfinished"  # "checkmate" | "draw" | "ply_cap" | "unfinished"
+    # "checkmate" | "draw" | "draw_claim" | "ply_cap" | "unfinished"
+    result: str = "unfinished"
     outcome: int | None = None  # filled by the caller (chunk 8)
     plies: int = 0
+    # Chunk 8 self-play bookkeeping, filled by the actor after scoring.
+    resign_disabled: bool = False
+    would_resign_ply: int | None = None
 
 
 @dataclass
@@ -71,6 +81,13 @@ class _GameState:
         self.trace = GameTrace()
         self.ply = 0
         self.done = False
+        # Positions this game has already LEFT, by transposition key. Incremented
+        # once per committed move -- never per simulation -- so the hot path
+        # never rescans a move stack. Counts occurrences strictly BEFORE the
+        # current position, which is exactly what `base_reps` is defined to
+        # return and what `path_reps` (which includes the present position) is
+        # built to compose with.
+        self.history: Counter = Counter()
         # Per-move search state, (re)built by start_move().
         self.tree: Tree | None = None
         self.root = -1
@@ -116,6 +133,7 @@ class BatchRunner:
         # gate has to compare visit counts and solver flags, not just chosen moves:
         # two searches can agree on the move while disagreeing about everything else.
         self.debug_trees: dict[tuple[int, int], tuple[Tree, int, int]] = {}
+        self._stop_fn: Any = None
 
     # -- evaluation plumbing ---------------------------------------------
 
@@ -233,11 +251,27 @@ class BatchRunner:
         num_sims: int | None = None,
         boards: list[chess.Board] | None = None,
         repetitions_fn: RepetitionsFn | None = None,
+        stop_fn: Any = None,
     ) -> Iterator[GameTrace]:
+        """``stop_fn(trace) -> str | None`` is consulted after every committed
+        move; a returned string ends that game with it as the result.
+
+        This is how chunk 8 implements resignation without the runner knowing
+        what resignation is. The runner's job is to expose ``root_q`` per
+        decision (spec §7 says exactly that); deciding when a position is lost
+        enough to abandon is the actor's policy, and keeping it out here is what
+        lets the actor disable it for 10% of games without a second code path.
+        """
         num_sims = self.cfg.sims if num_sims is None else num_sims
         seeds = seeds or list(range(num_games))
         search = Search(_unused_evaluator, self.cfg)
-        base_reps: RepetitionsFn = repetitions_fn or (lambda _b: 0)
+
+        # One base_reps per game, reading that game's own history. An override
+        # is honoured for tests that want to inject a synthetic history.
+        def game_reps(gs: _GameState) -> RepetitionsFn:
+            if repetitions_fn is not None:
+                return repetitions_fn
+            return lambda b: gs.history[b._transposition_key()]
 
         self._games_ref = None
         games = [
@@ -248,8 +282,12 @@ class BatchRunner:
             )
             for i in range(num_games)
         ]
+        # Exposed for tests that assert on per-game history/adjudication state;
+        # the equivalence gate already reads debug_trees for the same reason.
+        self._games_debug = games
+        self._stop_fn = stop_fn
         for gs in games:
-            self._start_move(gs, search, num_sims, base_reps)
+            self._start_move(gs, search, num_sims, game_reps(gs))
 
         pending: list[_LeafRequest] = []
         self._pending_roots: list[tuple[_GameState, int]] = []
@@ -268,16 +306,16 @@ class BatchRunner:
                 if gs.in_root:
                     # The root is a leaf like any other; it goes through the buffer.
                     gs.gen = search.expand_root_gen(
-                        gs.tree, gs.board, gs.path_reps, base_reps
+                        gs.tree, gs.board, gs.path_reps, game_reps(gs)
                     )
                 else:
                     forced = self._next_forced_edge(gs, search)
                     if forced is None:
-                        self._commit_move(gs, search, num_sims, base_reps)
+                        self._commit_move(gs, search, num_sims, game_reps(gs))
                         progressed = True
                         continue
                     gs.gen = search.simulate_gen(
-                        gs.tree, gs.root, gs.board, gs.path_reps, base_reps,
+                        gs.tree, gs.root, gs.board, gs.path_reps, game_reps(gs),
                         forced_edge=forced, use_vloss=True,
                     )
 
@@ -354,14 +392,32 @@ class BatchRunner:
         )
 
         self.debug_trees[(id(gs), gs.ply)] = (tree, root, gs.sims_run)
+        # The position we are about to leave joins the history. One Counter
+        # increment per committed move; nothing rescans the move stack.
+        gs.history[gs.board._transposition_key()] += 1
         gs.board.push(result.best_move())
         gs.ply += 1
 
-        if gs.board.is_game_over() or gs.ply >= self.max_plies:
+        # Claim draws at game level with exactly the in-search semantics: a
+        # rational player claims, so the actor must treat these as over rather
+        # than playing on into a position the search already scores 0. Using the
+        # same THREEFOLD_COUNT / FIFTY_MOVE_PLIES constants keeps the two in
+        # step by construction — a game that ended one way inside the tree and
+        # another way at the actor would put contradictory value targets into
+        # the replay buffer.
+        occurrences = gs.history[gs.board._transposition_key()] + 1
+        claim_draw = (
+            occurrences >= THREEFOLD_COUNT or gs.board.halfmove_clock >= FIFTY_MOVE_PLIES
+        )
+
+        stop = self._stop_fn(gs.trace) if self._stop_fn is not None else None
+        if stop or gs.board.is_game_over() or claim_draw or gs.ply >= self.max_plies:
             gs.done = True
             gs.trace.plies = gs.ply
             gs.trace.result = (
-                "checkmate" if gs.board.is_checkmate()
+                stop if stop
+                else "checkmate" if gs.board.is_checkmate()
+                else "draw_claim" if claim_draw
                 else "ply_cap" if gs.ply >= self.max_plies
                 else "draw"
             )

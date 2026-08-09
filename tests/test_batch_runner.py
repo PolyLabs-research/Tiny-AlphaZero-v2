@@ -24,7 +24,13 @@ from tinyalphazero.mcts.gumbel import (
     halving_phase_budgets,
     phase_visit_queue,
 )
-from tinyalphazero.mcts.search import Search, load_epd, uniform_stub_evaluator
+from tinyalphazero.mcts.search import (
+    FIFTY_MOVE_PLIES,
+    THREEFOLD_COUNT,
+    Search,
+    load_epd,
+    uniform_stub_evaluator,
+)
 from tinyalphazero.mcts.tree import Tree
 
 MATE_IN_1 = "tests/suites/mate_in_1.epd"
@@ -416,6 +422,53 @@ def test_trace_tokens_carry_the_repetition_count(monkeypatch: pytest.MonkeyPatch
         "with no history supplied the same position must encode as REP_0 — "
         "otherwise this test would pass on a constant"
     )
+
+
+def test_per_game_history_feeds_base_reps() -> None:
+    """Chunk 8: the game owns its repetition history, one increment per move.
+
+    The counter holds positions the game has *left*, so ``base_reps`` returns
+    occurrences strictly before the present one — which is exactly what
+    ``path_reps`` (which includes the present one) is built to compose with. An
+    off-by-one here is invisible to every stub gate and would corrupt both the
+    REP token and the threefold claim.
+    """
+    runner = BatchRunner(stub_batch, _cfg(batch_leaves=4), max_plies=6)
+    traces = list(runner.play_games(1, seeds=[5], num_sims=8, boards=[_board(MIDGAME)]))
+    gs = runner._games_debug[0]
+
+    assert sum(gs.history.values()) == gs.ply, (
+        "history must gain exactly one entry per committed move"
+    )
+    assert gs.history[_board(MIDGAME)._transposition_key()] == 1, (
+        "the starting position was left once and must be counted once"
+    )
+    assert traces[0].plies == gs.ply
+
+
+def test_claim_draw_ends_the_game_at_the_actor() -> None:
+    """50-move rule adjudicated at game level, with the in-search semantics.
+
+    A rational player claims, so the actor must stop rather than play on into a
+    position the search already scores 0. Uses a bare K+R vs K endgame: no pawns
+    and effectively no captures, so ``halfmove_clock`` marches to
+    ``FIFTY_MOVE_PLIES`` deterministically.
+
+    Threefold is the same code path and the same constants, but a stub-driven
+    game reaches it only probabilistically, so the 50-move half is what is
+    gated here.
+    """
+    krk = "8/8/8/3k4/8/3K4/7R/8 w - - 0 1"
+    runner = BatchRunner(stub_batch, _cfg(batch_leaves=8), max_plies=400)
+    traces = list(runner.play_games(1, seeds=[1], num_sims=8, boards=[_board(krk)]))
+    t = traces[0]
+    assert t.result in {"draw_claim", "checkmate", "draw"}, t.result
+    if t.result == "draw_claim":
+        gs = runner._games_debug[0]
+        occurrences = gs.history[gs.board._transposition_key()] + 1
+        assert (
+            gs.board.halfmove_clock >= FIFTY_MOVE_PLIES or occurrences >= THREEFOLD_COUNT
+        ), "draw_claim must be justified by the same rule the search uses"
 
 
 def test_batched_runner_resolves_eval_overrides() -> None:
