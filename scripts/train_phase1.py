@@ -88,6 +88,12 @@ def _build_loader(
         generator=torch.Generator().manual_seed(seed),
     )
 
+    # persistent_workers/prefetch_factor are only valid with worker processes, and
+    # num_workers=0 is what tests and CPU debugging use -- so the shipped builder
+    # has to accept it rather than being reachable only in its production shape.
+    worker_opts = (
+        {"persistent_workers": True, "prefetch_factor": 4} if num_workers > 0 else {}
+    )
     loader = DataLoader(
         combined,
         batch_size=cfg_train.batch_size,
@@ -95,8 +101,7 @@ def _build_loader(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
-        persistent_workers=True,
-        prefetch_factor=4,
+        **worker_opts,
     )
     return loader, len(combined)
 
