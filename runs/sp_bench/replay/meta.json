@@ -1,7 +1,7 @@
 {
   "version": 1,
   "capacity": 500000,
-  "total_written": 0,
+  "total_written": 7901,
   "max_policy_entries": 96,
   "fields": {
     "boards": "int8",

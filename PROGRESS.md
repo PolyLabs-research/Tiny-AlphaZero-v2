@@ -1,6 +1,6 @@
 # TinyAlphaZero v2 — Build Progress
 
-## Status: Phase 1 CLOSED (r2) on anchor v2 (2026-08-09, tag `phase1-closed-r2`); chunks 0–7 done; **chunk 8 is next**
+## Status: Phase 1 CLOSED (r2) on anchor v2 (2026-08-09, tag `phase1-closed-r2`); chunks 0–8 done; **chunk 9 is next**
 
 Chunks **0–7** are done, reviewed and merged to `main`. Phase 1 first closed 2026-08-06 on
 `phase1_c/final.pt`, was reopened 2026-08-08 by the chunk 6 mate-in-2 gate, and re-closed
@@ -9,7 +9,7 @@ original, never-moved 0.95 threshold. Two of the four original §5 gates remain 
 informational rather than lowered — reasoning in `BLOCKED-2026-08-06-phase1-gates.md`, campaign
 log in `TRAINING_STRATEGY.md`, gate story in `BLOCKED-2026-08-08-mate2-gate.md`.
 
-Chunks 8–12 are not started; the intake register for chunk 8 is near the end of this file. See
+Chunks 9–12 are not started; chunk 8's intake register is near the end of this file (S4 delivered, repetition ownership delivered). See
 "Phase 1 post-mortem" below before touching training code, and "Readiness 2026-08-06" for the
 first close-out audit.
 
@@ -1030,4 +1030,55 @@ by explicit refspec, so a bare `git push` from them will not do what it looks li
 
 ---
 
-## Next: **chunk 8** — self-play actor + replay buffer. Chunks 5–7 reviewed, fixed, and merged; Phase 1 closed (r2) on anchor v2.
+## Chunk 8 — Self-play actor + replay ring ✅ (2026-08-09)
+
+```
+$ pytest -q                                      442 passed
+$ ruff check src/ tests/ scripts/ benchmarks/    All checks passed
+$ python -m tinyalphazero.selfplay --ckpt runs/phase1_anchor.pt --games 8 --sims 16 \
+      --out runs/sp_smoke --device cpu
+8 games, 1280 positions in 42.7s (674.3 games/h) | eval=runs/phase1_anchor.pt
+  results: {'ply_cap': 8}
+  resign-disabled 2, would-have-resigned 0, false-resign rate None
+$ python -c "...ReplayBuffer.open('runs/sp_smoke/replay')..."     1280
+```
+
+### Throughput: erratum #6 met on the real self-play path
+
+```
+64 games, 7901 positions in 195.2s (1180.3 games/h) | 48 sims | device=cuda
+  results: {'checkmate': 40, 'ply_cap': 24}
+```
+
+**1,943 sims/s** end-to-end — within 1.4% of the bench harness's 1,917, which is
+the cross-check that the harness was measuring the real thing. At 512 games per
+iteration that projects to **26.0 min**, inside erratum #6's ≤ ~35 min budget
+with about 26% headroom. First number that tests the erratum against the actual
+actor rather than the benchmark.
+
+**One runner drives all games.** The first version used a runner per game for a
+simpler resignation hook, which made every forward batch-1 — the exact failure
+chunk 7 exists to prevent. Measured on the smoke: **80.1s → 42.7s**. Worth
+recording because the mistake was invisible in the tests; only the clock caught it.
+
+### Resignation never fired, and that is the value head again
+
+Across 64 games and 9 resign-disabled samples, `would_have_resigned` is **0**.
+The rule needs best root q < −0.90 for eight of a side's own moves, and the
+Phase 1 value head does not produce numbers that negative — the same indifference
+the M3 watchlist records (≈ +0.03 on positions that are *won*). `false_resign_rate`
+reports `None` rather than 0.0: nothing has been measured yet, and a 0.0 there
+would read as "calibrated". Expect this to start firing once Phase 2 sharpens
+value, and treat the first non-null false-resign rate as the calibration signal.
+
+### What Part A found, in one line
+
+The promo-prior change (review S4) is **behind a flag, default off**, because
+turning it on costs the chunk 6 gate 0.985 → 0.960. The Phase 1 promo head ranks
+**queen last** — it trained on random play, where the four promotion pieces are
+sampled uniformly, so it has no promotion signal at all. See the Part A commit
+and `MCTSConfig.promo_prior_from_head`.
+
+---
+
+## Next: **chunk 9** — the Phase 2 loop and the golden mini-run, then the 24h M3 campaign with the watchlist riding along.
