@@ -924,6 +924,34 @@ separately produced a nine-position bug with a one-line remedy.
 
 ---
 
+## Chunks 5–7 external review — conditions and outcomes (2026-08-09)
+
+**The review document itself (`REVIEW-2026-08-09-chunks-5-7.md`) was never delivered to this
+machine** — it is absent from the repo, both worktrees, `~/Downloads` and any `outputs`
+directory, and two successive briefs have asked for it to be committed. This section is
+therefore *this repo's* record of the conditions **as relayed in the briefs**, plus what was
+actually done about each. It is not a substitute for the review and does not reproduce its
+reasoning; commit the real document alongside this when it turns up.
+
+| # | Condition | Status | Where |
+|---|---|---|---|
+| S1 | One Gumbel root implementation; both drivers consume it | **Applied** | `gumbel.form_considered_set` / `halve_survivors` / `force_include_proven_wins` / `phase_visit_queue` |
+| S2 | Batched driver must allocate phase visits, not round-robin | **Applied** — defect reproduced first (8 → 0 probe disagreements) | `BatchRunner._next_forced_edge`, `scripts/parity_probe.py` |
+| S3 | Trace tokens must encode the real repetition count | **Applied** (chunk 7) + ownership completed in chunk 8 | `_commit_move`, per-game history counter |
+| S4 | Promotion priors via the promo sub-head | **Deferred at review time; delivered in chunk 8** | evaluator interface v2 |
+| N3 | Zero the tiled region in `_grow_nodes` | **Applied** | `Tree._grow_nodes` |
+| N1/N2 | Perf notes | **Open**, awaiting profile evidence | — |
+
+**What the review did not catch**, recorded because it bounds how much assurance a review of
+this kind buys: the nine-position **proven-win ordering** defect (search proved a mate-in-2 and
+played a proven mate-in-5). It was not visible in the code under review — every line was
+individually correct, `IMMEDIATE_WIN_BONUS` looked like it covered the case, and the failure
+only appears when two proven wins exist in one position, which needed round `d`'s coverage
+improvement to become common. It was found by *triaging gate failures*, not by reading code.
+Reviews catch defects of construction; measurement catches defects of interaction.
+
+---
+
 ## Chunk 8 intake — carried forward, not actioned (2026-08-09)
 
 Register for the next brief. Nothing here is a defect in merged code.

@@ -79,6 +79,7 @@ A bare `pip install torch` pulls CUDA wheels from PyPI, which import fine and th
 - **Correctness before speed, and profile before optimizing.** Benchmark scripts append to `benchmarks/results.jsonl` with the git SHA. Never trade a correctness test for throughput; never optimize a bottleneck you haven't measured (`py-spy` for Python profiling).
 - **Bias to minimal.** Small models, few dependencies, arrays over object graphs, one implementation of each concept. If a component exists twice, that's a defect. New dependencies need a reason; "it's popular" isn't one.
 - **Prefer explicit structure in explanations**: precise interfaces, tables, worked numeric examples, and named invariants over visual metaphors or "imagine..." descriptions. State the structural relationship, don't gesture at it.
+- **In multi-command shells, address git per-command with `git -C <path>`** — a `cd` persists for the whole invocation and has already mis-pointed three merge commits. The failure is silent: `git checkout main` in the wrong worktree succeeds, and every subsequent merge lands on the branch you thought you had left.
 - Ask before: deleting data, force-pushing, changing an established interface, adding a heavyweight dependency, or anything touching system-level config (drivers, kernel modules, `/etc`). Everything else: proceed and report.
 
 ## 6. Domain defaults (ML projects on this box)

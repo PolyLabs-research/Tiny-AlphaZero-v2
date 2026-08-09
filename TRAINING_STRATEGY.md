@@ -259,6 +259,27 @@ Two things this adds to the campaign record, both of which outlive this gate:
 
 **Round `d` final verdict: the round did its job.** Its own gate (`mate2_top16_coverage` 0.977) passed, `phase1_d` is the strictly better checkpoint on every held-out metric, and it is now **anchor v2**. The operative gate it was launched to clear needed two further search fixes that round `d` could not have made — but coverage at 0.990 is what allowed the mis-ordering to surface at all, because at 0.83 the search rarely proved two wins in the same position.
 
+### M3 watchlist — the three residual gate positions
+
+The three positions the 0.985 gate still misses, carried forward so chunk 10's ladder can track
+them. Machine-readable copy: `benchmarks/m3_watchlist.json`. These are **not** a gate; they are
+the concrete thing "Phase 2 value learning should sharpen" means, and the value head's estimate
+on each key-move child is the number to watch move.
+
+| id | verdict | FEN | value head on key child | why it fails |
+|---|---|---|---|---|
+| `mate2_129` | CAPABILITY | `2r3n1/4N3/p4p1r/k5p1/b1P1PPPp/7P/1RNPB1R1/R2K4 w - - 0 1` | **+0.036** | key move considered but got 2 sims; needs 17 on that edge to expand all 16 replies and reach a proof |
+| `mate2_165` | COVERAGE | `8/k7/B7/3R1p1p/R2P1P2/3K4/8/1N2Bn2 w - - 0 1` | **+0.030** | key move outside the prior's top-16, so never simulated |
+| `mate2_166` | COVERAGE | `8/k7/B7/4Rp1p/R2P1P2/3K2n1/8/1N2B3 w - - 0 1` | **+0.032** | same |
+
+All three are **won positions the value head scores at ≈ +0.03** — not merely imprecise but
+nearly indifferent, which is exactly the deficiency self-play value training addresses. The two
+COVERAGE rows also need the *policy* prior to rank the key move top-16, so they are the ones
+that would move if Phase 2 sharpens the prior rather than only the value.
+
+Read these from here in chunk 10; do not re-derive them, and do not add them to any anchor or
+tuning set — they are gate-suite positions (`tests/suites/mate_in_2.epd`).
+
 **Campaign-rule lesson worth carrying (a sibling to rule 5).** *An aggregate residual is not a diagnosis.* Three rounds treated "conversion" as a single quantity and reasoned about it in aggregate. One triage script that classified each failing position separately produced a nine-position bug with a one-line remedy. When a gate is short, enumerate the failures before theorising about the shortfall.
 
 ---
