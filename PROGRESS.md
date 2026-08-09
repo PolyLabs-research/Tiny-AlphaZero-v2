@@ -628,7 +628,11 @@ silently changes what every existing test of the old path measures.
 
 ---
 
-## Chunk 6 — evaluation profile + bounded tuning ⚠️ STILL BLOCKED (2026-08-09)
+## Chunk 6 — evaluation profile + bounded tuning (2026-08-09, superseded same day)
+
+> **Superseded by "Gate RESOLVED" below.** This section records the state at 0.940, when the
+> residual was believed to be a capability limit. It was a bug. Kept unedited because the
+> reasoning that reached the wrong conclusion is the useful part.
 
 Tom's decision on the round-`d` split result: **the gate number does not move.** Two staged
 interventions, pre-registered in `BLOCKED-2026-08-08-mate2-gate.md` *before* any measurement.
@@ -805,6 +809,145 @@ silently on whichever consumer forgot to read it.**
 
 ---
 
+## Gate RESOLVED — review fixes, then 0.940 → 0.985 ✅ (2026-08-09)
+
+Review conditions S1–S3 accepted as merge conditions (S4 deferred), then the gate re-measured
+and its failures triaged. **The chunk 6 mate-in-2 gate passes at 98.5% on its original 0.95
+threshold and original frozen suite.** Phase 1 re-closed on **anchor v2 = `phase1_d/final.pt`**.
+
+### Review fixes (S1, S2, S3, N3)
+
+The reviewed defect was **verified before being fixed**. `scripts/parity_probe.py` sweeps
+m × sims comparing `BatchRunner` (batch_leaves=1, one game) against `Search`:
+
+```
+BEFORE:  8 disagreement(s)   — all at sims=6, m ∈ {3,5}
+AFTER:   0 disagreement(s)   — 4 fixtures × m ∈ {3,5,12,16} × sims ∈ {6,16,31,48}
+```
+
+The batched driver picked its forced edge with `survivors[sims_run % len(survivors)]` — a
+round-robin — where the synchronous one uses `allocate_within_phase`, which gives a phase's
+remainder to the **best-ranked** survivors. At `m=5, sims=6` the schedule is `[5, 1, 0]` and
+phase 2's single visit belongs to `survivors[0]`; the round-robin spent it on `survivors[5 % 3]`,
+the worst of the three. A second divergence surfaced while fixing it: the old loop halved
+survivors on zero-budget phases, which the synchronous `continue` skips.
+
+**Why it hid for a whole chunk:** the equivalence gate only ran m=16 × sims ∈ {16,48}. At
+(128,16) *and* at those pairs, every phase budget divides evenly across its survivors —
+remainder 0 throughout — so a round-robin and a correct allocation agree by accident. The gate
+was real but its parametrization was the comfortable case.
+
+S1 moved `form_considered_set`, `halve_survivors`, `force_include_proven_wins` and
+`phase_visit_queue` into `gumbel.py`; both drivers consume them and neither re-derives any
+part. S3 gave `_commit_move` the real `base_reps` — every trace row previously claimed to be a
+first occurrence, which would have entered Phase 2 as silently corrupt training data rather
+than as a crash. N3 zeroes `_grow_nodes`' tiled region.
+
+### B1 — post-fix gate, and why the number did not move
+
+```
+mate_in_2.epd: 188/200 solved at 128 sims (94.0%)   (seeds 1 and 2 identical)
+```
+
+Unchanged from before the fix, and that is the expected result rather than a disappointment:
+at (128, 16) `halving_phase_budgets` returns `[32,32,32,32]` against 16/8/4/2 survivors, so
+every phase divides evenly and the allocation fix **provably cannot** change this
+configuration — and the suite runner drives `Search`, not `BatchRunner`, in any case. What the
+re-measurement actually established is that the S1 refactor is behaviour-preserving on the
+synchronous path: identical score *and* identical failure list. 0.940 ∈ [0.93, 0.95) → the
+pre-registered "proceed as planned" branch.
+
+### B2 — triage: 9 BUG, 2 COVERAGE, 1 CAPABILITY
+
+`scripts/triage_mate2.py`, reproduction check **0 mismatches vs `Search.run`**:
+
+| id | verdict | key-edge visits | replies expanded | sims for proof | value head | reason |
+|---|---|---|---|---|---|---|
+| mate2_004 | BUG | 30 | — | — | +0.030 | key edge proven but not selected |
+| mate2_006 | BUG | 30 | — | — | +0.039 | key edge proven but not selected |
+| mate2_008 | BUG | 30 | — | — | +0.032 | key edge proven but not selected |
+| mate2_054 | BUG | 30 | — | — | +0.046 | key edge proven but not selected |
+| mate2_055 | BUG | 30 | — | — | +0.088 | key edge proven but not selected |
+| mate2_056 | BUG | 30 | — | — | +0.082 | key edge proven but not selected |
+| mate2_070 | BUG | 30 | — | — | +0.079 | key edge proven but not selected |
+| mate2_129 | CAPABILITY | 2 | 1/16 | 17 | +0.036 | reply set never fully expanded |
+| mate2_139 | BUG | 30 | — | — | −0.004 | key edge proven but not selected |
+| mate2_165 | COVERAGE | 0 | — | — | +0.030 | no key move in the considered set |
+| mate2_166 | COVERAGE | 0 | — | — | +0.032 | no key move in the considered set |
+| mate2_196 | BUG | 30 | — | — | +0.092 | key edge proven but not selected |
+
+**The nine BUGs were one defect, and it was not the solver.** The proof chain for `mate2_006`
+was walked to its leaf and is sound — nine plies, every defender node holding exactly one legal
+reply, tree edge counts matching python-chess at every step, bottoming out on a real
+checkmate. The search's proofs were correct. What was missing was an **order over them**:
+
+```
+ply  1: b3e3  prov pv=-1.0 | truth: legal_replies=1
+ply  3: g1g5  prov pv=-1.0 | truth: legal_replies=1
+ply  5: e3e5  prov pv=-1.0 | truth: legal_replies=1
+ply  7: g5g7  prov pv=-1.0 | truth: legal_replies=1
+ply  9: e5e7  TERM tv=-1.0 | truth: checkmate=True   <- proof bottoms out correctly
+```
+
+Every proven win sits at q̂ = +1, so σ(q̂) ties them and the acting argmax fell through to
+`g + logits` — noise under self-play, the raw **policy prior** under the evaluation profile.
+The search played a proven mate-in-5 over a proven mate-in-2 because the network's prior
+preferred it. `IMMEDIATE_WIN_BONUS` already encoded the right principle but only for depth 1.
+
+Fixed by inducting mate distance through the solver (`Tree.proven_depth`; winner takes the
+fastest proved line, defender the slowest) and scoring `EXACT_WIN_BONUS − depth × WIN_DEPTH_STEP`.
+
+### B1 re-run (the one permitted) — PASS
+
+```
+mate_in_2.epd: 197/200 solved at 128 sims (98.5%) | profile=eval(deterministic) | gate >= 95%
+  failed: mate2_129, mate2_165, mate2_166        (identical under seeds 1 and 2)
+mate_in_1.epd: 100/100 at 16 sims and at 48 sims (stub) — no regression
+```
+
+The three survivors are exactly the three non-BUG triage rows — the consistency check that the
+classification was real, not a story fitted to the outcome. **340 passed, ruff clean, parity
+probe 0 disagreements.**
+
+**What made this findable:** the bug was invisible while the prior was the binding constraint —
+at round `c`'s 0.83 coverage the search rarely proved two wins in the same position, so there
+was nothing to mis-order. Each earlier intervention that removed a *different* limitation moved
+this one closer to the surface, and the evaluation profile made the tie-break fall through to
+the prior *deterministically* rather than sometimes. The three "failed" interventions were what
+made the real defect legible. Generalisable: **an aggregate residual is not a diagnosis** —
+three rounds treated "conversion" as one quantity; one script that classified each failure
+separately produced a nine-position bug with a one-line remedy.
+
+---
+
+## Chunk 8 intake — carried forward, not actioned (2026-08-09)
+
+Register for the next brief. Nothing here is a defect in merged code.
+
+- **S4 — promotion priors via the promo sub-head.** Deferred because it is an *interface*
+  change, not a tweak: `EvaluateFn` returns no promo distribution, so wiring it touches both
+  evaluators, the batch adapter and `_build_node`. Bundle with chunk 8's evaluator work.
+- **Repetition / adjudication ownership** (from S3). Per-game history `repetitions_fn` built
+  from the move stack; claim-draw (threefold, 50-move) adjudication at game level. The
+  `REP_1` trace test armed in this session (`test_trace_tokens_carry_the_repetition_count`)
+  passes today via an injected `repetitions_fn` and goes green natively here.
+- **M3 watchlist** — `benchmarks/m3_watchlist.json`: `mate2_129`, `_165`, `_166`. The value
+  head reads ≈ +0.03 on positions that are in fact won: not merely imprecise but nearly
+  indifferent, which is what self-play value training is for. `mate2_129` needs 17 sims on the
+  key edge to reach a proof and got 2.
+- **`improved_policy` does not know about mate distance.** The acting argmax now prefers the
+  shorter mate; the *policy target* still spreads equally across proven wins, because it is
+  built from completed-Q (±1) alone. Harmless in Phase 1, but in Phase 2 it teaches the network
+  that a mate-in-5 is as good as a mate-in-2. Decide deliberately in chunk 8/9 — it is a
+  training-target question, not a search one.
+- **Resignation calibration** per spec §7; **`CheckpointPool` single-implementation rule**;
+  **N1/N2 perf notes** awaiting profile evidence.
+- **§10 erratum 6** — targets replaced by "Phase 2 iteration ≤ ~35 min at default config",
+  which the current build meets with ~no margin. Escalate on a *regression* in sims/sec, not
+  on the absolute number.
+
+---
+
 ## Session 2026-08-09 — tree state, and the push finally happened
 
 Nothing merged, nothing tagged. That is the pre-registered consequence of the gate landing at
@@ -855,4 +998,4 @@ by explicit refspec, so a bare `git push` from them will not do what it looks li
 
 ---
 
-## Next: chunk 6 gate-number conversation is back with Tom (see BLOCKED-2026-08-08)
+## Next: **chunk 8** — self-play actor + replay buffer. Chunks 5–7 reviewed, fixed, and merged; Phase 1 closed (r2) on anchor v2.

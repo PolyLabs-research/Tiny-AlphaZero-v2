@@ -287,6 +287,22 @@ Back-of-envelope targets at 256 concurrent games, 48 sims/move:
 - Inference batches of 256–512 leaves at < 8 ms/forward in bf16.
 - If sims/sec lands under ~1,500 after profiling, the sanctioned escalation is swapping move generation to a compiled backend (`python-chess` → a thin binding over a Rust movegen) behind the existing `Board`-shaped interface — an isolated change because nothing else touches chess rules. Do not reach for this before profiling proves it necessary.
 
+> ### Erratum 6 (2026-08-09) — both §10 targets are wrong for this box; the operative constraint is iteration wall-clock
+>
+> Measured at the stated configuration (256 games, 48 sims/move), anchor v2, `benchmarks/results.jsonl`:
+>
+> | Target | Measured | |
+> |---|---|---|
+> | ≥ 3,000 sims/sec aggregate | **1,917** | misses |
+> | ≥ 3,000 sims/sec, **zero-cost stub evaluator** | **2,676** | — |
+> | < 8 ms/forward at batch 512, bf16 | **82.0 ms** (7.2 / 38.0 at 64 / 256) | misses ~10× |
+>
+> **3,000 sims/sec was never reachable here, and not because of the GPU.** With the network removed entirely the runner still tops out at 2,676 sims/sec, so the target sits above the ceiling of python-chess movegen plus tree ops. The bottleneck ordering this section predicts is confirmed — the GPU is the *smallest* term, costing ≈ 0.15 ms/sim, about 28% on top of runner overhead. The 1,500 escalation floor is **not** crossed, so the compiled-movegen swap is not triggered.
+>
+> The forward-latency target was calibrated for different hardware. Per-position throughput *falls* with batch size (8,896 pos/s at 64 → 6,244 at 512), so the trunk is compute-bound by batch 64 and there is no batching headroom to recover — the same iGPU characteristic that makes training batch 2048 a throughput cliff. A consequence worth carrying into chunk 8: `batch_leaves=512` never fills, because the buffer flushes when every game is blocked, so mean fill tracks `concurrent_games` (255.8/512 at 256 games), not `batch_leaves`.
+>
+> **Replacement constraint: a Phase 2 iteration must complete in ≤ ~35 minutes at default config.** That is what the sims/sec target was a proxy for, and it is what the M3 24h run actually needs (≈ 40 iterations/day, enough for the ladder cadence of one eval per 10 iterations to produce a curve). At 512 games × ≤160 plies × 48 sims ÷ 1,917 sims/s ≈ 34 min, the current build meets it with no margin to spare — so treat a *regression* in sims/sec as the thing to escalate on, rather than the absolute number.
+
 Memory is a non-issue by design (~1.3GB Phase 1 data, ~350MB replay, model is megabytes); the 96GB budget buys concurrency and huge inference batches, not model size.
 
 ---
@@ -298,7 +314,7 @@ Memory is a non-issue by design (~1.3GB Phase 1 data, ~350MB replay, model is me
 | M0 | Encoding + move codec + tests | All §9.4 property tests green; Markov invariant fuzzed over ≥ 1M positions |
 | M1 | Model + Phase 1 pipeline | §5 acceptance criteria; Phase 1 wall-clock ≤ 1h |
 | M2 | MCTS (array tree, Gumbel, batched leaves) | §6.4 gates; ≥ 3K sims/sec benchmark |
-| M3 | Phase 2 loop + anchor ladder | Golden mini-run in CI; a 24h run shows monotone Elo vs Phase 1 anchor with non-overlapping CIs between start and end |
+| M3 | Phase 2 loop + anchor ladder | Golden mini-run in CI; a 24h run shows monotone Elo vs Phase 1 anchor with non-overlapping CIs between start and end; **and mate-in-2 ≥ 0.95 at 128 sims, evaluation profile, on the frozen gate suite** (no-regress — already met at entry: 0.985 with anchor v2, 2026-08-09) |
 | M4 | Scale run + write-up | ≥ 5-day run; beats Stockfish skill 0 with CI clear of 50%; Gumbel-vs-PUCT ablation at equal sims documented |
 
 M3's 24h criterion is the real go/no-go: v1 never had a defensible "is it actually improving" measurement, and everything in this spec ultimately serves making that one plot trustworthy.
