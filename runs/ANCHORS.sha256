@@ -1,1 +1,15 @@
+# Frozen Phase 1 anchor identity (spec §8). The checkpoint bytes are untracked
+# (~75 MB); this file is what survives a disk loss, so never rewrite a line —
+# append. The ladder's frozen Phase-1 opponent is the newest entry.
+#
+# v1  2026-08-06  runs/phase1_c/final.pt  step 56,484  tag phase1-closed
+#     Superseded 2026-08-09, kept for provenance: rounds a-c and every number in
+#     PROGRESS.md "Readiness 2026-08-06" were measured against this file.
 276cfea67ed0c2578712c31edea9b7a75e5b1337cc67ae7f1326382b067ab5b1  runs/phase1_anchor.pt
+#
+# v2  2026-08-09  runs/phase1_d/final.pt  step 18,926 (warm-started from v1's
+#     56,484)  tag phase1-closed-r2.  CURRENT.
+#     Better than v1 on every held-out gate: mate2_top16_coverage 0.810 -> 0.977,
+#     mate1_top8_masked 0.980 -> 0.994, wdl_anchor_mass 0.892 -> 0.933,
+#     legality_auc 1.0000. Chunk 6 mate-in-2 gate 98.5% at 128 sims, eval profile.
+27dcdd05f7d578e7cc3e833d0def0d6e1794d1138144da4f79f6037aa7c84ef5  runs/phase1_anchor.pt

@@ -1,13 +1,25 @@
 # BLOCKED — Phase 1 acceptance gates `top1_legal_rate` and `mate1_solve_rate`
 
-**Date:** 2026-08-06 · **Rounds consumed:** phase1_b, phase1_c · **Status:** **REOPENED
-2026-08-08 via return condition 1** (chunk 6 mate-in-2 gate: 77.0% < 95% with this
-checkpoint). Re-closure pending round `d`. See `BLOCKED-2026-08-08-mate2-gate.md`.
+**Date:** 2026-08-06 · **Rounds consumed:** phase1_b, phase1_c, phase1_d · **Status:**
+**RE-CLOSED 2026-08-09.** Reopened 2026-08-08 via return condition 1 (chunk 6 mate-in-2 gate:
+77.0% < 95%); that condition is now cleared at **98.5%**, on the original 0.95 threshold and
+the original frozen suite. Anchor v2 = `runs/phase1_d/final.pt`.
 
-The revised acceptance basis below stands — nothing here was wrong about *mate-in-1*, which
-still scores 100/100 at 16 sims with no network at all. What it did not cover is that a
-mate-in-2 first move must be **considered** by Gumbel's top-m before search can work on it,
-and consideration is the policy prior's job. Round `d` targets that coverage directly.
+The revised acceptance basis below stands unchanged — no gate in this document was moved,
+before or after the reopening.
+
+**What the reopening actually taught us**, recorded because it partly revises the reasoning
+above. The 2026-08-08 diagnosis said the mate-in-2 gate was prior-limited: a first move must be
+*considered* by Gumbel's top-m before search can work on it, and consideration is the policy
+prior's job. That was true and round `d` fixed it (coverage 0.83 → 0.990). But it was not the
+whole story, and two of the three remaining causes were **search** defects, not model ones —
+exploration noise being measured on a match-play question, and proven wins having no order
+among themselves. Full chain in `BLOCKED-2026-08-08-mate2-gate.md`.
+
+So the original argument of this document — *"chunk 5's own gate proves mate-in-1 correctness
+is search's job"* — held up better than its 2026-08-08 caveat suggested. The mate-in-2 gate was
+mostly search's job too. The caveat is left in place below rather than edited out; being able
+to see which way the conclusion moved is the point of keeping these documents.
 
 ## What blocked
 

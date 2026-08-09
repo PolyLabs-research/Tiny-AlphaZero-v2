@@ -2,7 +2,9 @@
 
 This is the **campaign document**: which runs exist, why each was launched, the exact call that launched it, what it produced, and what gets launched next. `HOW_TO_TRAIN.md` explains *how the machinery works*; this file records *what we are doing with it and why*. One round = one entry here, written **before** the run starts (pre-registered expectations) and completed after it ends (results + decision).
 
-**Current status:** **Phase 1 REOPENED and NOT re-closed — round `d` proxy gates PASS, operative gate 0.940 vs 0.95 after both pre-registered resolution stages. The gate-number conversation is back with Tom.** The 2026-08-06 closure was reopened on 2026-08-08 via its own return condition 1: the chunk 6 mate-in-2 gate scored 77.0% < 95% with `runs/phase1_anchor.pt`. Decision (Tom): fix the model, the gate does not move — `BLOCKED-2026-08-08-mate2-gate.md`. Round `d` raised prior coverage 0.83 → 0.990 and moved the gate to 0.890; the evaluation profile took it to 0.940; a bounded tuning pass left it at 0.940. `runs/phase1_anchor.pt` is unchanged and the threshold has never moved. Full evidence chain in the BLOCKED doc; no round `e` is planned, because every remaining lever is search-side rather than data-side.
+**Current status:** **Phase 1 CLOSED (r2)** on **anchor v2 = `runs/phase1_d/final.pt`**, 2026-08-09, tag `phase1-closed-r2`. All four held-out gates pass, and the chunk 6 mate-in-2 gate that reopened the phase now reads **98.5%** against its original, never-moved 0.95 threshold. Next: **chunk 8** (self-play actor + replay); chunks 5–7 are merged and reviewed.
+
+**How the reopening resolved.** 0.770 (round `c` anchor) → 0.890 (round `d`: prior coverage 0.83 → 0.990) → 0.940 (evaluation profile: stop measuring exploration noise on a match-play question) → 0.940 (bounded σ/m tuning: null result, firewall held) → **0.985** (mate-distance ordering over proven wins — a search bug that only became visible once the prior stopped being the binding constraint). Two of the three causes behind round `d`'s shortfall were search defects, not model ones. Full chain: `BLOCKED-2026-08-08-mate2-gate.md`.
 
 ---
 
@@ -252,6 +254,12 @@ Two things this adds to the campaign record, both of which outlive this gate:
 
 1. **The firewall paid for itself the first time it was used.** Binomial SE at n=500, p≈0.93 is ±1.14 points and the 18-config grid spans ~2.5 SE, so its maximum is mostly noise — and the out-of-sample gate said so. Run on the gate suite, 93.4% would have been written up as a tuning win. Rule 4's "eval sets are frozen" now has a sibling worth stating: *a set you select a configuration against is spent, whether or not you trained on it.*
 2. **The gate is not a data problem, so there is no round `e` to plan.** Decomposed on the suite, `0.990 coverage × 0.949 conversion = 0.940` exactly. Prior coverage is saturated, the noise term is 1.000 by construction, and raising `m` trades coverage against conversion to a wash. The residual is ten positions where the winning move is simulated and still not chosen — a chunk 6/7 search property. Phase 1 anchor training has no lever left that points at it.
+
+**Closed out, 2026-08-09 (same day, after the review fixes).** Point 2 was right that the residual was search-side and right that no round `e` was needed — but it stopped one step short of a diagnosis. Triaging the twelve failures *individually* rather than reasoning about the aggregate split them into **9 BUG / 2 COVERAGE / 1 CAPABILITY**, and the nine were one defect: the search **proved** a mate-in-2 and played a **proven mate-in-5**, because all proven wins tie at q̂ = +1 and the acting argmax then fell through to the policy prior. Inducting mate distance through the solver and ordering wins by it took the gate to **0.985**. The three survivors are exactly the three non-BUG rows.
+
+**Round `d` final verdict: the round did its job.** Its own gate (`mate2_top16_coverage` 0.977) passed, `phase1_d` is the strictly better checkpoint on every held-out metric, and it is now **anchor v2**. The operative gate it was launched to clear needed two further search fixes that round `d` could not have made — but coverage at 0.990 is what allowed the mis-ordering to surface at all, because at 0.83 the search rarely proved two wins in the same position.
+
+**Campaign-rule lesson worth carrying (a sibling to rule 5).** *An aggregate residual is not a diagnosis.* Three rounds treated "conversion" as a single quantity and reasoned about it in aggregate. One triage script that classified each failing position separately produced a nine-position bug with a one-line remedy. When a gate is short, enumerate the failures before theorising about the shortfall.
 
 ---
 

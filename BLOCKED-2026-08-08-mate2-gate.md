@@ -1,12 +1,26 @@
 # BLOCKED — Chunk 6 gate: mate-in-2 ≥ 95% at 128 sims
 
-**Date:** 2026-08-08 · **Branch:** `chunk-06-gumbel` · **Status:** **STILL BLOCKED as of
-2026-08-09 — gate 0.940 vs 0.95 after both pre-registered stages. Back with Tom.**
+**Date:** 2026-08-08 · **Branch:** `chunk-06-gumbel` · **Status:** **RESOLVED 2026-08-09 —
+gate PASSES at 0.985 ≥ 0.95, on the original threshold, with the original suite.**
 
-History: opened 2026-08-08 at 0.770 → decision "fix the model, the gate does not move" → round
-`d` 0.890 → evaluation profile 0.940 → bounded tuning 0.940. The threshold has never moved.
-Prior coverage, exploration noise and the σ/m constants are now all excluded as explanations;
-what remains is search conversion at 128 sims. Read "Outcome, 2026-08-09" below first.
+```
+mate_in_2.epd: 197/200 solved at 128 sims (98.5%) | eval=runs/phase1_d/final.pt
+               root=gumbel profile=eval(deterministic) m=16 c_visit=50 c_scale=1 | gate >= 95%
+  failed: mate2_129, mate2_165, mate2_166        (identical under seeds 1 and 2)
+mate_in_1.epd: 100/100 at 16 sims and at 48 sims (stub) — no regression
+```
+
+The whole arc, none of which moved the number 0.95: **0.770** (round `c` anchor) → **0.890**
+(round `d`, prior coverage 0.83 → 0.990) → **0.940** (evaluation profile: exploration noise
+removed from a match-play measurement) → **0.940** (bounded σ/m tuning: null, and the firewall
+caught it) → **0.985** (mate-distance ordering over proven wins — the defect the failure triage
+finally exposed). Read "Resolution, 2026-08-09" below.
+
+**Consequence for the relocation decision: it is moot.** Tom accepted moving the requirement to
+an M3 gate on the reasoning that Phase 2 value sharpening was the mechanism that would clear
+it. The mechanism turned out to be a search-ordering bug, so Phase 1 clears it at entry. Per
+the pre-registered ≥ 0.95 branch, the clause is **retained as an M3 no-regress ladder check**
+rather than as the deadline for first meeting it.
 
 ## Decision (Tom, 2026-08-08)
 
@@ -237,6 +251,70 @@ a plateau.
 then or now.** The threshold conversation is Tom's; the options remain the three listed at the
 bottom of this document, now with the prior, the noise and the constants all eliminated as
 explanations.
+
+## Resolution, 2026-08-09 — the residual was a bug, and the triage is what found it
+
+The 2026-08-09 morning entry above closed three of four candidate explanations and handed back
+"search conversion at 128 sims" as the survivor. That was correct but not yet actionable,
+because *conversion failure* is a symptom with two very different causes. Triaging all twelve
+failures individually — rather than reasoning about the aggregate — separated them:
+
+| Verdict | Count | Meaning |
+|---|---|---|
+| **BUG** | **9** | the winning move was *proved* and the search did not play it |
+| COVERAGE | 2 | key move outside the considered set (prior-side) |
+| CAPABILITY | 1 | key move considered, never given enough sims to reach a proof |
+
+### The bug: proven wins had no order among themselves
+
+Nine positions where the search **proved** a mate-in-2 and played a **proven mate-in-5**
+instead. Not a solver error — the proof chain for `mate2_006` was walked to its leaf and is
+sound: nine plies, every defender node holding exactly one legal reply, tree edge counts
+matching python-chess at every step, bottoming out on a real checkmate. The search's proofs
+were right. What was missing was an **order over them**.
+
+Every proven win sits at q̂ = +1, so σ(q̂) ties them all and the acting argmax fell through to
+`g + logits` — noise under self-play, the raw **policy prior** under the evaluation profile.
+The search was discarding what it had *proved* in favour of what the network *guessed*.
+
+`IMMEDIATE_WIN_BONUS` already encoded the right principle — *"a shorter forced mate is strictly
+better play, and an exactly-known immediate win should never lose a coin-flip to a longer
+one"* — but only for the one special case of depth 1. Fixed by inducting mate distance
+alongside the proven value (winner takes the fastest proved line, defender the slowest) and
+scoring `EXACT_WIN_BONUS − depth × WIN_DEPTH_STEP`. Two properties now hold where only the
+depth-1 case did: an exactly-known win always outranks an estimate, and among wins the shorter
+mate is preferred.
+
+**0.940 → 0.985 on the one permitted re-run.** The three survivors are exactly the three
+non-BUG triage rows, which is the consistency check that the classification was real.
+
+### Why this hid behind everything else
+
+Worth recording, because the same shape will recur. The bug was **invisible while the prior was
+the binding constraint**: at round `c`'s 0.83 coverage the search rarely proved two wins in the
+same position, so there was nothing to mis-order. Each intervention that removed a *different*
+limitation moved this one closer to the surface — and the evaluation profile, by deleting the
+noise term, made the tie-break fall through to the prior *deterministically* rather than
+sometimes. The three "failed" interventions were not wasted; they were what made the real
+defect legible.
+
+The generalisable part: **an aggregate residual is not a diagnosis.** Three rounds of work
+treated "conversion" as one quantity. Splitting twelve failures into three named categories
+took one script and immediately produced a nine-position bug with a one-line remedy.
+
+### The M3 watchlist (the three survivors)
+
+`benchmarks/m3_watchlist.json`. These are the positions Phase 2 value learning should convert:
+
+| id | verdict | key-edge visits | replies expanded | sims needed for proof | value head on key child |
+|---|---|---|---|---|---|
+| `mate2_129` | CAPABILITY | 2 | 1/16 | 17 | +0.036 |
+| `mate2_165` | COVERAGE | 0 | — | — | +0.030 |
+| `mate2_166` | COVERAGE | 0 | — | — | +0.032 |
+
+The value head reads ≈ +0.03 on positions that are in fact won — the estimate is not merely
+imprecise, it is nearly indifferent, which is exactly what self-play value training is for.
+`mate2_129` needs 17 simulations on the key edge to reach a proof and received 2.
 
 ## The failure
 
