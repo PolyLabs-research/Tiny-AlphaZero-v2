@@ -351,6 +351,77 @@ the progress signal instead.
 
 ---
 
+## Step 5 — The anchor ladder (spec §8)
+
+The progress signal. Offline, read-only, and re-runnable against any past
+checkpoint — nothing here writes to a replay buffer or a checkpoint.
+
+```bash
+# standalone, against any checkpoint
+TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 python scripts/eval_ladder.py \
+    --ckpt runs/p2_a/ckpt_iter0010.pt --anchors random,greedy,phase1 \
+    --out runs/p2_a/ladder.jsonl
+```
+
+### Running the M3 campaign
+
+This is the whole thing, in one command:
+
+```bash
+TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 python scripts/train_phase2.py \
+    --config configs/default.yaml --init runs/phase1_anchor.pt \
+    --out runs/p2_a --iterations 50 --ladder-every 10
+```
+
+~27 min per iteration plus a ~19 min ladder pass every tenth, so 50 iterations is
+roughly 24 hours. Killing it is safe at any point; `--resume runs/p2_a` continues,
+and a ladder pass is separately resumable — a matchup already in `ladder.jsonl` is
+never recomputed.
+
+### What the ladder measures, and what it deliberately does not
+
+| Rung | Question | On the M3 go/no-go? |
+|------|----------|---------------------|
+| `random` | floor sanity — is the net broken in a way nothing else would catch | no |
+| `greedy` | basic tactics against a 1-ply material grabber | no |
+| `phase1` | **Elo vs the frozen anchor — this is M3's criterion** | **yes** |
+| `stockfish:N` | external calibrated scale | no — M4, and skipped when the binary is absent |
+| mate-in-2 suite | no-regress against the pinned 0.985 baseline, and ≥ 0.95 absolute | **yes** |
+| mate-in-3 suite | tactical depth trajectory | no — informational, no gate |
+| watchlist | the three residual FENs, by name, with the value head's estimate on each key child | no — the mechanism behind the gate |
+| ECE, book entropy | value calibration and the collapse detector | no |
+
+Two sim budgets, never conflated: **matches at 48** (`eval.eval_match_sims`),
+**suites at 128** (`eval.suite_sims`). 128 is the frozen definition of the
+mate-in-2 gate — every recorded gate number was measured at it — so running the
+gate at 48 would not re-measure it, it would replace it.
+
+### Reading a ladder row
+
+```bash
+python -c "
+from tinyalphazero.logschema import read_jsonl
+for r in read_jsonl('runs/p2_a/ladder.jsonl'):
+    if r['row_type'] == 'match':
+        print(f\"iter {r['iteration']} vs {r['anchor']:8s} score={r['score']:.3f} \"
+              f\"Elo {r['elo']:+.1f} [{r['elo_lo']:+.1f}, {r['elo_hi']:+.1f}]\")
+"
+```
+
+Three things that look like problems and are not:
+
+- **`Elo ≥ +636 (saturated)`** — a clean sweep has unbounded implied Elo. The
+  score is clamped to half a game, the resolution of the measurement, and
+  `elo_clamped` says so. Expect it against `random` forever.
+- **A degenerate CI on a self-match.** A checkpoint against itself scores exactly
+  0.500 on every opening pair by construction — the colour-swapped games are the
+  same game with the labels swapped — so the interval collapses onto zero. That is
+  the null working, not the bootstrap failing.
+- **`ece: null`** — calibration samples the `phase1` matchup, so a pass without it
+  measures nothing. `calibration_note` says which.
+
+---
+
 ## Inspecting metrics
 
 ```bash

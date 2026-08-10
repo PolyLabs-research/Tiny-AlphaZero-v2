@@ -295,11 +295,27 @@ The three failures are exactly the three watchlist FENs below — the same
 re-measurement: it confirms the residual is still the *same three positions*,
 so the watchlist remains a valid instrument rather than a coincidence of counts.
 
-**Both promotion questions are M3-end events, judged together on trained
-weights:** flipping `promo_prior_from_head` (review S4) and revisiting the
-cell-mass division. Neither is a mid-campaign change, and the second only becomes
-answerable once the first is — the ×0.25 division is correct arithmetic applied to
-a head that currently has no promotion signal to divide by.
+**Both promotion questions are M3-end events, and they are one package.**
+Flipping `promo_prior_from_head` (review S4) *is* the genuine cell-share: the flag
+changes the head's involvement and the share arithmetic together, because the
+share is `cell × P(promo | from, to)` and there is no head-free version of it that
+is not just the ×0.25 uniform. Neither is a mid-campaign change.
+
+**Pre-registered follow-up, decided before the measurement (2026-08-10).** If the
+M3-end re-measure of the gate *regresses* when the flag goes on, the sanctioned
+next step is exactly **one attribution run — share-only, i.e. uniform ×0.25 with
+the head still out of it — before any conclusion is drawn about the head.** Two
+changes moved at once, so a regression is unattributed until they are separated,
+and "the trained promo head is bad" is the conclusion that would otherwise get
+written down on no evidence. One run, then the conclusion.
+
+Why the current default survives on its merits, stated on the right grounds:
+a prior is a **heuristic, not a correctness property** — the defect was the
+docstring's false claim about what the code did, and that has been fixed. Changing
+the default path's prior shape mid-campaign would perturb the semantics of a
+frozen gate to answer a question with no ground truth, and the principled version
+already exists behind a flag, waiting for a head with real promotion signal to
+divide by.
 
 ### M3 watchlist — the three residual gate positions
 

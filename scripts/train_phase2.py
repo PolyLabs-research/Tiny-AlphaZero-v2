@@ -24,7 +24,16 @@ from pathlib import Path
 import torch
 
 from tinyalphazero.config import load_config
+from tinyalphazero.evaluate import format_ladder_event
 from tinyalphazero.phase2 import STATE_FILE, run_phase2
+
+
+def _print_ladder(kind: str, payload: dict) -> None:
+    """The ladder's own reporting, rendered by the library so the inline pass
+    and `scripts/eval_ladder.py` produce byte-identical output."""
+    line = format_ladder_event(kind, payload)
+    if line is not None:
+        print(line, flush=True)
 
 
 def _print_stage(name: str, iteration: int) -> None:
@@ -60,6 +69,28 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--device", default=None, help="cuda | cpu (default: cuda if available)")
     ap.add_argument("--seed", type=int, default=None, help="Run seed (default: config seed)")
+    ap.add_argument(
+        "--ladder-every",
+        type=int,
+        default=0,
+        help="Run an anchor-ladder pass (spec §8) every N iterations, inline and "
+        "sequentially — the GPU is never shared. Measured 2026-08-10: a full pass "
+        "is ~19 min (the 200-game anchor rung alone is 8.4 min) against a ~27 min "
+        "iteration, so --ladder-every 10 costs about 7%% of campaign wall clock. "
+        "0 (default) disables it.",
+    )
+    ap.add_argument(
+        "--ladder-anchors",
+        default="random,greedy,phase1",
+        help="Anchor rungs for --ladder-every. Stockfish rungs skip cleanly when "
+        "the binary is absent.",
+    )
+    ap.add_argument(
+        "--ladder-anchor-ckpt",
+        type=Path,
+        default=None,
+        help="Frozen Phase 1 opponent (default: runs/phase1_anchor.pt, anchor v2).",
+    )
     args = ap.parse_args(argv)
 
     if (args.out is None) == (args.resume is None):
@@ -100,6 +131,10 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         resume=args.resume is not None,
         on_stage=_print_stage,
+        ladder_every=args.ladder_every,
+        ladder_anchors=args.ladder_anchors,
+        ladder_anchor_ckpt=args.ladder_anchor_ckpt,
+        on_ladder_event=_print_ladder,
     )
 
     for oc in outcomes:

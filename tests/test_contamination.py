@@ -54,7 +54,7 @@ EVAL_DIRS = [
     "runs/data/eval_mate1",
     "runs/data/eval_mate2_1k",
 ]
-EVAL_SUITES = ["mate_in_1.epd", "mate_in_2.epd"]
+EVAL_SUITES = ["mate_in_1.epd", "mate_in_2.epd", "mate_in_3.epd"]
 
 
 def _dataset_keys(rel: str) -> set[str] | None:

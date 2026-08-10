@@ -195,7 +195,22 @@ class EvalConfig:
 
     anchor_games: int = 200  # games per (checkpoint, anchor) match
     bootstrap_resamples: int = 10_000
+    # Two sim budgets, never conflated (chunk 10). 128 is the *frozen definition*
+    # of the mate-in-N gates — every recorded gate number was measured at it, so
+    # changing it does not re-measure the gate, it replaces the gate. 48 is match
+    # play: self-play-comparable strength at a cost 200 games can afford.
     suite_sims: int = 128  # sims for mate-in-N suites
+    eval_match_sims: int = 48  # sims per move for ladder match play
+    # The ladder gets its own ply cap, longer than self-play's 160. §7's cap is a
+    # *cost* bound on a 512-game iteration; a 200-game match runs once per ten
+    # iterations and does not need it. Truncating a won game as a draw is not a
+    # saving, it is a measurement error, and it errs toward 0.5 — i.e. it destroys
+    # exactly the sensitivity M3's "non-overlapping CIs" criterion depends on.
+    # Measured on the greedy-vs-random floor match: at 160 plies 28 of 200 games
+    # were cut off mid-grind and the score read 0.880; at 300 that falls to 2 and
+    # the score reads 0.938, with the residual draws structural (stalemate and
+    # insufficient material) rather than truncation.
+    eval_match_max_plies: int = 300
     eval_every_n_iters: int = 10  # how often to run the ladder during Phase 2
     openings_path: str = "tests/suites/openings_4ply.epd"
     stockfish_path: str = ""  # empty = skip Stockfish anchors if binary absent
