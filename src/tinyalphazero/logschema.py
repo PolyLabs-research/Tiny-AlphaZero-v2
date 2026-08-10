@@ -21,6 +21,14 @@ resign-disabled game has actually crossed the threshold, and
 ``mean_plies_decisive`` is None in an iteration with no decisive game. A 0.0 in
 either slot would read as a measurement, and the resignation rate is a calibration
 number people will act on.
+
+**And absence carries a reason.** Where a value can be legitimately missing for
+more than one cause, the row also carries a non-nullable note saying which — see
+``LadderEvalRow.calibration_note``. This is the structural form of the rule above:
+a row may lack a measurement, but it may never be silent about why. The reader
+these logs are written for is someone months from now with no access to the
+conversation that produced them, and "ece: null" alone leaves them to decide for
+themselves whether the value head was uncalibrated or simply never asked.
 """
 
 from __future__ import annotations
@@ -150,10 +158,165 @@ def validate(row: dict[str, Any]) -> None:
 def append_row(path: str | Path, row: dict[str, Any]) -> None:
     """Append one validated row to a JSONL log."""
     validate(row)
+    _append(path, row)
+
+
+def _append(path: str | Path, row: dict[str, Any]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as fh:
         fh.write(json.dumps(row) + "\n")
+
+
+# ---------------------------------------------------------------------------
+# The anchor ladder (spec §8, chunk 10)
+#
+# Two row types share `ladder.jsonl` and are told apart by `row_type`, because
+# they answer different questions at different cadences: one row per
+# (checkpoint, anchor) matchup, and one row per checkpoint for everything that
+# does not involve an opponent. Splitting them into two files would make "what
+# did this checkpoint score" a join.
+# ---------------------------------------------------------------------------
+
+MATCH_ROW = "match"
+EVAL_ROW = "eval"
+
+#: Nullable in a match row: an anchor that could not be run leaves the CI absent
+#: rather than zero, and ``iteration`` is None for a standalone evaluation of a
+#: checkpoint that is not part of a campaign (the Phase 1 anchor, for instance).
+_MATCH_NULLABLE = frozenset({"elo_lo", "elo_hi", "iteration"})
+#: Nullable in an eval row: a suite or metric that is not present in this working
+#: tree reports None, which reads as "not measured" rather than "measured as 0".
+_EVAL_NULLABLE = frozenset(
+    {"mate3_rate", "mate3_solved", "mate3_total", "ece", "calibration_n", "iteration"}
+)
+
+
+@dataclass
+class LadderMatchRow:
+    """One (checkpoint, anchor) matchup: the Elo curve M3 is judged on."""
+
+    row_type: str
+    checkpoint: str
+    iteration: int | None
+    anchor: str
+    games: int
+    wins: int
+    draws: int
+    losses: int
+    score: float
+    elo: float
+    elo_lo: float | None
+    elo_hi: float | None
+    elo_clamped: bool
+    draw_rate: float
+    mean_plies: float
+    match_sims: int
+    max_plies: int
+    seconds: float
+    git_sha: str
+    schema_version: int = SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class LadderEvalRow:
+    """One checkpoint's opponent-free measurements: suites, watchlist, calibration."""
+
+    row_type: str
+    checkpoint: str
+    iteration: int | None
+    suite_sims: int
+    mate2_solved: int
+    mate2_total: int
+    mate2_rate: float
+    mate2_baseline: float  # the pinned M3 no-regress number
+    mate2_no_regress: bool  # rate >= baseline (within one position)
+    mate2_m3_clause: bool  # rate >= 0.95 absolute
+    mate2_failed: list
+    mate3_solved: int | None
+    mate3_total: int | None
+    mate3_rate: float | None
+    watchlist: list  # [{id, verdict, solved, value_on_key_child, baseline_value}]
+    ece: float | None
+    calibration_n: int | None
+    calibration_bins: list
+    # Why `ece` is what it is, in words, always present. Calibration draws its
+    # positions from the *anchor* matchup, so a partial pass (`--anchors random`)
+    # legitimately measures nothing — and a bare null leaves a reader to guess
+    # whether the value head was uncalibrated or simply never asked. The house
+    # rule is that None means "not measured"; this says which.
+    calibration_note: str
+    book_move1_entropy: float
+    seconds: float
+    git_sha: str
+    schema_version: int = SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+MATCH_FIELDS: tuple[str, ...] = tuple(f.name for f in fields(LadderMatchRow))
+EVAL_FIELDS: tuple[str, ...] = tuple(f.name for f in fields(LadderEvalRow))
+
+
+def _check(row: dict[str, Any], declared: tuple[str, ...], nullable: frozenset[str]) -> None:
+    missing = [k for k in declared if k not in row]
+    unknown = [k for k in row if k not in declared]
+    if missing or unknown:
+        raise ValueError(f"ladder row schema mismatch: missing={missing} unknown={unknown}")
+    nulls = [k for k in declared if row[k] is None and k not in nullable]
+    if nulls:
+        raise ValueError(f"ladder row has null in non-nullable field(s): {nulls}")
+    if row["schema_version"] != SCHEMA_VERSION:
+        raise ValueError(f"ladder row schema_version {row['schema_version']} != {SCHEMA_VERSION}")
+
+
+def validate_ladder(row: dict[str, Any]) -> None:
+    """Raise unless ``row`` is a well-formed ladder row of either type."""
+    kind = row.get("row_type")
+    if kind == MATCH_ROW:
+        _check(row, MATCH_FIELDS, _MATCH_NULLABLE)
+    elif kind == EVAL_ROW:
+        _check(row, EVAL_FIELDS, _EVAL_NULLABLE)
+    else:
+        raise ValueError(
+            f"unknown ladder row_type {kind!r}; expected {MATCH_ROW!r} or {EVAL_ROW!r}"
+        )
+
+
+def ladder_match_row(**kwargs: Any) -> dict[str, Any]:
+    row = LadderMatchRow(row_type=MATCH_ROW, **kwargs).to_dict()
+    validate_ladder(row)
+    return row
+
+
+def ladder_eval_row(**kwargs: Any) -> dict[str, Any]:
+    row = LadderEvalRow(row_type=EVAL_ROW, **kwargs).to_dict()
+    validate_ladder(row)
+    return row
+
+
+def append_ladder_row(path: str | Path, row: dict[str, Any]) -> None:
+    """Append one validated ladder row.
+
+    Written the moment a matchup finishes, not at the end of the pass. That is
+    what makes a ladder pass resumable: a kill costs the matchup in flight and
+    nothing already measured. Same ordering argument as the replay ring — data
+    lands before anything points at it.
+    """
+    validate_ladder(row)
+    _append(path, row)
+
+
+def completed_matchups(path: str | Path) -> set[tuple[str, str]]:
+    """``(checkpoint, anchor)`` pairs already in the log — never recomputed."""
+    p = Path(path)
+    if not p.exists():
+        return set()
+    return {(r["checkpoint"], r["anchor"]) for r in read_jsonl(p) if r.get("row_type") == MATCH_ROW}
 
 
 def read_jsonl(path: str | Path) -> list[dict[str, Any]]:

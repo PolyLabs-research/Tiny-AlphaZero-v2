@@ -25,6 +25,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import chess
 import numpy as np
@@ -150,13 +151,28 @@ def network_evaluator(ckpt_path: str | Path, device: str | None = None) -> Evalu
     """
     import torch
 
-    from tinyalphazero.encoding import legal_mask_ft
-    from tinyalphazero.model import masked_policy, value_scalar
     from tinyalphazero.train import load_checkpoint
 
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     net, _meta = load_checkpoint(ckpt_path, device=dev)
     net.eval()
+    return network_evaluator_from_net(net, dev)
+
+
+def network_evaluator_from_net(net: Any, device: Any) -> EvaluateFn:
+    """The same evaluator, from a net already in memory.
+
+    The ladder holds one loaded checkpoint and needs both a batched evaluator (for
+    matches) and a single-position one (for the suites, which drive ``Search``).
+    Re-reading 78 MB from disk to get the second would also risk the two
+    disagreeing about which weights are under test.
+    """
+    import torch
+
+    from tinyalphazero.encoding import legal_mask_ft
+    from tinyalphazero.model import masked_policy, value_scalar
+
+    dev = device
 
     @torch.no_grad()
     def evaluate(tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
@@ -808,6 +824,97 @@ def _delivers_mate(board: chess.Board, mv: chess.Move) -> bool:
     return out
 
 
+def _ordered_moves(board: chess.Board) -> list[chess.Move]:
+    """Legal moves, checks first. An ordering, not a filter — nothing is dropped."""
+    checks, quiet = [], []
+    for mv in board.legal_moves:
+        (checks if board.gives_check(mv) else quiet).append(mv)
+    return checks + quiet
+
+
+def can_force_mate(board: chess.Board, moves_left: int) -> bool:
+    """Can the side to move force checkmate within ``moves_left`` of its own moves?
+
+    Exhaustive over the defender's replies, so a ``True`` is a proof rather than a
+    heuristic. Any non-mate termination on the defender's turn (stalemate,
+    insufficient material) counts as a failure to force: mate-in-N means mate.
+
+    Shared by the mate-in-3 harvest and the suite scorer so that "is a mate-in-3"
+    and "solved the mate-in-3" cannot drift apart — a suite whose generator and
+    whose grader disagree measures neither.
+
+    Deliberately **not** used to reimplement :func:`_forces_mate_in_2`, even
+    though it could: that function is the frozen definition behind every recorded
+    mate-in-2 gate number, and a refactor that changed it by one position would
+    silently invalidate the M3 baseline.
+    """
+    if moves_left <= 0:
+        return False
+    for mv in _ordered_moves(board):
+        board.push(mv)
+        try:
+            if board.is_checkmate():
+                return True
+            if board.is_game_over() or moves_left == 1:
+                continue
+            forced = True
+            for reply in board.legal_moves:
+                board.push(reply)
+                try:
+                    if board.is_game_over() or not can_force_mate(board, moves_left - 1):
+                        forced = False
+                finally:
+                    board.pop()
+                if not forced:
+                    break
+            if forced:
+                return True
+        finally:
+            board.pop()
+    return False
+
+
+def _forces_mate_in_3(board: chess.Board, mv: chess.Move) -> bool:
+    """Does ``mv`` keep a forced mate within two more of our moves?
+
+    Same scoring philosophy as the mate-in-2 suite: a position may have several
+    solutions, so the grader asks whether the chosen move *is* one, not whether it
+    matches the recorded ``bm``.
+    """
+    board.push(mv)
+    try:
+        if board.is_checkmate():
+            return True
+        if board.is_game_over():
+            return False
+        for reply in board.legal_moves:
+            board.push(reply)
+            try:
+                if board.is_game_over() or not can_force_mate(board, 2):
+                    return False
+            finally:
+                board.pop()
+        return True
+    finally:
+        board.pop()
+
+
+def move_solves(board: chess.Board, mv: chess.Move, mate_in: int) -> bool:
+    """One definition of "solved", shared by the suite runner and the ladder.
+
+    Solved means the chosen move *is* a solution at the suite's depth, not that it
+    matches the recorded ``bm``: several positions have more than one solution and
+    pinning one of them would be testing the suite, not the search.
+    """
+    if mate_in == 1:
+        return _delivers_mate(board, mv)
+    if mate_in == 2:
+        return _forces_mate_in_2(board, mv)
+    if mate_in == 3:
+        return _forces_mate_in_3(board, mv)
+    raise ValueError(f"no scorer for mate_in={mate_in}")
+
+
 def solve_positions(
     positions: list[tuple[str, str]],
     sims: int,
@@ -833,7 +940,7 @@ def solve_positions(
         board.set_epd(epd_line)
         result = search.run(board, None, sims)
         mv = result.best_move()
-        ok = _delivers_mate(board, mv) if mate_in == 1 else _forces_mate_in_2(board, mv)
+        ok = move_solves(board, mv, mate_in)
         if ok:
             solved += 1
         else:
@@ -934,8 +1041,12 @@ def main(argv: list[str] | None = None) -> int:
         print("error: pass exactly one of --stub or --ckpt")
         return 2
 
-    mate_in = args.mate_in if args.mate_in else (2 if "mate_in_2" in args.suite.name else 1)
-    threshold = args.threshold if args.threshold else (0.95 if mate_in == 2 else 1.0)
+    inferred = 3 if "mate_in_3" in args.suite.name else 2 if "mate_in_2" in args.suite.name else 1
+    mate_in = args.mate_in if args.mate_in else inferred
+    # mate-in-3 is informational trajectory, not a gate (§8), so it has no
+    # threshold of its own; 0.0 reports the number without implying a verdict.
+    default_threshold = 0.0 if mate_in == 3 else 0.95 if mate_in == 2 else 1.0
+    threshold = args.threshold if args.threshold else default_threshold
 
     cfg = MCTSConfig()
     if args.root_mode:

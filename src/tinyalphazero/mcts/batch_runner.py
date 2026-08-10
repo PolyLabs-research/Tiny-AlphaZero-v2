@@ -85,8 +85,9 @@ class _LeafRequest:
 class _GameState:
     """One live game: board, tree, and the in-flight simulation coroutine."""
 
-    def __init__(self, board: chess.Board, seed: int, cfg: MCTSConfig) -> None:
+    def __init__(self, board: chess.Board, seed: int, cfg: MCTSConfig, index: int = 0) -> None:
         self.board = board
+        self.index = index  # position in the runner's game list; what move_fn is keyed on
         self.rng = np.random.default_rng(seed)
         self.cfg = cfg
         self.trace = GameTrace()
@@ -151,6 +152,7 @@ class BatchRunner:
         self.debug_trees: dict[tuple[int, int], tuple[Tree, int, int]] = {}
         self._stop_fn: Any = None
         self._evaluator_for: Any = None
+        self._move_fn: Any = None
 
     # -- evaluation plumbing ---------------------------------------------
 
@@ -292,6 +294,7 @@ class BatchRunner:
         repetitions_fn: RepetitionsFn | None = None,
         stop_fn: Any = None,
         evaluator_for: Any = None,
+        move_fn: Any = None,
     ) -> Iterator[GameTrace]:
         """``stop_fn(trace) -> str | None`` is consulted after every committed
         move; a returned string ends that game with it as the result.
@@ -306,6 +309,15 @@ class BatchRunner:
         same idea for the league (chunk 9): the runner does not know what a
         snapshot pool is, only that a leaf belongs to whoever is searching. None —
         the default — keeps a single evaluator and a single forward per flush.
+
+        ``move_fn(game_index, board) -> chess.Move | None`` is the third (chunk
+        10): returning a move means *this side does not search*, so the move is
+        played directly and no tree, trace row, or simulation budget is spent on
+        it. That is how the ladder plays a random mover, a 1-ply greedy or an
+        external engine while the learner still gets full batched concurrency —
+        rather than growing a second scheduler beside this one. A network
+        opponent is not a ``move_fn``: it searches, so it belongs in
+        ``evaluator_for``.
         """
         num_sims = self.cfg.sims if num_sims is None else num_sims
         seeds = seeds or list(range(num_games))
@@ -324,6 +336,7 @@ class BatchRunner:
                 (boards[i] if boards else chess.Board()),
                 seeds[i % len(seeds)],
                 self.cfg,
+                index=i,
             )
             for i in range(num_games)
         ]
@@ -332,8 +345,11 @@ class BatchRunner:
         self._games_debug = games
         self._stop_fn = stop_fn
         self._evaluator_for = evaluator_for
+        self._move_fn = move_fn
         for gs in games:
-            self._start_move(gs, search, num_sims, game_reps(gs))
+            # _begin_move, not _start_move: a game whose opening has the opponent
+            # to move must play that move before any tree is built for it.
+            self._begin_move(gs, search, num_sims, game_reps(gs))
 
         pending: list[_LeafRequest] = []
         self._pending_roots: list[tuple[_GameState, int]] = []
@@ -449,10 +465,23 @@ class BatchRunner:
         )
 
         self.debug_trees[(id(gs), gs.ply)] = (tree, root, gs.sims_run)
+        if self._play(gs, result.best_move()):
+            return
+        self._begin_move(gs, search, num_sims, base_reps)
+
+    def _play(self, gs: _GameState, move: chess.Move) -> bool:
+        """Push ``move``, update history, adjudicate. Returns True if the game ended.
+
+        The single place a move is played, whether the search chose it or an
+        external opponent did (``move_fn``). Adjudication that lived in only one
+        of two paths would be two rulebooks: a ladder match that ended by a
+        different rule than a self-play game would make Elo and training data
+        disagree about what a draw is.
+        """
         # The position we are about to leave joins the history. One Counter
         # increment per committed move; nothing rescans the move stack.
         gs.history[gs.board._transposition_key()] += 1
-        gs.board.push(result.best_move())
+        gs.board.push(move)
         gs.ply += 1
 
         # Claim draws at game level with exactly the in-search semantics: a
@@ -480,8 +509,26 @@ class BatchRunner:
                 if gs.ply >= self.max_plies
                 else "draw"
             )
-            return
-        self._start_move(gs, search, num_sims, base_reps)
+            return True
+        return False
+
+    def _begin_move(
+        self, gs: _GameState, search: Search, num_sims: int, base_reps: RepetitionsFn
+    ) -> None:
+        """Set up the next searched move, playing any external moves that precede it.
+
+        ``move_fn`` returning a move means "this side is not the searcher" — a
+        ladder opponent that is a random mover, a 1-ply greedy, or an engine. The
+        loop is a ``while`` because both sides can be external in principle, and
+        because a game must never be left sitting on a position nobody will move.
+        """
+        while not gs.done:
+            move = None if self._move_fn is None else self._move_fn(gs.index, gs.board)
+            if move is None:
+                self._start_move(gs, search, num_sims, base_reps)
+                return
+            if self._play(gs, move):
+                return
 
 
 def _unused_evaluator(_tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:

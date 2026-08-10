@@ -1351,4 +1351,176 @@ to measure rather than three positions that happen to number three.
 
 ---
 
-## Next: **chunk 10** — opponents, the fixed 4-ply book, Elo with paired-bootstrap CIs, and the suites on ladder cadence. Then the one-sentence brief: run `p2_a` for 24 hours.
+## Chunk 10 — The anchor ladder ✅ (branch `chunk-10-ladder`, 2026-08-10)
+
+**Created:** `src/tinyalphazero/opponents.py`, `src/tinyalphazero/evaluate.py`,
+`scripts/eval_ladder.py`, `scripts/generate_openings.py`, `scripts/generate_mate3.py`,
+`tests/test_evaluate.py`, `tests/suites/openings_4ply.epd`, `tests/suites/mate_in_3.epd`.
+
+### Gate results (verbatim)
+
+```
+$ make test                                  508 passed, 47 warnings in 279.42s (0:04:39)
+$ make lint                                  All checks passed! / 46 files already formatted
+$ python scripts/eval_ladder.py --ckpt runs/phase1_anchor.pt --anchors random,greedy --games 20
+  random       20W/0D/0L score=1.000  Elo ≥ +636.4 (saturated at 20 games)  plies=37  0.2 min
+  greedy       10W/7D/3L score=0.675  Elo +127.0 [+17.4, +269.4]  plies=112  0.7 min
+  mate-in-2    197/200 = 0.985 (baseline 0.985, M3 clause >= 0.95) no-regress OK
+  mate-in-3    138/200 = 0.690  (informational, no gate)
+  watch mate2_129   CAPABILITY  solved=False value_on_key_child=0.036  (was 0.036)
+  watch mate2_165   COVERAGE    solved=False value_on_key_child=0.0297 (was 0.0297)
+  watch mate2_166   COVERAGE    solved=False value_on_key_child=0.0321 (was 0.0321)
+  calibration: not measured — no anchor matchup in this pass
+  book H_prior 3.1623 | 1.5 min
+
+$ python scripts/eval_ladder.py --ckpt runs/phase1_anchor.pt --anchors phase1 --games 20   # the live null
+  phase1       7W/6D/7L score=0.500  Elo +0.0 [+0.0, +0.0]  CI straddles 0  plies=105  1.4 min
+
+$ python scripts/eval_ladder.py --ckpt runs/phase1_anchor.pt --anchors phase1   # full-scale timing
+  phase1       71W/58D/71L score=0.500  Elo +0.0 [+0.0, +0.0]  CI straddles 0
+               (degenerate CI — every opening pair scored alike)  plies=102  8.4 min
+```
+
+### The self-match null is exact, and that makes it three tests at once
+
+A checkpoint against itself scored **exactly 0.500 at both scales** — 7W/6D/7L
+over 10 openings, 71W/58D/71L over 100 — with *every* opening pair at exactly 0.5.
+Not luck: under the evaluation profile both sides are the same deterministic
+function, so the two colour-swapped games of an opening are **the same game with
+the labels swapped**. Whoever wins it wins as white in one and loses as black in
+the other. The paired design makes the null an algebraic identity.
+
+So the row is simultaneously:
+
+1. **The null case** M3's "non-overlapping CIs" criterion is judged against — if
+   the machinery could not produce an interval containing 0 for two equal
+   players, non-overlap would be a property of the estimator, not evidence.
+2. **A pairing proof.** If `_pairing` mis-ordered the games or the colour
+   assignment were not a true swap, the pair scores could not all be 0.5.
+3. **A no-hidden-state detector.** All-pairs-exactly-0.5 holds *iff* move choice
+   is a pure function of position. Any per-game RNG draw, seat-dependent branch,
+   or cache-ordering leak breaks it immediately and visibly.
+
+Property 3 has a live demonstration in the test suite: the shipped
+`GreedyMaterial` draws its tie-break per game, and a shipped-greedy self-match
+returns pair scores of **0.75 and 0.25**. That is correct for its role — a fixed
+tie-break would make greedy play python-chess's generation order among equal
+captures forever, an arbitrary systematic preference rather than a neutral one —
+and it is why the identity test uses a deterministic subclass. The requirement
+belongs to the *learner under the eval profile*, not to the opponents, and both
+docstrings now say which object owns it.
+
+**A claim of mine that was wrong, corrected:** greedy's original docstring
+justified its random tie-break as needed for game diversity — "100 openings would
+produce far fewer than 200 distinct games". False. The two colour-swapped games of
+an opening are distinct whenever the two *players* differ, regardless of greedy's
+determinism. The real justification is neutrality, not count.
+
+### The ladder needed its own ply cap, and the measurement said so
+
+Greedy-vs-random at §7's 160-ply cap scored **0.880** against the brief's ≥90% —
+with **zero losses**. That was the tell: not the opponents, the cap. Greedy has no
+mating technique, so it grinds, and 28 of 200 games were cut off mid-grind and
+scored as draws. At 300 plies the score is **0.938** and the residual draws are
+structural (22 stalemate/insufficient-material, 1 claim, 2 cap).
+
+The distinction the spec conflated: **§7's 160 is a cost bound on data generation;
+a match is a measurement.** Truncating a won grind is measurement error that
+pushes every score toward 0.5 — precisely the sensitivity the non-overlapping-CIs
+criterion lives on. New knob `eval.eval_match_max_plies: 300`, with the
+measurement in the config comment.
+
+The cap turned out not to cost anything: anchor games average **102 plies**, so
+300 is a safety net rather than a budget.
+
+### Budget: measured, and 2–4× cheaper than pre-registered
+
+| Rung | Games | Measured | Full-scale |
+|---|---|---|---|
+| phase1 (both sides search) | 200 | **8.4 min** | measured at full scale |
+| greedy | 20 | 0.67 min | ≤ 6.7 min (×10 upper bound) |
+| random | 20 | 0.24 min | ≤ 2.4 min (×10 upper bound) |
+| suites + watchlist + entropy | — | 1.49 min | 1.5 min |
+| **full pass** | | | **≈19 min** |
+
+The pre-registered guess was 30–45 min. The ×10 figures are upper bounds because
+200 concurrent games batch better than 20. Against a ≈27 min iteration,
+`--ladder-every 10` costs **≈7%** of campaign wall clock. Both the docstring and
+the CLI help now carry the measured number instead of the estimate.
+
+### The watchlist is a certified instrument
+
+`0.036 / 0.0297 / 0.0321` — the chunk-6 triage baselines reproduced **to four
+decimal places**, months of work later, through a completely different code path
+(`watchlist_report` rather than the triage script). That confirms the lookup is
+position-dependent *and* the sign convention is right: a flip would have produced
+three plausible-looking negatives instead.
+
+The check was designed around *distinct* values for exactly that reason. Three
+believable numbers would have sailed past a lazier test; three identical ones
+(as the mini net legitimately produces, its value head being near-constant) are a
+reason to suspect the instrument before believing the world.
+
+### mate-in-3: the first number, and why it is the one to watch
+
+**138/200 = 0.690** for anchor v2, informational, no gate. Sitting beside 0.985 on
+two-movers with the same search and the same net, the falloff *is* the
+value-sharpness story in suite form: a mate-in-3 asks the value head to guide
+selection through a ply the solver cannot yet reach, which is exactly the
+capability Phase 2 manufactures. If M3 works, this should move more than anything
+else on the ladder — and it starts with no gate to defend, only a trajectory.
+
+Harvest: 200 positions in **24.5 min** (125,298 candidates, seed 1010,
+`max_branch` 24). Generator and grader are the same `mcts.search.can_force_mate`,
+and the committed file is re-verified against it — every entry forceable in 3 and
+**not** in 2.
+
+**Timing-sample lesson, generalised:** the first sample was 20 candidates and
+returned *zero* hits, projecting nothing. The hit rate is ~0.4%, so 20 candidates
+of a rare event measures nothing at all. A 4,000-candidate sample projected 8.2
+min; the true cost was 24.5 min as the hit rate fell along the walk. **Size a
+rare-event timing sample by expected hits, not by candidates** — and treat its
+projection as a lower bound.
+
+### Presentation fixes that protect readers who were never here
+
+- **A saturated Elo renders as a bound.** A clean sweep clamps the point estimate
+  *and* collapses the bootstrap (every resampled pair scores alike), printing
+  `+636.4 [+636.4, +636.4]` — the most precise-looking row in the table and the
+  least informative one in it. Now `Elo ≥ +636.4 (saturated at 20 games)`.
+  Presentation only; the JSONL keeps the raw numbers and `elo_clamped`.
+- **The straddle and the degeneracy annotate independently.** The first version
+  made them mutually exclusive, which suppressed exactly the wrong one on the
+  self-match: the straddle is the result, the degeneracy is *why it is exact*.
+- **Absence carries a reason.** `calibration_note` is non-nullable, so a row can
+  lack an ECE but can never be silent about why. Named in `logschema.py` as the
+  structural form of the None≠0 rule — the reader these logs are for is someone
+  months from now with no access to this conversation.
+
+### Layering and a standing rule
+
+`phase2.py` importing `scripts.eval_ladder` failed: `scripts/` is not a package,
+and a library importing a script is backwards regardless. The pass moved into
+`evaluate.run_ladder_pass`; rendering is a library **formatter returning strings**,
+so both entry points print byte-identical output while library code still never
+prints (AGENTS.md §4).
+
+**AGENTS.md §5 gained a sibling to the `git -C` rule.** A waiter armed as
+`while pgrep -f "…--games 20"` matched its own shell's command line and looped on
+itself, and I reported the run as in-progress when it had never started. The rule:
+*a check must reference the thing checked — a PID, a path, a digest — never a
+pattern that can match the checker.* Worse than the `cd` incident in one respect:
+it does not merely lose progress, it forges it.
+
+### Register (not actioned)
+
+The M3-end promotion flip is **one package** — `promo_prior_from_head` changes the
+head's involvement and the share arithmetic together. Pre-registered follow-up: if
+the re-measure regresses, the sanctioned next step is exactly **one attribution
+run (share-only, uniform ×0.25)** before any conclusion about the head. Two
+changes moved at once, so a regression is unattributed until they are separated.
+Recorded in TRAINING_STRATEGY.md.
+
+---
+
+## Next: **M3** — run `p2_a` for 24 hours and bring back the curve.

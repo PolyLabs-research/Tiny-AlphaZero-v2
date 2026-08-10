@@ -62,6 +62,7 @@ from tinyalphazero.train import _git_sha, load_checkpoint, save_checkpoint, trai
 STATE_FILE = "state.json"
 LOG_FILE = "iterations.jsonl"
 CONFIG_FILE = "config.yaml"
+REPO_RUNS = Path(__file__).resolve().parents[2] / "runs"
 
 # Independent RNG streams within one (run seed, iteration). Named so a future
 # stream cannot silently collide with an existing one.
@@ -127,6 +128,12 @@ class Phase2Run:
         for snap in state.pool:
             self.pool.add(snap)
         self.on_stage: Any = None  # set by the CLI; see _stage()
+        # Ladder cadence (spec §8). 0 disables it — the golden mini-run and every
+        # test run with it off, because a ladder pass is minutes and they are not.
+        self.ladder_every: int = 0
+        self.ladder_anchors: str = "random,greedy,phase1"
+        self.ladder_anchor_ckpt: Path = REPO_RUNS / "phase1_anchor.pt"
+        self.on_ladder_event: Any = None  # the CLI's printer, same as on_stage
 
     # -- lifecycle -------------------------------------------------------
 
@@ -280,7 +287,47 @@ class Phase2Run:
         self.state.replay_total_written = self.buffer.total_written
         self._commit_state()
 
+        # Ladder *after* the commit, never before: a pass that dies takes nothing
+        # with it, and its own log is separately resumable. An eval folded into
+        # the iteration's critical path would make a 45-minute measurement able to
+        # lose 27 minutes of generation.
+        if self.ladder_every and i % self.ladder_every == 0:
+            self._stage("ladder", i)
+            self._run_ladder(i)
+
         return IterationOutcome(row=row, step_losses=step_losses, stats=stats)
+
+    def _run_ladder(self, iteration: int) -> None:
+        """Run one anchor-ladder pass inline, sequentially (spec §8, chunk 10).
+
+        Sequential on purpose: the ladder searches on the same GPU the loop does,
+        and two processes sharing it would make both timings meaningless — the
+        wall-clock split in the iteration row is only auditable if nothing else is
+        running.
+
+        **Budget, measured (2026-08-10), not estimated.** The pre-registered guess
+        was 30–45 min per pass; the dominant rung — 200 games against the frozen
+        anchor, both sides searching, at the 300-ply ladder cap — came in at
+        **8.4 min**. Adding the cheaper rungs at their measured rates gives a full
+        pass of **≈19 min**, and that is an upper bound because 200 concurrent
+        games batch better than the 20 the small rungs were measured on. Against a
+        ≈27 min iteration, ``--ladder-every 10`` therefore costs **≈7%** of
+        campaign wall clock. The 300-ply cap did not make the ladder expensive:
+        games average ~102 plies, so the cap is a safety net, not a cost.
+        """
+        from tinyalphazero.evaluate import run_ladder_pass
+
+        run_ladder_pass(
+            self.path / f"ckpt_iter{iteration:04d}.pt",
+            self.cfg,
+            self.device,
+            out=self.path / "ladder.jsonl",
+            anchors=self.ladder_anchors,
+            anchor_ckpt=self.ladder_anchor_ckpt,
+            iteration=iteration,
+            seed=self.state.seed,
+            on_event=self.on_ladder_event,
+        )
 
     # -- stages ----------------------------------------------------------
 
@@ -500,6 +547,10 @@ def run_phase2(
     seed: int | None = None,
     resume: bool = False,
     on_stage: Any = None,
+    ladder_every: int = 0,
+    ladder_anchors: str = "random,greedy,phase1",
+    ladder_anchor_ckpt: str | Path | None = None,
+    on_ladder_event: Any = None,
 ) -> list[IterationOutcome]:
     """Run (or continue) ``iterations`` iterations and return their outcomes."""
     run = (
@@ -508,4 +559,9 @@ def run_phase2(
         else Phase2Run.open_or_create(out, cfg, device, init_ckpt=init_ckpt, seed=seed)
     )
     run.on_stage = on_stage
+    run.ladder_every = ladder_every
+    run.ladder_anchors = ladder_anchors
+    run.on_ladder_event = on_ladder_event
+    if ladder_anchor_ckpt is not None:
+        run.ladder_anchor_ckpt = Path(ladder_anchor_ckpt)
     return [run.iterate() for _ in range(iterations)]
