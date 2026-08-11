@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -48,6 +49,7 @@ from tinyalphazero import logschema
 from tinyalphazero.config import Config, config_fingerprint, load_config, save_config
 from tinyalphazero.mcts.batch_runner import torch_evaluate_batch
 from tinyalphazero.model import ChessNet
+from tinyalphazero.rehearsal import RehearsalSampler
 from tinyalphazero.replay import ReplayBuffer
 from tinyalphazero.selfplay import (
     LATEST,
@@ -79,6 +81,41 @@ def iteration_seed(seed: int, iteration: int, stream: int) -> int:
     (run seed, iteration, wave, game index) without replaying anything before it.
     """
     return int(np.random.SeedSequence([seed, iteration, stream]).generate_state(1)[0])
+
+
+def _copy_seed_pool(donor: Path, dest: Path, pool_size: int) -> list[str]:
+    """Copy the donor run's league pool into ``dest``; return the new file names.
+
+    Read from the donor's ``state.json`` rather than globbing its directory: the
+    pool is what the donor's league actually held, and a glob would also pick up
+    snapshots it had already evicted.
+
+    Copied, not referenced, for the reason ``create`` copies the anchor — a run
+    directory has to survive the donor being moved or deleted. Renamed with a
+    ``seed_`` prefix because the donor's names are ``ckpt_iterNNNN.pt`` and so are
+    this run's: at 20 seeded snapshots the two numberings overlap for any run
+    longer than ``pool_size - 1`` iterations, and the collision would silently
+    replace a league opponent with a checkpoint of the model playing it.
+    """
+    state_path = donor / STATE_FILE
+    if not state_path.exists():
+        raise FileNotFoundError(f"--seed-pool {donor} is not a run directory (no {STATE_FILE})")
+    snapshots = list(json.loads(state_path.read_text()).get("pool", []))[-pool_size:]
+    if not snapshots:
+        raise ValueError(f"--seed-pool {donor} has an empty league pool; nothing to continue")
+
+    names: list[str] = []
+    for snap in snapshots:
+        src = donor / snap
+        if not src.exists():
+            raise FileNotFoundError(
+                f"{donor}'s pool names {snap} but the file is gone; the league "
+                "cannot be continued from an incomplete donor"
+            )
+        name = f"seed_{donor.name}_{snap}"
+        shutil.copy2(src, dest / name)
+        names.append(name)
+    return names
 
 
 @dataclass
@@ -127,6 +164,10 @@ class Phase2Run:
         self.pool = CheckpointPool(cfg.selfplay)
         for snap in state.pool:
             self.pool.add(snap)
+        # Anchor rehearsal (p2_b). A no-op unless the rehearsal fractions are set,
+        # and a pass-through wrapper when it is off, so runs that predate the lever
+        # draw exactly the batches they drew before.
+        self.rehearsal = RehearsalSampler(buffer, cfg.train, state.seed)
         self.on_stage: Any = None  # set by the CLI; see _stage()
         # Ladder cadence (spec §8). 0 disables it — the golden mini-run and every
         # test run with it off, because a ladder pass is minutes and they are not.
@@ -145,8 +186,16 @@ class Phase2Run:
         device: torch.device,
         init_ckpt: str | Path | None = None,
         seed: int | None = None,
+        seed_pool: str | Path | None = None,
     ) -> Phase2Run:
-        """Start a run: iteration 0 is the initial weights, and the pool is {them}."""
+        """Start a run: iteration 0 is the initial weights, and the pool is {them}.
+
+        ``seed_pool`` continues another run's league instead of starting from a
+        one-member pool. A warm-started run whose pool resets would spend its first
+        20 iterations playing an opponent distribution that no longer resembles the
+        weights it inherited — a confound, and a large one, in a run whose whole
+        purpose is attributing a change to one lever. Continuity is not a lever.
+        """
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
         seed = cfg.seed if seed is None else seed
@@ -184,6 +233,7 @@ class Phase2Run:
                         torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu"
                     ),
                     "init_from": state.init_from,
+                    "seed_pool_from": str(seed_pool or ""),
                 },
                 indent=2,
             )
@@ -191,6 +241,13 @@ class Phase2Run:
         )
 
         run = cls(path, cfg, net, optimizer, buffer, state, device)
+        # Seeded opponents go in *before* iteration 0's own snapshot, so the pool
+        # ends up holding the donor's most recent (pool_size - 1) plus this run's
+        # initial weights — exactly the pool the donor would have had after one
+        # more iteration.
+        if seed_pool is not None:
+            for name in _copy_seed_pool(Path(seed_pool), path, cfg.selfplay.league_pool_size):
+                run.pool.add(name)
         # Iteration 0 is a real, resumable state, and its checkpoint is the pool's
         # first member (§7: "iteration 0 pool = {anchor}"). Copying the anchor into
         # the run directory rather than pointing at it keeps the run self-contained
@@ -255,10 +312,11 @@ class Phase2Run:
         device: torch.device,
         init_ckpt: str | Path | None = None,
         seed: int | None = None,
+        seed_pool: str | Path | None = None,
     ) -> Phase2Run:
         if (Path(path) / STATE_FILE).exists():
             return cls.resume(path, device)
-        return cls.create(path, cfg, device, init_ckpt=init_ckpt, seed=seed)
+        return cls.create(path, cfg, device, init_ckpt=init_ckpt, seed=seed, seed_pool=seed_pool)
 
     # -- one iteration ---------------------------------------------------
 
@@ -393,9 +451,13 @@ class Phase2Run:
         step_losses: list[float] = []
         skipped_here = 0
 
-        for _ in range(cfg_t.train_steps_per_iter):
-            batch = self.buffer.sample(
-                cfg_t.batch_size, rng, latest_only=not self.cfg.phase2.train_on_pool_moves
+        for step in range(cfg_t.train_steps_per_iter):
+            batch = self.rehearsal.sample(
+                cfg_t.batch_size,
+                rng,
+                iteration=iteration,
+                step=step,
+                latest_only=not self.cfg.phase2.train_on_pool_moves,
             )
             out = train_step_phase2(
                 batch,
@@ -545,6 +607,7 @@ def run_phase2(
     iterations: int,
     init_ckpt: str | Path | None = None,
     seed: int | None = None,
+    seed_pool: str | Path | None = None,
     resume: bool = False,
     on_stage: Any = None,
     ladder_every: int = 0,
@@ -556,7 +619,9 @@ def run_phase2(
     run = (
         Phase2Run.resume(out, device)
         if resume
-        else Phase2Run.open_or_create(out, cfg, device, init_ckpt=init_ckpt, seed=seed)
+        else Phase2Run.open_or_create(
+            out, cfg, device, init_ckpt=init_ckpt, seed=seed, seed_pool=seed_pool
+        )
     )
     run.on_stage = on_stage
     run.ladder_every = ladder_every

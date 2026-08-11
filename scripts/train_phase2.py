@@ -59,10 +59,23 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument(
         "--init",
+        "--init-weights",
+        dest="init",
         type=Path,
         default=None,
-        help="Checkpoint to start from (the Phase 1 anchor). Omitted means random "
-        "init, which is the golden mini-run's case and nobody else's.",
+        help="Checkpoint to start from: the Phase 1 anchor, or a previous campaign's "
+        "endpoint for a warm start. Weights only — the optimizer is fresh, so expect "
+        "an Adam-moment rebuild in the first couple of hundred steps. Omitted means "
+        "random init, which is the golden mini-run's case and nobody else's.",
+    )
+    ap.add_argument(
+        "--seed-pool",
+        type=Path,
+        default=None,
+        help="Continue another run's league: copy its pool into this run so the "
+        "opponent distribution carries over instead of collapsing to a one-member "
+        "pool. Pair it with a warm start; a fresh pool against inherited weights is "
+        "a confound, not a control.",
     )
     ap.add_argument(
         "--iterations", type=int, default=None, help="Iterations to run this invocation"
@@ -97,6 +110,8 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("pass exactly one of --out (new run) or --resume (existing run)")
     if args.resume is not None and args.init is not None:
         ap.error("--init is meaningless with --resume: a resumed run starts from its own snapshot")
+    if args.resume is not None and args.seed_pool is not None:
+        ap.error("--seed-pool is meaningless with --resume: a resumed run keeps its own pool")
     if args.out is not None and (args.out / STATE_FILE).exists():
         # Silently continuing would be the safe *implementation* and the wrong
         # *behaviour*: "start a campaign" and "continue one" are different
@@ -121,6 +136,13 @@ def main(argv: list[str] | None = None) -> int:
         f"| sims={cfg.selfplay.sims_per_move} | steps/iter={cfg.train.train_steps_per_iter} "
         f"| batch={cfg.train.batch_size} | out={out}"
     )
+    if cfg.train.rehearsal_frac > 0:
+        print(
+            f"  anchor rehearsal | frac={cfg.train.rehearsal_frac} "
+            f"(mate1={cfg.train.rehearsal_mate1_frac} mate2={cfg.train.rehearsal_mate2_frac})"
+        )
+    if args.seed_pool is not None:
+        print(f"  league seeded from {args.seed_pool}")
 
     outcomes = run_phase2(
         out,
@@ -129,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         iterations,
         init_ckpt=args.init,
         seed=args.seed,
+        seed_pool=args.seed_pool,
         resume=args.resume is not None,
         on_stage=_print_stage,
         ladder_every=args.ladder_every,

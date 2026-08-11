@@ -145,6 +145,24 @@ class TrainConfig:
     # its optimum at init. Phase 1 therefore trains unmasked; Phase 2 (search-improved
     # targets over the legal set) sets this back to True.
     phase1_policy_masked: bool = False
+    # Phase 2 anchor rehearsal (p2_b's single lever). ``rehearsal_frac`` is the
+    # fraction of every Phase 2 batch drawn from the frozen Phase 1 anchor sets
+    # instead of the replay ring; the two per-suite fractions are absolute
+    # fractions of the batch and must sum to it. Stating the total *and* the split
+    # is deliberate redundancy rather than duplication: the split is the lever's
+    # real setting, the total is how the run is described, and disagreement
+    # between them is a typo that gets caught at config load instead of being
+    # discovered in a log 11 hours later.
+    #
+    # The dirs default to the contamination-proven `_clean` sets, and
+    # tests/test_contamination.py asserts that these defaults are inside the set
+    # it checks — so pointing rehearsal at a dirty directory fails the build
+    # rather than quietly training on the measurement.
+    rehearsal_frac: float = 0.0
+    rehearsal_mate1_frac: float = 0.0
+    rehearsal_mate2_frac: float = 0.0
+    rehearsal_mate1_dir: str = "runs/data/mate1_100k_clean"
+    rehearsal_mate2_dir: str = "runs/data/mate2_50k_clean"
 
 
 @dataclass
@@ -343,7 +361,30 @@ def load_config(path: str | None = None, overrides: dict | None = None) -> Confi
             target[parts[-1]] = value
         cfg = _resolve_field_types(cfg_dict, Config)
 
+    _validate_rehearsal(cfg.train)
     return cfg
+
+
+def _validate_rehearsal(t: TrainConfig) -> None:
+    """The rehearsal split must agree with its total, and both must be sane.
+
+    Checked at load rather than at first batch: an 11-hour campaign that mixes
+    the wrong ratio is not recoverable by noticing it in iteration 3's log.
+    """
+    parts = t.rehearsal_mate1_frac + t.rehearsal_mate2_frac
+    for name, v in (
+        ("rehearsal_frac", t.rehearsal_frac),
+        ("rehearsal_mate1_frac", t.rehearsal_mate1_frac),
+        ("rehearsal_mate2_frac", t.rehearsal_mate2_frac),
+    ):
+        if not 0.0 <= v < 1.0:
+            raise ValueError(f"train.{name} must be in [0, 1); got {v}")
+    if abs(parts - t.rehearsal_frac) > 1e-9:
+        raise ValueError(
+            f"train.rehearsal_mate1_frac + train.rehearsal_mate2_frac = {parts} "
+            f"but train.rehearsal_frac = {t.rehearsal_frac}. The split and the "
+            "total must agree — one of the three is a typo."
+        )
 
 
 def save_config(cfg: Config, path: str) -> None:

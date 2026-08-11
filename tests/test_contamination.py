@@ -40,6 +40,14 @@ ANCHOR_DIRS = [
     "runs/data/mate2_50k_clean",
 ]
 
+# Phase 2 anchor rehearsal (p2_b) trains on these same sets *during* the campaign
+# the gate later scores, which makes the firewall load-bearing in a new way: a
+# Phase 1 leak was a one-off before Phase 2 began, but a rehearsal leak feeds the
+# suite into the model on every iteration of the run being measured. The guard is
+# therefore extended to the config fields themselves rather than to a second
+# hand-maintained list of paths — see test_rehearsal_dirs_are_guarded.
+REHEARSAL_DIR_FIELDS = ["rehearsal_mate1_dir", "rehearsal_mate2_dir"]
+
 # Superseded anchor sets: known-contaminated, quantified, and no longer used for
 # training. Reported by a separate xfail-style test rather than silently dropped.
 LEGACY_ANCHOR_DIRS = [
@@ -246,3 +254,55 @@ def test_legacy_anchor_contamination_is_bounded_and_recorded(anchor_rel: str) ->
         "measured on 2026-08-08. A superseded set getting dirtier means something "
         "regenerated it."
     )
+
+
+# ---------------------------------------------------------------------------
+# The rehearsal firewall (p2_b)
+# ---------------------------------------------------------------------------
+
+
+def test_rehearsal_dirs_are_guarded() -> None:
+    """Whatever `train.rehearsal_*_dir` points at must be a set this file checks.
+
+    The other tests in this module prove that a *fixed list* of directories is
+    clean. That is not the property p2_b needs. p2_b needs "the directories the
+    campaign will actually train on are clean", and those are named by config —
+    so a path edit, a new anchor set, or a copy-paste into `configs/p2_b.yaml`
+    could point rehearsal at a dirty directory while every test here still
+    passed, and the run would read as a recovery while being memorisation.
+
+    Asserting on the config defaults closes that gap at the only place both facts
+    meet. A future set is welcome; it just has to be added to ANCHOR_DIRS, which
+    is what subjects it to the suite and held-out checks above.
+    """
+    from tinyalphazero.config import Config
+
+    guarded = set(ANCHOR_DIRS)
+    train = Config().train
+    for field in REHEARSAL_DIR_FIELDS:
+        configured = getattr(train, field)
+        assert configured in guarded, (
+            f"train.{field} defaults to {configured!r}, which is not in "
+            f"ANCHOR_DIRS {sorted(guarded)}. Rehearsal trains on this directory "
+            "during the campaign the gate scores, so an unguarded path would let "
+            "the run train on its own measurement. Add it to ANCHOR_DIRS (which "
+            "subjects it to the suite and held-out checks) or point the config at "
+            "a set already there."
+        )
+
+
+def test_rehearsal_config_dirs_exist_when_enabled() -> None:
+    """A rehearsal config naming a directory that is not there fails loudly.
+
+    The sampler raises on construction rather than quietly training without the
+    lever — an 11-hour run that silently ran the control is worse than one that
+    refuses to start.
+    """
+    from tinyalphazero.config import Config
+
+    train = Config().train
+    for field in REHEARSAL_DIR_FIELDS:
+        path = REPO / getattr(train, field)
+        if not (path / "meta.json").exists():
+            pytest.skip(f"{path} not generated in this working tree")
+    assert True
