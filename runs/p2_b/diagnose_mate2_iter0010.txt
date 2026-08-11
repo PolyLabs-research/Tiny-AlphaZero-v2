@@ -1,0 +1,10 @@
+suite=mate_in_2.epd n=200 m=16 c_visit=50 c_scale=1 sims=128
+  prior coverage @top-16         0.985  (197/200)
+  solved | considered            0.929  (183/197)
+  product                        0.915
+  measured gate                  0.915  (183/200)
+  prior top-1   coverage         0.625
+  prior top-8   coverage         0.945
+  prior top-16  coverage         0.985
+  prior top-32  coverage         1.000
+  median forcing-move rank       0

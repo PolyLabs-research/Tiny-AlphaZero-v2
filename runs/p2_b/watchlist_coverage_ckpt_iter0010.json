@@ -1,0 +1,36 @@
+{
+  "checkpoint": "runs/p2_b/ckpt_iter0010.pt",
+  "top_m": 16,
+  "positions": [
+    {
+      "id": "mate2_129",
+      "verdict_at_pin": "CAPABILITY",
+      "key_move": "Rb4",
+      "n_key_moves": 1,
+      "prior_rank": 23,
+      "considered_top_m": 16,
+      "in_considered_set": false,
+      "legal_moves": 34
+    },
+    {
+      "id": "mate2_165",
+      "verdict_at_pin": "COVERAGE",
+      "key_move": "Rb5",
+      "n_key_moves": 1,
+      "prior_rank": 4,
+      "considered_top_m": 16,
+      "in_considered_set": true,
+      "legal_moves": 32
+    },
+    {
+      "id": "mate2_166",
+      "verdict_at_pin": "COVERAGE",
+      "key_move": "Rb5",
+      "n_key_moves": 1,
+      "prior_rank": 6,
+      "considered_top_m": 16,
+      "in_considered_set": true,
+      "legal_moves": 36
+    }
+  ]
+}

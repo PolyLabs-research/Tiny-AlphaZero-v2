@@ -32,6 +32,7 @@ MUST_TRACK: list[str] = [
     "runs/data/*/meta.json",
     "runs/*/metrics.jsonl",
     "runs/*/ladder.jsonl",  # the anchor ladder IS the M3 verdict
+    "runs/p2_b/annotations.jsonl",  # why a timing row is anomalous
     "runs/*/config.yaml",  # the resolved config a run's rows are read against
     "tests/suites/*.epd",
     "TRAINING_STRATEGY.md",

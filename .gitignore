@@ -26,6 +26,13 @@ runs/**
 !runs/**/triage_mate2_*.json
 !runs/**/diagnose_mate2_*.txt
 !runs/**/s4_flip_*.json
+# Perturbations carry their cause. annotations.jsonl explains blips in a run's
+# own timing series -- a GPU-contention window, a manual intervention -- keyed by
+# iteration, so iterations.jsonl can be read six weeks out without the reader
+# having to reconstruct why one row is slow. Same family as calibration_note and
+# the ladder's role field: the record answers its own obvious question.
+!runs/**/annotations.jsonl
+!runs/**/watchlist_coverage_*.json
 
 # Root-scoped: a bare `data/` would also swallow runs/data/ as a directory ignore,
 # and git cannot descend into an ignored directory to reach the negations above.
