@@ -31,6 +31,8 @@ MUST_TRACK: list[str] = [
     "runs/ANCHORS.sha256",
     "runs/data/*/meta.json",
     "runs/*/metrics.jsonl",
+    "runs/*/ladder.jsonl",  # the anchor ladder IS the M3 verdict
+    "runs/*/config.yaml",  # the resolved config a run's rows are read against
     "tests/suites/*.epd",
     "TRAINING_STRATEGY.md",
     "PROGRESS.md",
@@ -44,6 +46,11 @@ MUST_TRACK: list[str] = [
 MUST_REACH: list[str] = [
     "runs/p2_a/iterations.jsonl",  # a Phase 2 campaign's only durable narrative
     "runs/p2_a/provenance.json",  # the SHA and fingerprint that make it readable
+    "runs/p2_b/ladder.jsonl",  # p2_b's passes, before p2_b has run
+    "runs/p2_b/config.yaml",
+    "runs/p2_a/ladder_diagnostic.jsonl",  # diagnostic passes, excluded from a verdict
+    "runs/p2_a/triage_mate2_iter0050.json",  # the decomposition RUNLOG-p2_a cites
+    "runs/p2_a/s4_flip_iter0050.json",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that

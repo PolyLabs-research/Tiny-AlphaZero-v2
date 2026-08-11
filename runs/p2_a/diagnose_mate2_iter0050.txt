@@ -1,0 +1,12 @@
+/home/michael/Documents/dev/chess/src/tinyalphazero/model.py:97: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  self.transformer = nn.TransformerEncoder(
+suite=mate_in_2.epd n=200 m=16 c_visit=50 c_scale=1 sims=128
+  prior coverage @top-16         0.890  (178/200)
+  solved | considered            0.933  (166/178)
+  product                        0.830
+  measured gate                  0.830  (166/200)
+  prior top-1   coverage         0.250
+  prior top-8   coverage         0.755
+  prior top-16  coverage         0.890
+  prior top-32  coverage         1.000
+  median forcing-move rank       2

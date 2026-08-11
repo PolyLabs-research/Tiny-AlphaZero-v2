@@ -13,6 +13,19 @@ runs/**
 !runs/**/iterations.jsonl
 !runs/**/provenance.json
 !runs/ANCHORS.sha256
+# Chunk 10 + the M3 close-out (2026-08-11): the ladder log is the *verdict*, and
+# it was ignored — RUNLOG-p2_a.md cites every one of these files as its evidence
+# and none of them would have entered the repo. Same argument as iterations.jsonl
+# and the same failure mode as the four incidents in test_gitignore_musttrack.py:
+# a record the project depends on, silently unversioned. 104 KB for all of p2_a's.
+# config.yaml is here because a run's *resolved* config is what makes its rows
+# reproducible; the campaign reads this copy, not configs/.
+!runs/**/ladder.jsonl
+!runs/**/ladder_diagnostic.jsonl
+!runs/**/config.yaml
+!runs/**/triage_mate2_*.json
+!runs/**/diagnose_mate2_*.txt
+!runs/**/s4_flip_*.json
 
 # Root-scoped: a bare `data/` would also swallow runs/data/ as a directory ignore,
 # and git cannot descend into an ignored directory to reach the negations above.

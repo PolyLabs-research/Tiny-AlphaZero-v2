@@ -1,0 +1,8 @@
+{
+  "git_sha": "fce3777",
+  "config_fingerprint": "f8588828d1b65edacf19881272cc98494e2ebd1ccd348ccbf3c2398ab5236a4a",
+  "torch": "2.12.1+rocm7.2",
+  "device": "cuda",
+  "device_name": "AMD Radeon 8060S",
+  "init_from": "runs/phase1_anchor.pt"
+}

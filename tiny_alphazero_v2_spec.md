@@ -314,10 +314,27 @@ Memory is a non-issue by design (~1.3GB Phase 1 data, ~350MB replay, model is me
 | M0 | Encoding + move codec + tests | All §9.4 property tests green; Markov invariant fuzzed over ≥ 1M positions |
 | M1 | Model + Phase 1 pipeline | §5 acceptance criteria; Phase 1 wall-clock ≤ 1h |
 | M2 | MCTS (array tree, Gumbel, batched leaves) | §6.4 gates; ≥ 3K sims/sec benchmark |
-| M3 | Phase 2 loop + anchor ladder | Golden mini-run in CI; a 24h run shows monotone Elo vs Phase 1 anchor with non-overlapping CIs between start and end; **and mate-in-2 ≥ 0.95 at 128 sims, evaluation profile, on the frozen gate suite** (no-regress — already met at entry: 0.985 with anchor v2, 2026-08-09) |
+| M3 | Phase 2 loop + anchor ladder | Golden mini-run in CI; a 24h run shows Elo vs the Phase 1 anchor higher at the end than at the start with non-overlapping CIs between the first and last passes (*reworded — erratum 7*); **and mate-in-2 ≥ 0.95 at 128 sims, evaluation profile, on the frozen gate suite** (no-regress — already met at entry: 0.985 with anchor v2, 2026-08-09); and value ECE < 0.15 (plan chunk 12) |
 | M4 | Scale run + write-up | ≥ 5-day run; beats Stockfish skill 0 with CI clear of 50%; Gumbel-vs-PUCT ablation at equal sims documented |
 
 M3's 24h criterion is the real go/no-go: v1 never had a defensible "is it actually improving" measurement, and everything in this spec ultimately serves making that one plot trustworthy.
+
+> ### Erratum 7 (2026-08-11) — "monotone Elo" is not a measurable demand on this ladder; the endpoint-CI requirement is what M3 and M4 mean
+>
+> **Reworded.** M3's Elo clause reads "a 24h run shows monotone Elo vs Phase 1 anchor with non-overlapping CIs between start and end". Strike *monotone*. The clause is:
+>
+> > a 24h run shows Elo vs the Phase 1 anchor higher at the end than at the start, with non-overlapping 95% CIs between the first and last ladder passes.
+>
+> M4's ≥5-day criterion inherits the same reading.
+>
+> **Why.** Two independent reasons, both measured in `RUNLOG-p2_a.md`:
+>
+> 1. **The rung quantizes.** Elo is a deterministic function of match score, so at the top of a 200-game anchor rung the achievable values form a coarse lattice: 193/200 → +576.2, 198/200 → +798.2, 199/200 → +919.5, 200/200 → clamped at +1040.4. One game is worth ~120 Elo there. p2_a's passes at iterations 20 and 50 are *the identical row* (+919.5, same CI) because both are 199W/0D/1L. A monotonicity test over a series whose steps are single games is a test of sampling noise.
+> 2. **Monotonicity over a sampled series is not the property anyone wants.** p2_a went +372.2 → +919.5 → +798.2 → +576.2 → +919.5. Read as monotonicity: fail. Read as "did it improve, defensibly": pass, and by a wide margin — the endpoint CIs `[+301.3, +463.2]` and `[+726.9, +1040.4]` are disjoint. The second reading is the one §11's own gloss describes ("is it actually improving"), and it is the one the paired bootstrap in §8 was built to support.
+>
+> **This erratum does not change p2_a's verdict.** M3 fails on mate-in-2 (0.830 against a ≥0.95 clause and a 0.985 entry baseline) under either wording, which is what makes it safe to reword the Elo clause after seeing the data rather than a way of grading to the outcome. The literal FAIL against the original wording stays recorded in `RUNLOG-p2_a.md` §1.
+>
+> **What replaces the intent.** Monotonicity was reaching for "no collapse mid-run", which the reworded clause does not cover. That belongs to the trajectory, not to the gate: ladder passes at ≤10-iteration cadence are the record, and a mid-run drop is a finding to explain in the RUNLOG — as p2_a's dip to +576.2 at iteration 40 is — not an automatic gate failure.
 
 ---
 
