@@ -1,8 +1,15 @@
 # Pre-registration — p2_b: anchor rehearsal
 
-**Written before launch. Not edited after.** Anything learned during the run goes
-in `RUNLOG-p2_b.md`, not here. The point of this file is that the decision rules
-existed before the data did.
+**Written before launch. Sections 1–8 not edited after.** Anything learned during
+the run goes in `RUNLOG-p2_b.md`, not here. The point of this file is that the
+decision rules existed before the data did.
+
+**Amendment policy.** A rule may be added after launch *only* for a measurement
+that has not yet produced any data, and only as a dated addendum that records the
+run state at the time of writing. That preserves the property this file exists
+for — a rule precedes the data it governs — while allowing an instrument nobody
+had yet to be calibrated. A rule may never be added, weakened, or reworded for a
+measurement already taken. See Addendum 1.
 
 - **Lever:** `train.rehearsal_frac: 0.05`, split `mate1 0.02 / mate2 0.03`
 - **Everything else:** inherited from `runs/p2_a/config.yaml` verbatim, enforced by
@@ -88,3 +95,62 @@ Listed so they are checked rather than discovered:
 - Any config field other than the three `rehearsal_*` ones differing from p2_a.
   Guarded by `test_p2b_config_is_the_brief`.
 - A fresh league pool against warm-started weights. Avoided by `--seed-pool`.
+
+---
+
+## Addendum 1 (2026-08-11 15:30) — the Stockfish rung-climb
+
+**Run state at the time of writing:** p2_b at iteration 4 of 20, 5 checkpoints on
+disk, `runs/p2_b/ladder.jsonl` does not yet exist, and **no Stockfish match has
+been played against any checkpoint of this run or any other.** Stockfish 16 was
+installed at 15:15 today, after launch; its rungs were therefore absent from
+p2_a's entire ladder and from p2_b's inline `--ladder-every` passes, which were
+fixed at `random,greedy,phase1` when the process started.
+
+This addendum governs a measurement with zero existing data. It adds nothing to
+and changes nothing about E1–E7 or the decision rules above.
+
+### What will be run
+
+Offline, after p2_b completes, appending to `runs/p2_b/ladder.jsonl` at seed 42
+and `runs/p2_b/config.yaml` — the same footing as every other pass.
+`logschema.completed_matchups` keys on `(checkpoint, anchor)`, so the three rungs
+already logged for each checkpoint are skipped and only the Stockfish matchup runs.
+
+Checkpoints: **0000, 0010, 0020.** Three points, not two. `ckpt_iter0000.pt` is
+p2_b's warm-start weights (p2_a's endpoint), so 0000 → 0020 is this run's own
+delta on an unsaturated rung; 0010 is what makes it a trajectory rather than a
+slope with no shape. The offline cost is minutes.
+
+### The rung-climb
+
+Start at `stockfish:0` (skill 0, 10,000 nodes — the §8 default). If the **0020**
+row comes back with `elo_clamped: true`, climb to `stockfish:3`, and if that
+clamps, to `stockfish:5`, stopping at the first skill that yields an unclamped
+reading. Judged on 0020 because it is the strongest checkpoint: a rung that
+resolves it resolves the weaker two.
+
+**Climbing rungs selects the instrument's range, not the result.** The choice
+being made is which opponent can resolve the measurement, not which measurement
+flatters the model. Two conditions keep that true, and both are binding:
+
+1. **Every rung run is logged, clamped rows included.** No row is discarded,
+   re-run, or omitted from `RUNLOG-p2_b.md` because it saturated. A clamped row is
+   a real finding about the rung, and the sequence of clamps is itself the
+   calibration record.
+2. **The climb is one-directional and stops at the first unclamped reading.** No
+   descending to a weaker rung, and no continuing past the first skill that
+   resolves in order to find a nicer number.
+
+The rule exists because the outcome is foreseeable: skill 0 at 10K nodes is not a
+strong opponent, and a net measuring +919 over its own Phase 1 anchor may well
+clamp it on the first pass. Written now it is calibration; written after seeing a
+clamp it would be indistinguishable from shopping, whatever the intent.
+
+### What this does not do
+
+No M3 or M4 gate reads a Stockfish rung. M4's criterion ("beats Stockfish skill 0
+with CI clear of 50%") is a *separate* future measurement at a defined skill and
+is not what this addendum authorises — the climb is diagnostic instrumentation for
+p2_b's write-up, and a climbed rung can never be substituted for M4's fixed
+skill-0 requirement.

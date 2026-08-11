@@ -1,0 +1,9 @@
+{
+  "git_sha": "8a19cbf",
+  "config_fingerprint": "e2bb07c185f5dbdce960299e5df76ca36b8b0e33cd77dfd73ac730285dae8c38",
+  "torch": "2.12.1+rocm7.2",
+  "device": "cuda",
+  "device_name": "AMD Radeon 8060S",
+  "init_from": "runs/p2_a/ckpt_iter0050.pt",
+  "seed_pool_from": "runs/p2_a"
+}

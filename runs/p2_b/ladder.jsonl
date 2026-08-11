@@ -1,0 +1,1 @@
+{"row_type": "match", "checkpoint": "runs/p2_b/ckpt_iter0005.pt", "iteration": 5, "anchor": "random", "games": 200, "wins": 200, "draws": 0, "losses": 0, "score": 1.0, "elo": 1040.39, "elo_lo": 1040.39, "elo_hi": 1040.39, "elo_clamped": true, "draw_rate": 0.0, "mean_plies": 37.94, "match_sims": 48, "max_plies": 300, "seconds": 111.28, "git_sha": "8a19cbf", "schema_version": 1}
