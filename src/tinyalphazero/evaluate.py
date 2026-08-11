@@ -518,6 +518,8 @@ def run_ladder_pass(
     sims: int | None = None,
     stockfish: str = "",
     suites: bool = True,
+    role: str = "protocol",
+    produced: str = "offline",
     on_event: Any = None,
 ) -> list[dict]:
     """One complete ladder pass over ``ckpt``; returns the rows it appended.
@@ -618,6 +620,8 @@ def run_ladder_pass(
             max_plies=cfg.eval.eval_match_max_plies,
             seconds=round(result.seconds, 2),
             git_sha=_git_sha(),
+            role=role,
+            produced=produced,
         )
         logschema.append_ladder_row(out, row)
         rows.append(row)
@@ -678,6 +682,8 @@ def run_ladder_pass(
         book_move1_entropy=round(entropy, 4),
         seconds=round(time.perf_counter() - t0, 2),
         git_sha=_git_sha(),
+        role=role,
+        produced=produced,
     )
     logschema.append_ladder_row(out, row)
     rows.append(row)

@@ -384,6 +384,8 @@ class Phase2Run:
             anchor_ckpt=self.ladder_anchor_ckpt,
             iteration=iteration,
             seed=self.state.seed,
+            role=logschema.ROLE_PROTOCOL,
+            produced=logschema.PRODUCED_INLINE,
             on_event=self.on_ladder_event,
         )
 

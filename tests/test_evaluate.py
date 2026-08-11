@@ -584,3 +584,67 @@ def test_generator_scripts_are_runnable() -> None:
             cwd=REPO,
         )
         assert r.returncode == 0, r.stderr[-2000:]
+
+
+# ---------------------------------------------------------------------------
+# Row roles (schema_version 2)
+# ---------------------------------------------------------------------------
+
+
+def test_ladder_rows_carry_role_and_provenance() -> None:
+    """A row states what it is for, so a reader cannot mistake one kind for another.
+
+    The failure this prevents is not hypothetical: p2_b's Stockfish rungs are
+    climbed until one resolves unclamped, and M4's criterion is a match against a
+    *fixed* skill 0. Both land in the same log. A skill-5 diagnostic row that
+    announces itself cannot be read into M4's gate six weeks later by someone who
+    never opened the pre-registration.
+    """
+    from tinyalphazero import logschema
+
+    base = {
+        "checkpoint": "runs/x/ckpt_iter0001.pt",
+        "iteration": 1,
+        "anchor": "stockfish_s5",
+        "games": 200,
+        "wins": 100,
+        "draws": 0,
+        "losses": 100,
+        "score": 0.5,
+        "elo": 0.0,
+        "elo_lo": -50.0,
+        "elo_hi": 50.0,
+        "elo_clamped": False,
+        "draw_rate": 0.0,
+        "mean_plies": 60.0,
+        "match_sims": 48,
+        "max_plies": 300,
+        "seconds": 1.0,
+        "git_sha": "abc",
+    }
+    default = logschema.ladder_match_row(**base)
+    assert default["role"] == logschema.ROLE_PROTOCOL
+    assert default["produced"] == logschema.PRODUCED_OFFLINE
+
+    diag = logschema.ladder_match_row(
+        **base, role=logschema.ROLE_DIAGNOSTIC, produced=logschema.PRODUCED_INLINE
+    )
+    assert diag["role"] == "diagnostic"
+
+    with pytest.raises(ValueError, match="role"):
+        logschema.ladder_match_row(**base, role="whatever-i-felt-like")
+    with pytest.raises(ValueError, match="produced"):
+        logschema.ladder_match_row(**base, produced="somehow")
+
+
+def test_pre_v2_rows_report_no_role_rather_than_a_guessed_one() -> None:
+    """Absence carries a reason: an old row's role lives in its file name, not in it.
+
+    Defaulting a pre-v2 row to `protocol` would silently relabel every row in
+    `ladder_diagnostic.jsonl` as something a gate may read — the exact misreading
+    the field was added to prevent, introduced by the field itself.
+    """
+    from tinyalphazero import logschema
+
+    assert logschema.ladder_role({"row_type": "match", "schema_version": 1}) is None
+    assert logschema.ladder_role({"role": "diagnostic"}) == "diagnostic"

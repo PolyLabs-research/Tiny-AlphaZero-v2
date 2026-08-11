@@ -83,6 +83,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--no-suites", action="store_true", help="Matches only; skip the eval row entirely"
     )
+    ap.add_argument(
+        "--role",
+        choices=["protocol", "diagnostic"],
+        default="protocol",
+        help="What the rows are for. `protocol` is a pass a gate or verdict may "
+        "read; `diagnostic` is instrumentation no gate ever reads -- an off-cadence "
+        "checkpoint, a climbed Stockfish rung. It is stamped into every row this "
+        "pass writes, so the distinction travels with the data instead of living "
+        "in a document the reader has to find.",
+    )
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
@@ -102,6 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         sims=args.sims,
         stockfish=args.stockfish,
         suites=not args.no_suites,
+        role=args.role,
+        produced="offline",
         on_event=report,
     )
     return 0

@@ -38,7 +38,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 #: Fields whose value may legitimately be ``null`` in the JSONL.
 NULLABLE = frozenset({"false_resign_rate", "mean_plies_decisive"})
@@ -181,6 +181,28 @@ def _append(path: str | Path, row: dict[str, Any]) -> None:
 MATCH_ROW = "match"
 EVAL_ROW = "eval"
 
+# What a row is *for*, and how it was produced. Two axes, deliberately not one
+# enum: p2_a's passes at iterations 30/40/50 were backfilled offline and are
+# nonetheless the protocol passes M3 was judged on, so "backfill" is a statement
+# about provenance and "protocol" a statement about standing. Collapsing them
+# would have forced the five-pass record to describe three of its own rows as
+# something other than what they are.
+#
+# `role` is the one that stops a misreading. A diagnostic row — the 0048 pass, a
+# climbed Stockfish rung — announces that no gate reads it, in the row, where a
+# future reader meets it, rather than in a PREREG paragraph they may never open.
+ROLE_PROTOCOL = "protocol"  # a pass a gate or verdict may read
+ROLE_DIAGNOSTIC = "diagnostic"  # instrumentation; no gate reads it, ever
+ROLES = frozenset({ROLE_PROTOCOL, ROLE_DIAGNOSTIC})
+
+PRODUCED_INLINE = "inline"  # by the campaign's own --ladder-every hook
+PRODUCED_OFFLINE = "offline"  # by scripts/eval_ladder.py against a stored checkpoint
+PRODUCED = frozenset({PRODUCED_INLINE, PRODUCED_OFFLINE})
+
+#: Rows written before schema_version 2 carry neither field. They are not
+#: silently defaulted on read: :func:`ladder_role` states what absence means and
+#: where the answer actually lives for those files.
+
 #: Nullable in a match row: an anchor that could not be run leaves the CI absent
 #: rather than zero, and ``iteration`` is None for a standalone evaluation of a
 #: checkpoint that is not part of a campaign (the Phase 1 anchor, for instance).
@@ -216,6 +238,8 @@ class LadderMatchRow:
     seconds: float
     git_sha: str
     schema_version: int = SCHEMA_VERSION
+    role: str = ROLE_PROTOCOL
+    produced: str = PRODUCED_OFFLINE
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -253,6 +277,8 @@ class LadderEvalRow:
     seconds: float
     git_sha: str
     schema_version: int = SCHEMA_VERSION
+    role: str = ROLE_PROTOCOL
+    produced: str = PRODUCED_OFFLINE
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -272,6 +298,10 @@ def _check(row: dict[str, Any], declared: tuple[str, ...], nullable: frozenset[s
         raise ValueError(f"ladder row has null in non-nullable field(s): {nulls}")
     if row["schema_version"] != SCHEMA_VERSION:
         raise ValueError(f"ladder row schema_version {row['schema_version']} != {SCHEMA_VERSION}")
+    if row["role"] not in ROLES:
+        raise ValueError(f"ladder row role {row['role']!r} not in {sorted(ROLES)}")
+    if row["produced"] not in PRODUCED:
+        raise ValueError(f"ladder row produced {row['produced']!r} not in {sorted(PRODUCED)}")
 
 
 def validate_ladder(row: dict[str, Any]) -> None:
@@ -309,6 +339,20 @@ def append_ladder_row(path: str | Path, row: dict[str, Any]) -> None:
     """
     validate_ladder(row)
     _append(path, row)
+
+
+def ladder_role(row: dict[str, Any]) -> str | None:
+    """``row``'s role, or None if it predates the field (schema_version < 2).
+
+    None is returned rather than defaulted to ``protocol``, because the two
+    pre-v2 files answer differently and neither answer is in the row: every row
+    in a campaign's ``ladder.jsonl`` is a protocol pass, and every row in
+    ``ladder_diagnostic.jsonl`` is diagnostic — the distinction lived in the file
+    name before it lived in the row. A caller that needs a role for an old row
+    must therefore say which file it came from, which is exactly the thought this
+    field exists to make unnecessary going forward.
+    """
+    return row.get("role")
 
 
 def completed_matchups(path: str | Path) -> set[tuple[str, str]]:
