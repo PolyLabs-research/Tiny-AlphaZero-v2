@@ -579,14 +579,27 @@ def run_ladder_pass(
     rows: list[dict] = []
     anchor_traces: list[GameTrace] = []
     for spec in [s for s in anchors.split(",") if s]:
-        if (ckpt_key, spec) in done:
-            emit("skip", {"anchor": spec, "reason": "already in the log"})
-            continue
+        # Build first, then test resumability on the opponent's *name*. Rows record
+        # ``result.anchor``, which is the name, and for every anchor but one the
+        # name and the spec are the same string — so keying the skip on the spec
+        # worked for random/greedy/phase1 and silently failed for the family whose
+        # spec carries a parameter: "stockfish:0" never matches the logged
+        # "stockfish_s0", so a re-run recomputed a 5-minute matchup and appended a
+        # duplicate row instead of skipping. Found 2026-08-12 alongside the
+        # unreleased-engine bug, on the same first-ever Stockfish rung.
+        # Construction is cheap for every opponent (checkpoints and engines both
+        # load lazily), so building before the check costs nothing.
         opponent = build_opponent(
             spec, anchor_ckpt=anchor_ckpt, sims=sims, device=str(device), stockfish=stockfish
         )
         if opponent is None:
             emit("skip", {"anchor": spec, "reason": "no Stockfish binary"})
+            continue
+        if (ckpt_key, opponent.name) in done:
+            emit("skip", {"anchor": opponent.name, "reason": "already in the log"})
+            closer = getattr(opponent, "close", None)
+            if callable(closer):
+                closer()
             continue
 
         try:

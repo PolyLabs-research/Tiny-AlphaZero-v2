@@ -704,3 +704,87 @@ def test_ladder_pass_closes_a_subprocess_owning_opponent() -> None:
         )
     # Released even though the matchup raised: the finally clause is the point.
     assert closed == ["stockfish_s0"], "the opponent's subprocess was never released"
+
+
+def test_stockfish_rung_is_resumable_by_name_not_spec() -> None:
+    """A logged Stockfish matchup is skipped on re-run, like every other anchor.
+
+    Regression for 2026-08-12: rows record `result.anchor` (the opponent's *name*)
+    while the skip set was keyed on the *spec* from the CLI. For random, greedy
+    and phase1 those strings are identical, so resumability worked everywhere it
+    was ever exercised. "stockfish:0" resolves to a row named "stockfish_s0", so
+    the one anchor family whose spec carries a parameter silently recomputed a
+    five-minute matchup and appended a duplicate row.
+
+    This is what made the "surgical by construction" claim about backfilling onto
+    a live ladder true for three rungs and false for the fourth.
+    """
+    from tinyalphazero import evaluate as ev
+    from tinyalphazero import logschema
+
+    played: list[str] = []
+
+    class _Opp:
+        name = "stockfish_s0"
+        kind = "move"
+
+        def choose(self, board, rng):  # noqa: ANN001, ARG002
+            raise AssertionError("a logged matchup must not be replayed")
+
+        def close(self) -> None:
+            pass
+
+    def _spy_play_match(*_a, **_k):
+        played.append("ran")
+        raise AssertionError("a logged matchup must not be replayed")
+
+    cfg = load_config(None)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "ladder.jsonl"
+        logschema.append_ladder_row(
+            out,
+            logschema.ladder_match_row(
+                checkpoint=str(Path(tmp) / "ckpt.pt"),
+                iteration=0,
+                anchor="stockfish_s0",  # as a real row records it
+                games=200,
+                wins=3,
+                draws=6,
+                losses=191,
+                score=0.03,
+                elo=-603.9,
+                elo_lo=-759.0,
+                elo_hi=-502.6,
+                elo_clamped=False,
+                draw_rate=0.03,
+                mean_plies=79.0,
+                match_sims=48,
+                max_plies=300,
+                seconds=294.0,
+                git_sha="abc",
+                role=logschema.ROLE_DIAGNOSTIC,
+            ),
+        )
+        with (
+            mock.patch("tinyalphazero.opponents.build_opponent", lambda *a, **k: _Opp()),
+            mock.patch.object(ev, "play_match", _spy_play_match),
+            mock.patch(
+                "tinyalphazero.train.load_checkpoint", lambda *a, **k: (mock.MagicMock(), {})
+            ),
+            mock.patch(
+                "tinyalphazero.mcts.batch_runner.torch_evaluate_batch", lambda *a, **k: None
+            ),
+            mock.patch(
+                "tinyalphazero.mcts.search.network_evaluator_from_net", lambda *a, **k: None
+            ),
+        ):
+            rows = ev.run_ladder_pass(
+                Path(tmp) / "ckpt.pt",
+                cfg,
+                "cpu",
+                out=out,
+                anchors="stockfish:0",  # the spec, which is NOT the logged name
+                suites=False,
+            )
+    assert played == [], "the already-logged stockfish matchup was replayed"
+    assert rows == []
