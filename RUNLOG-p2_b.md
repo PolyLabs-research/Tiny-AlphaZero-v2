@@ -213,6 +213,56 @@ evidence a p2_c design has to answer before spending a run on z/q.
 
 ---
 
+## 7b. Semantic residual — what the 14 failures actually are
+
+The gate scores one thing: did the chosen move force mate *in 2*. A move that
+forces mate in 3 scores identically to one that throws the win away, and the two
+say opposite things about the value head. Since p2_c's lever is aimed at value
+quality, the residual it aims at has to be described before it is spent on.
+
+Per failing position, the eval-profile search was replayed, the move it actually
+played taken, and that move tested for a forced mate at depth 3
+(`semantic_residual_ckpt_iter0020.json`):
+
+| id | verdict | played | q̂ | classification |
+|---|---|---|---|---|
+| mate2_054 | CAPABILITY | Bxc2 | 0.9850 | **SLOWER_FORCED_WIN** |
+| mate2_091 | CAPABILITY | Qe6+ | 0.9999 | **SLOWER_FORCED_WIN** |
+| mate2_195 | CAPABILITY | f4+ | 1.0000 | **SLOWER_FORCED_WIN** |
+| mate2_126 | COVERAGE | Nxe8 | — | **SLOWER_FORCED_WIN** |
+| mate2_009 | CAPABILITY | Qd5 | 0.9505 | GENUINE_MISS |
+| mate2_067 | CAPABILITY | fxe2 | 0.5754 | GENUINE_MISS |
+| mate2_124 | CAPABILITY | f5 | 0.9526 | GENUINE_MISS |
+| mate2_125 | CAPABILITY | Ke1 | 0.4997 | GENUINE_MISS |
+| mate2_127 | CAPABILITY | f5 | 0.9669 | GENUINE_MISS |
+| mate2_128 | CAPABILITY | f5 | 0.9721 | GENUINE_MISS |
+| mate2_165 | CAPABILITY | Rd7+ | 0.9999 | GENUINE_MISS |
+| mate2_166 | CAPABILITY | Bxg3 | 0.9998 | GENUINE_MISS |
+| mate2_129 | COVERAGE | Nd5 | — | GENUINE_MISS |
+| mate2_084 | COVERAGE | Be7 | — | GENUINE_MISS |
+
+**4 of 14 are forced wins one move slower; 10 are genuine misses.** The gate does
+not move — 0.930 stands — but its residual is 10 positions the model gets wrong,
+not 14.
+
+**Mechanism.** Estimated wins carry no mate-distance ordering; only *proven* ones
+do. A search that never expands the key move's full reply set cannot know that
+one winning line is shorter than another, so among high-q̂ failures where it lands
+is close to arbitrary — three landed on slower forced wins, eight on genuine
+misses. That is the signature of missing proof, not of missing conviction.
+
+It also sharpens §7's caution rather than softening it. `mate2_165` and
+`mate2_166` hold q̂ ≈ 0.9999 on the key child and play moves that are not forced
+wins *at any depth ≤ 3*. Near-certain conviction on the right child is not
+converting into even a slow win, which is hard to attribute to the value target.
+
+**`p2_d` lever parked, with this table as its motivating evidence:**
+proof-directed reply expansion — spending the key edge's visits on completing its
+reply set rather than on breadth — is what turns an estimated win into a proven,
+distance-ordered one.
+
+---
+
 ## 8. Two defects, found because a Stockfish rung ran for the first time
 
 Both in the path M4's criterion depends on. Both had been latent since chunk 10.

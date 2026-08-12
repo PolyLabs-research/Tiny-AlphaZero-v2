@@ -33,6 +33,7 @@ runs/**
 # the ladder's role field: the record answers its own obvious question.
 !runs/**/annotations.jsonl
 !runs/**/watchlist_coverage_*.json
+!runs/**/semantic_residual_*.json
 
 # Root-scoped: a bare `data/` would also swallow runs/data/ as a directory ignore,
 # and git cannot descend into an ignored directory to reach the negations above.

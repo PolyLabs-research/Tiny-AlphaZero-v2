@@ -1,0 +1,149 @@
+{
+  "checkpoint": "runs/p2_b/ckpt_iter0020.pt",
+  "counts": {
+    "SLOWER_FORCED_WIN": 4,
+    "GENUINE_MISS": 10
+  },
+  "positions": [
+    {
+      "id": "mate2_009",
+      "verdict": "CAPABILITY",
+      "played": "Qd5",
+      "key_edge_q": 0.9505,
+      "key_edge_visits": 2,
+      "sims_needed_for_proof": 3,
+      "forces_mate_in_3": false,
+      "classification": "GENUINE_MISS"
+    },
+    {
+      "id": "mate2_054",
+      "verdict": "CAPABILITY",
+      "played": "Bxc2",
+      "key_edge_q": 0.985,
+      "key_edge_visits": 30,
+      "sims_needed_for_proof": 8,
+      "forces_mate_in_3": true,
+      "classification": "SLOWER_FORCED_WIN"
+    },
+    {
+      "id": "mate2_067",
+      "verdict": "CAPABILITY",
+      "played": "fxe2",
+      "key_edge_q": 0.5754,
+      "key_edge_visits": 2,
+      "sims_needed_for_proof": 3,
+      "forces_mate_in_3": false,
+      "classification": "GENUINE_MISS"
+    },
+    {
+      "id": "mate2_084",
+      "verdict": "COVERAGE",
+      "played": "Be7",
+      "key_edge_q": null,
+      "key_edge_visits": null,
+      "sims_needed_for_proof": null,
+      "forces_mate_in_3": false,
+      "classification": "GENUINE_MISS"
+    },
+    {
+      "id": "mate2_091",
+      "verdict": "CAPABILITY",
+      "played": "Qe6+",
+      "key_edge_q": 0.9999,
+      "key_edge_visits": 14,
+      "sims_needed_for_proof": 9,
+      "forces_mate_in_3": true,
+      "classification": "SLOWER_FORCED_WIN"
+    },
+    {
+      "id": "mate2_124",
+      "verdict": "CAPABILITY",
+      "played": "f5",
+      "key_edge_q": 0.9526,
+      "key_edge_visits": 14,
+      "sims_needed_for_proof": 17,
+      "forces_mate_in_3": false,
+      "classification": "GENUINE_MISS"
+    },
+    {
+      "id": "mate2_125",
+      "verdict": "CAPABILITY",
+      "played": "Ke1",
+      "key_edge_q": 0.4997,
+      "key_edge_visits": 2,
+      "sims_needed_for_proof": 18,
+      "forces_mate_in_3": false,
+      "classification": "GENUINE_MISS"
+    },
+    {
+      "id": "mate2_126",
+      "verdict": "COVERAGE",
+      "played": "Nxe8",
+      "key_edge_q": null,
+      "key_edge_visits": null,
+      "sims_needed_for_proof": null,
+      "forces_mate_in_3": true,
+      "classification": "SLOWER_FORCED_WIN"
+    },
+    {
+      "id": "mate2_127",
+      "verdict": "CAPABILITY",
+      "played": "f5",
+      "key_edge_q": 0.9669,
+      "key_edge_visits": 6,
+      "sims_needed_for_proof": 14,
+      "forces_mate_in_3": false,
+      "classification": "GENUINE_MISS"
+    },
+    {
+      "id": "mate2_128",
+      "verdict": "CAPABILITY",
+      "played": "f5",
+      "key_edge_q": 0.9721,
+      "key_edge_visits": 6,
+      "sims_needed_for_proof": 14,
+      "forces_mate_in_3": false,
+      "classification": "GENUINE_MISS"
+    },
+    {
+      "id": "mate2_129",
+      "verdict": "COVERAGE",
+      "played": "Nd5",
+      "key_edge_q": null,
+      "key_edge_visits": null,
+      "sims_needed_for_proof": null,
+      "forces_mate_in_3": false,
+      "classification": "GENUINE_MISS"
+    },
+    {
+      "id": "mate2_165",
+      "verdict": "CAPABILITY",
+      "played": "Rd7+",
+      "key_edge_q": 0.9999,
+      "key_edge_visits": 6,
+      "sims_needed_for_proof": 7,
+      "forces_mate_in_3": false,
+      "classification": "GENUINE_MISS"
+    },
+    {
+      "id": "mate2_166",
+      "verdict": "CAPABILITY",
+      "played": "Bxg3",
+      "key_edge_q": 0.9998,
+      "key_edge_visits": 2,
+      "sims_needed_for_proof": 7,
+      "forces_mate_in_3": false,
+      "classification": "GENUINE_MISS"
+    },
+    {
+      "id": "mate2_195",
+      "verdict": "CAPABILITY",
+      "played": "f4+",
+      "key_edge_q": 1.0,
+      "key_edge_visits": 6,
+      "sims_needed_for_proof": 7,
+      "forces_mate_in_3": true,
+      "classification": "SLOWER_FORCED_WIN"
+    }
+  ]
+}
