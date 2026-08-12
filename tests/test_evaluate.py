@@ -14,14 +14,16 @@ the project, so what they are is asserted here rather than assumed.
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
+from unittest import mock
 
 import chess
 import numpy as np
 import pytest
 
 from tinyalphazero import logschema
-from tinyalphazero.config import Config
+from tinyalphazero.config import Config, load_config
 from tinyalphazero.evaluate import (
     _pairing,
     book_move1_entropy,
@@ -648,3 +650,57 @@ def test_pre_v2_rows_report_no_role_rather_than_a_guessed_one() -> None:
 
     assert logschema.ladder_role({"row_type": "match", "schema_version": 1}) is None
     assert logschema.ladder_role({"role": "diagnostic"}) == "diagnostic"
+
+
+def test_ladder_pass_closes_a_subprocess_owning_opponent() -> None:
+    """An opponent holding a subprocess is released when its matchup ends.
+
+    Regression for 2026-08-12: `StockfishOpponent.close()` shipped in chunk 10 and
+    was called by nothing. `chess.engine`'s transport thread is non-daemon, so the
+    first Stockfish rung ever run wrote its row correctly and then hung at
+    interpreter exit for seven hours. The measurement was never wrong; the process
+    simply would not end, and the chain behind it never advanced.
+
+    Asserted through `run_ladder_pass` rather than on the opponent, because the
+    defect was never in `close()` — it was in nobody calling it.
+    """
+    from tinyalphazero import evaluate as ev
+
+    closed: list[str] = []
+
+    class _FakeEngineOpponent:
+        name = "stockfish_s0"
+        kind = "move"
+
+        def choose(self, board, rng):  # noqa: ANN001, ARG002
+            moves = list(board.legal_moves)
+            return moves[int(rng.integers(len(moves)))]
+
+        def close(self) -> None:
+            closed.append(self.name)
+
+    def _fake_play_match(*_a, **_k):
+        raise RuntimeError("matchup blew up mid-play")
+
+    cfg = load_config(None)
+    # run_ladder_pass imports these inside the function, so they are patched at
+    # their source modules rather than on `evaluate`.
+    with (
+        mock.patch("tinyalphazero.opponents.build_opponent", lambda *a, **k: _FakeEngineOpponent()),
+        mock.patch.object(ev, "play_match", _fake_play_match),
+        mock.patch("tinyalphazero.train.load_checkpoint", lambda *a, **k: (mock.MagicMock(), {})),
+        mock.patch("tinyalphazero.mcts.batch_runner.torch_evaluate_batch", lambda *a, **k: None),
+        mock.patch("tinyalphazero.mcts.search.network_evaluator_from_net", lambda *a, **k: None),
+        tempfile.TemporaryDirectory() as tmp,
+        pytest.raises(RuntimeError, match="blew up"),
+    ):
+        ev.run_ladder_pass(
+            Path(tmp) / "ckpt.pt",
+            cfg,
+            "cpu",
+            out=Path(tmp) / "ladder.jsonl",
+            anchors="stockfish:0",
+            suites=False,
+        )
+    # Released even though the matchup raised: the finally clause is the point.
+    assert closed == ["stockfish_s0"], "the opponent's subprocess was never released"

@@ -589,16 +589,29 @@ def run_ladder_pass(
             emit("skip", {"anchor": spec, "reason": "no Stockfish binary"})
             continue
 
-        result = play_match(
-            batched,
-            opponent,
-            cfg,
-            sims=sims,
-            device=str(device),
-            openings=book,
-            seed=seed,
-            max_openings=max_openings,
-        )
+        try:
+            result = play_match(
+                batched,
+                opponent,
+                cfg,
+                sims=sims,
+                device=str(device),
+                openings=book,
+                seed=seed,
+                max_openings=max_openings,
+            )
+        finally:
+            # An opponent that owns a subprocess must be told to let go of it.
+            # StockfishOpponent.close() existed from chunk 10 and was called by
+            # nobody, which stayed invisible for exactly as long as no Stockfish
+            # rung had ever run: chess.engine's transport thread is non-daemon, so
+            # the *measurement* completes and is logged and then the interpreter
+            # hangs at exit, forever, holding the GPU-adjacent slot behind it.
+            # Found 2026-08-12 on the first Stockfish rung ever run, after it sat
+            # for 7 hours having already written its row.
+            closer = getattr(opponent, "close", None)
+            if callable(closer):
+                closer()
         if spec == "phase1":
             anchor_traces = result.traces
         row = logschema.ladder_match_row(
