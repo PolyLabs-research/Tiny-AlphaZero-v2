@@ -58,7 +58,9 @@ import numpy as np
 # v2 (chunk 9) adds mover_latest. Bumping rather than defaulting: a Phase 2 run
 # that silently read a chunk-8 ring would see mover_is_latest=0 everywhere and,
 # with train_on_pool_moves=False, sample from an empty set.
-VERSION = 2
+VERSION = 3
+#: Versions this build can open. Older rings lose the fields they predate.
+_READABLE_VERSIONS = frozenset({2, 3})
 MAX_POLICY_ENTRIES = 96
 SEQ_LEN = 72
 LEGAL_BYTES = 512
@@ -77,7 +79,19 @@ _FIELDS: dict[str, tuple[str, tuple[int, ...]]] = {
     "iteration": ("int32", ()),
     "resign_off": ("int8", ()),
     "mover_latest": ("int8", ()),
+    # Root completed-Q at the moment this position was searched, side-to-move
+    # perspective — the same convention as ``outcomes``. Version 3. Stored rather
+    # than recomputed because a recomputation would use whatever net asks later,
+    # not the net that actually searched: a different quantity wearing the same
+    # name. float16 is ample for a target bounded in [-1, 1].
+    "root_q": ("float16", ()),
 }
+
+#: Fields absent from rings written before their version. A ring that predates a
+#: field does not get a fabricated one — it reports the field as *absent*, and
+#: every consumer treats absence identically to a row that never had a search
+#: (a rehearsal row). One meaning, one code path.
+_FIELDS_SINCE: dict[str, int] = {"root_q": 3}
 
 
 def _pack_policy(
@@ -111,18 +125,27 @@ def _pack_policy(
 class ReplayBuffer:
     """Fixed-capacity ring over memmapped arrays."""
 
-    def __init__(self, path: Path, capacity: int, total_written: int) -> None:
+    def __init__(
+        self, path: Path, capacity: int, total_written: int, version: int = VERSION
+    ) -> None:
         self.path = Path(path)
         self.capacity = capacity
         self.total_written = total_written
+        self.version = version
         self._arr: dict[str, np.memmap] = {}
         for name, (dtype, shape) in _FIELDS.items():
+            if version < _FIELDS_SINCE.get(name, 0):
+                continue  # this ring predates the field; it is absent, not zero
             self._arr[name] = np.memmap(
                 self.path / f"{name}.dat",
                 dtype=dtype,
                 mode="r+",
                 shape=(capacity, *shape) if shape else (capacity,),
             )
+
+    def has(self, field: str) -> bool:
+        """Does this ring carry ``field``? False for a ring older than it."""
+        return field in self._arr
 
     # -- lifecycle -------------------------------------------------------
 
@@ -142,23 +165,32 @@ class ReplayBuffer:
         """Reopen an existing buffer, resuming its write position."""
         path = Path(path)
         meta = json.loads((path / "meta.json").read_text())
-        if meta.get("version") != VERSION:
-            raise ValueError(f"replay version {meta.get('version')} != {VERSION}")
-        return cls(path, int(meta["capacity"]), int(meta["total_written"]))
+        version = int(meta.get("version", 0))
+        # Older rings open read-and-write-able, minus the fields they predate.
+        # Refusing them would strand every campaign written before a field
+        # existed — including the two this project's results rest on — for no
+        # gain, because "absent" is already a meaning the batch schema carries.
+        if version not in _READABLE_VERSIONS:
+            raise ValueError(
+                f"replay version {version} is not readable; this build reads "
+                f"{sorted(_READABLE_VERSIONS)}"
+            )
+        return cls(path, int(meta["capacity"]), int(meta["total_written"]), version=version)
 
     @classmethod
     def open_or_create(cls, path: str | Path, capacity: int = 500_000) -> ReplayBuffer:
         return cls.open(path) if (Path(path) / "meta.json").exists() else cls.create(path, capacity)
 
     def _write_meta(self) -> None:
+        fields = {k: v[0] for k, v in _FIELDS.items() if self.has(k)}
         (self.path / "meta.json").write_text(
             json.dumps(
                 {
-                    "version": VERSION,
+                    "version": self.version,
                     "capacity": self.capacity,
                     "total_written": self.total_written,
                     "max_policy_entries": MAX_POLICY_ENTRIES,
-                    "fields": {k: v[0] for k, v in _FIELDS.items()},
+                    "fields": fields,
                 },
                 indent=2,
             )
@@ -186,6 +218,7 @@ class ReplayBuffer:
         iteration: int = 0,
         resign_disabled: bool = False,
         mover_is_latest: bool = True,
+        root_q: float = 0.0,
     ) -> None:
         i = self.total_written % self.capacity
         ft, pr, cls, n = _pack_policy(improved_policy)
@@ -198,6 +231,8 @@ class ReplayBuffer:
         self._arr["policy_pr"][i] = pr
         self._arr["promo_cls"][i] = cls
         self._arr["policy_n"][i] = n
+        if self.has("root_q"):
+            self._arr["root_q"][i] = root_q
         self._arr["iteration"][i] = iteration
         self._arr["resign_off"][i] = int(resign_disabled)
         self._arr["mover_latest"][i] = int(mover_is_latest)
@@ -311,6 +346,15 @@ class ReplayBuffer:
             "to_sq": torch.from_numpy(moves[:, 1]),
             "iteration": torch.from_numpy(self._arr["iteration"][idx].astype(np.int64)),
             "mover_is_latest": torch.from_numpy(self._arr["mover_latest"][idx].astype(np.int64)),
+            # Search-Q and whether it is real. A ring older than the field reports
+            # every row as unmasked rather than as 0.0, which is a legal value and
+            # would silently train the blend toward "the game was a draw".
+            "root_q": torch.from_numpy(
+                self._arr["root_q"][idx].astype(np.float32)
+                if self.has("root_q")
+                else np.zeros(batch_size, dtype=np.float32)
+            ),
+            "root_q_mask": torch.from_numpy(np.full(batch_size, self.has("root_q"), dtype=bool)),
         }
 
     def densify_one(self, i: int) -> np.ndarray:

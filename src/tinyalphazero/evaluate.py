@@ -362,6 +362,38 @@ def load_watchlist(path: str | Path = WATCHLIST) -> list[dict]:
     return json.loads(Path(path).read_text())
 
 
+def _live_watchlist_verdict(net: Any, board: chess.Board, suite_cfg: Any, solved: bool) -> str:
+    """Why this position fails *now*: SOLVED / COVERAGE / CAPABILITY.
+
+    COVERAGE means no key move is inside the prior's considered set, so search
+    never simulates one and no amount of value quality can help. CAPABILITY means
+    a key move was considered and lost anyway. BUG is not diagnosed here — it
+    needs the tree, which is ``scripts/triage_mate2.py``'s job; this is the two-way
+    split that the ladder can afford on every pass.
+    """
+    import torch
+
+    from tinyalphazero.encoding import encode_board
+    from tinyalphazero.mcts.search import move_solves
+
+    if solved:
+        return "SOLVED"
+    m = suite_cfg.resolved().gumbel_m
+    device_t = next(net.parameters()).device
+    tokens = torch.from_numpy(encode_board(board, 0).astype(np.int64)).unsqueeze(0)
+    with torch.no_grad():
+        logits = net(tokens.to(device_t)).policy_ft[0].reshape(4096)
+    legal = torch.zeros(4096, dtype=torch.bool, device=logits.device)
+    for mv in board.legal_moves:
+        legal[mv.from_square * 64 + mv.to_square] = True
+    order = torch.argsort(logits.masked_fill(~legal, float("-inf")), descending=True)
+    considered = {int(c) for c in order[:m].tolist()}
+    for mv in board.legal_moves:
+        if move_solves(board, mv, 2) and mv.from_square * 64 + mv.to_square in considered:
+            return "CAPABILITY"
+    return "COVERAGE"
+
+
 def watchlist_report(net: Any, evaluate_fn: Any, cfg: Config, device: str = "cpu") -> list[dict]:
     """Per watchlist position: does search solve it, and what is value on the key child?
 
@@ -401,10 +433,20 @@ def watchlist_report(net: Any, evaluate_fn: Any, cfg: Config, device: str = "cpu
             key_value = -float(value_scalar(wdl)[0])
             board.pop()
             break
+        # Live verdict. The pinned one from the watchlist file describes why the
+        # position failed on the day it was pinned, and printing it beside live
+        # numbers made every ladder row since chunk 10 assert a stale fact — it
+        # read "COVERAGE" for positions whose key move had since been re-promoted
+        # into the considered set, and it steered a reading before being caught
+        # (RUNLOG-p2_b §8). A field that looks live must be live; a field that is
+        # pinned must say so, which is what baseline_asof is for.
+        live = _live_watchlist_verdict(net, board, suite_cfg, bool(solved))
         out.append(
             {
                 "id": entry["id"],
-                "verdict": entry["verdict"],
+                "verdict": live,
+                "baseline_verdict": entry["verdict"],
+                "baseline_asof": entry.get("asof", "unknown"),
                 "solved": bool(solved),
                 "value_on_key_child": None if key_value is None else round(key_value, 4),
                 "baseline_value": entry["value_head_on_key_child"],
@@ -536,7 +578,7 @@ def run_ladder_pass(
     from tinyalphazero import logschema
     from tinyalphazero.mcts.batch_runner import torch_evaluate_batch
     from tinyalphazero.mcts.search import network_evaluator_from_net
-    from tinyalphazero.opponents import build_opponent
+    from tinyalphazero.opponents import anchor_identity, build_opponent
     from tinyalphazero.train import _git_sha, load_checkpoint
 
     ckpt = Path(ckpt)
@@ -578,6 +620,7 @@ def run_ladder_pass(
 
     rows: list[dict] = []
     anchor_traces: list[GameTrace] = []
+    calib_sources: list[str] = []
     for spec in [s for s in anchors.split(",") if s]:
         # Build first, then test resumability on the opponent's *name*. Rows record
         # ``result.anchor``, which is the name, and for every anchor but one the
@@ -595,8 +638,9 @@ def run_ladder_pass(
         if opponent is None:
             emit("skip", {"anchor": spec, "reason": "no Stockfish binary"})
             continue
-        if (ckpt_key, opponent.name) in done:
-            emit("skip", {"anchor": opponent.name, "reason": "already in the log"})
+        identity = anchor_identity(opponent)
+        if (ckpt_key, identity) in done:
+            emit("skip", {"anchor": identity, "reason": "already in the log"})
             closer = getattr(opponent, "close", None)
             if callable(closer):
                 closer()
@@ -625,8 +669,16 @@ def run_ladder_pass(
             closer = getattr(opponent, "close", None)
             if callable(closer):
                 closer()
-        if spec == "phase1":
-            anchor_traces = result.traces
+        # Calibration positions. The phase1 matchup is one the learner wins ~99% of,
+        # so its value distribution is degenerate — at p2_a pass 20, bins 0 and 9
+        # held 4,652 of 5,000 positions between them, and ECE over that is easy to
+        # pass and says little (RUNLOG-p2_a §6). A Stockfish matchup is the same
+        # measurement where the model mostly *loses*, which is the un-saturated
+        # half of the same instrument, and p2_c's lever is aimed exactly at value
+        # quality. Both are sampled when both are run.
+        if spec == "phase1" or spec.startswith("stockfish"):
+            anchor_traces = anchor_traces + list(result.traces)
+            calib_sources.append(identity)
         row = logschema.ladder_match_row(
             checkpoint=ckpt_key,
             iteration=iteration,
@@ -671,14 +723,15 @@ def run_ladder_pass(
     if anchor_traces:
         calib = value_calibration(net, anchor_traces)
         calib_note = (
-            f"measured on {calib['n']} positions from the phase1 anchor matchup, "
+            f"measured on {calib['n']} positions from the "
+            f"{' + '.join(calib_sources) or 'phase1'} matchup(s), "
             f"{len(calib['bins'])} bins"
         )
     else:
         calib = {"ece": None, "n": 0, "bins": []}
         calib_note = (
-            "not measured — calibration samples the phase1 anchor matchup, and this "
-            "pass did not run it"
+            "not measured — calibration samples the phase1 and stockfish matchups, "
+            "and this pass ran neither"
         )
     entropy = book_move1_entropy(net, book)
 

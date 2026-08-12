@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 
 from tinyalphazero.replay import MAX_POLICY_ENTRIES, POLICY_DIM, ReplayBuffer
 
@@ -191,3 +192,93 @@ def test_open_rejects_a_version_mismatch(tmp_path: Path) -> None:
     (buf.path / "meta.json").write_text(json.dumps(meta))
     with pytest.raises(ValueError, match="version"):
         ReplayBuffer.open(tmp_path / "r")
+
+
+# ---------------------------------------------------------------------------
+# root_q (version 3)
+# ---------------------------------------------------------------------------
+
+
+def test_root_q_shares_the_perspective_of_the_outcome_it_blends_with(tmp_path) -> None:
+    """`root_q` and `outcome` must both be from the position's mover's view.
+
+    This is the whole safety of the z/q blend. `outcome` is documented as
+    "+1/0/-1 from THIS position's mover's view" and `root_q` is the root's
+    completed-Q, which is also the mover's. If they disagreed in sign, the blend
+    would train the value head *against* its own target on every position whose
+    mover eventually lost — a silent, plausible-looking corruption of exactly the
+    kind this project keeps finding in fields nobody asserted on.
+
+    Asserted on a constructed forced-win trace: a mover who is winning has a
+    positive search estimate and a positive outcome, so the two agree in sign.
+    """
+    from tinyalphazero.replay import ReplayBuffer
+
+    buf = ReplayBuffer.create(tmp_path / "ring", capacity=8)
+    tokens = np.zeros(72, dtype=np.int8)
+    legals = np.zeros(512, dtype=np.uint8)
+
+    # A won position for its mover: search says +0.9, the game confirms +1.
+    buf.add(
+        tokens=tokens,
+        legals=legals,
+        move_ft=0,
+        promo=0,
+        outcome=1,
+        improved_policy=[(0, 0, 1.0)],
+        root_q=0.9,
+    )
+    # A lost one for *its* mover: search says -0.9, the game confirms -1.
+    buf.add(
+        tokens=tokens,
+        legals=legals,
+        move_ft=0,
+        promo=0,
+        outcome=-1,
+        improved_policy=[(0, 0, 1.0)],
+        root_q=-0.9,
+    )
+    batch = buf.sample(2, np.random.default_rng(0))
+    q, z = batch["root_q"], batch["outcome"].float()
+    assert bool(torch.all(torch.sign(q) == torch.sign(z))), (
+        f"root_q {q.tolist()} and outcome {z.tolist()} disagree in sign; the blend "
+        "would train the value head against its own target"
+    )
+    assert bool(torch.all(batch["root_q_mask"]))
+
+
+def test_a_ring_older_than_root_q_reports_it_absent_not_zero(tmp_path) -> None:
+    """Absence is a value. 0.0 is a legal draw estimate and must not stand in.
+
+    A v2 ring predates the field. Reporting 0.0 for every row would train the
+    blend toward "every historical position was a draw"; reporting the mask False
+    is the same signal a rehearsal row carries, which is the point — one meaning
+    for absence, one code path.
+    """
+    import json
+
+    from tinyalphazero.replay import ReplayBuffer
+
+    buf = ReplayBuffer.create(tmp_path / "ring", capacity=4)
+    buf.add(
+        tokens=np.zeros(72, dtype=np.int8),
+        legals=np.zeros(512, dtype=np.uint8),
+        move_ft=0,
+        promo=0,
+        outcome=1,
+        improved_policy=[(0, 0, 1.0)],
+        root_q=0.7,
+    )
+    buf.flush()
+
+    meta_path = tmp_path / "ring" / "meta.json"
+    meta = json.loads(meta_path.read_text())
+    meta["version"] = 2
+    meta["fields"].pop("root_q", None)
+    meta_path.write_text(json.dumps(meta))
+    (tmp_path / "ring" / "root_q.dat").unlink()
+
+    old = ReplayBuffer.open(tmp_path / "ring")
+    assert not old.has("root_q")
+    batch = old.sample(2, np.random.default_rng(0))
+    assert not bool(batch["root_q_mask"].any()), "a v2 ring claimed to have search-Q"

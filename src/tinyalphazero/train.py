@@ -74,6 +74,44 @@ def _promo_loss(
     return F.cross_entropy(logits, targets)
 
 
+def _blend_value_toward_search_q(
+    ce: torch.Tensor,
+    value_wdl: torch.Tensor,  # (B, 3) logits [loss, draw, win]
+    batch: dict[str, torch.Tensor],
+    device: torch.device,
+    q_weight: float,
+    outcome: torch.Tensor,
+) -> torch.Tensor:
+    """(1-w)*CE(z) + w*MSE(P(win)-P(loss), root_q), on rows that have a root_q.
+
+    §12.3, p2_c's lever. Pure outcome-z credits a move by what the game happened
+    to produce; between weak players that is largely noise, and noise in the value
+    target is the standing suspect for a flat absolute-strength slope.
+
+    **Rows without a search keep pure CE at full weight.** Rehearsal rows never
+    had a tree, and rows from a replay ring predating version 3 never stored one.
+    Both arrive with ``root_q_mask`` False, and blending them against a fabricated
+    0.0 would teach "every position with no search behind it was a draw" — a
+    legal-looking value and a wrong one. Absence has one meaning here and one code
+    path, which is why it is a mask rather than a sentinel.
+
+    The scalar blend is the cheap version on purpose. The principled successor is
+    a *distributional* search-Q — visit-weighted child WDL with a per-ply W<->L
+    flip — which needs the tree to carry child distributions through backup. That
+    is a search change, p2_d-grade, and deliberately not this round's lever.
+    """
+    mask = batch["root_q_mask"].to(device)
+    if not bool(mask.any()):
+        return ce
+    probs = F.softmax(value_wdl, dim=-1)
+    scalar = probs[:, 2] - probs[:, 0]  # P(win) - P(loss), same range as root_q
+    target = batch["root_q"].to(device).float()
+    mse = F.mse_loss(scalar[mask], target[mask])
+    # CE stays a full-batch mean: the unmasked rows are supervised by z alone, and
+    # re-weighting them here would make the lever a batch-composition change too.
+    return (1.0 - q_weight) * ce + q_weight * mse
+
+
 def _value_loss(
     value_wdl: torch.Tensor,  # (B, 3) logits [loss, draw, win]
     outcome: torch.Tensor,  # (B,) long, values -1, 0, 1
@@ -277,6 +315,11 @@ def train_step_phase2(
         p_loss = _soft_policy_loss(out.policy_ft, policy_target, legal_mask, masked=masked_policy)
         pr_loss = _soft_promo_loss(out.promo, from_sq, to_sq, promo_target, promo_mask)
         v_loss = F.cross_entropy(out.value_wdl, outcome + 1)
+        q_w = getattr(cfg_train, "value_q_mse_weight", 0.0)
+        if q_w > 0 and batch.get("root_q_mask") is not None:
+            v_loss = _blend_value_toward_search_q(
+                v_loss, out.value_wdl, batch, device, q_w, outcome
+            )
         leg_loss = (
             _legality_loss(out.legality, legal_mask)
             if out.legality is not None and leg_w > 0

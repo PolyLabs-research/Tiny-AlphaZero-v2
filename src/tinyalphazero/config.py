@@ -161,6 +161,18 @@ class TrainConfig:
     rehearsal_frac: float = 0.0
     rehearsal_mate1_frac: float = 0.0
     rehearsal_mate2_frac: float = 0.0
+    # p2_c's lever (§12.3). Weight on the MSE-to-search-Q term of the value loss;
+    # 0.0 is pure outcome-z, the target every run before p2_c used. Blending is
+    # justified by what z *is* on games between weak players: the outcome credits
+    # a move by what the game happened to produce rather than by what search saw,
+    # which is noise, and noise in the value target is the standing suspect for a
+    # flat absolute-strength slope.
+    #
+    # Positions with no search behind them -- rehearsal rows, and any row from a
+    # ring predating replay version 3 -- carry no ``root_q``, and their value loss
+    # stays pure CE at full weight rather than being blended against a fabricated
+    # zero. See ReplayBuffer's ``root_q_mask``.
+    value_q_mse_weight: float = 0.0
     rehearsal_mate1_dir: str = "runs/data/mate1_100k_clean"
     rehearsal_mate2_dir: str = "runs/data/mate2_50k_clean"
 

@@ -110,6 +110,8 @@ class _FakeRing:
             "to_sq": torch.ones(batch_size, dtype=torch.long),
             "iteration": torch.zeros(batch_size, dtype=torch.long),
             "mover_is_latest": torch.ones(batch_size, dtype=torch.long),
+            "root_q": torch.full((batch_size,), 0.5),
+            "root_q_mask": torch.ones(batch_size, dtype=torch.bool),
         }
 
 
@@ -319,6 +321,35 @@ def test_split_must_agree_with_total(tmp_path: Path) -> None:
         load_config(str(cfg_path))
 
 
+def test_p2c_config_is_the_brief() -> None:
+    """configs/p2_c.yaml differs from p2_b's resolved config in exactly one field.
+
+    Same guard as p2_b's, one round on: the claim "one lever" has no evidence
+    except that nothing else moved, and rehearsal staying at 0.05 is part of what
+    must be verified — it is standing configuration this round, not a lever.
+    """
+    import dataclasses
+
+    p2c = REPO / "configs" / "p2_c.yaml"
+    p2b = REPO / "runs" / "p2_b" / "config.yaml"
+    if not (p2c.exists() and p2b.exists()):
+        pytest.skip("p2_c config or p2_b run config not present")
+
+    a = dataclasses.asdict(load_config(str(p2b)))
+    b = dataclasses.asdict(load_config(str(p2c)))
+    allowed = {"value_q_mse_weight"}
+    differences = [
+        f"{section}.{key}: p2_b={a[section][key]} p2_c={b[section][key]}"
+        for section in a
+        if isinstance(a[section], dict)
+        for key in a[section]
+        if a[section][key] != b[section][key] and key not in allowed
+    ]
+    assert not differences, "p2_c changes more than the lever:\n  " + "\n  ".join(differences)
+    assert b["train"]["value_q_mse_weight"] == 0.5
+    assert b["train"]["rehearsal_frac"] == 0.05, "rehearsal must stay at p2_b's setting"
+
+
 def test_p2b_config_is_the_brief(tmp_path: Path) -> None:
     """configs/p2_b.yaml is the lever and nothing else.
 
@@ -346,3 +377,17 @@ def test_p2b_config_is_the_brief(tmp_path: Path) -> None:
                     f"{section}.{key}: p2_a={a[section][key]} p2_b={b[section][key]}"
                 )
     assert not differences, "p2_b changes more than the lever:\n  " + "\n  ".join(differences)
+
+
+def test_rehearsal_rows_declare_they_have_no_search_q(anchors: Path) -> None:
+    """Anchor rows carry root_q_mask False: p2_c's blend must not touch them.
+
+    A rehearsal row never had a tree. Blending it against a fabricated 0.0 would
+    teach "this position was a draw" on positions that are all forced wins — the
+    exact inversion of what the anchor sets are for.
+    """
+    sampler = RehearsalSampler(_FakeRing(), _cfg_train(anchors), seed=42)
+    batch = sampler.sample(1024, np.random.default_rng(0), iteration=1, step=0)
+    is_anchor = batch["iteration"] == ANCHOR_ITERATION
+    assert not bool(batch["root_q_mask"][is_anchor].any()), "anchor rows claimed a search-Q"
+    assert bool(batch["root_q_mask"][~is_anchor].all()), "ring rows lost their search-Q"
