@@ -701,6 +701,7 @@ def run_ladder_pass(
             role=role,
             produced=produced,
             pair_scores=[round(float(x), 4) for x in result.pair_scores],
+            nondeterministic=bool(getattr(opponent, "nondeterministic", False)),
         )
         logschema.append_ladder_row(out, row)
         rows.append(row)

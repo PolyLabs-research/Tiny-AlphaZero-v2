@@ -247,6 +247,12 @@ class LadderMatchRow:
     # so "pass 15 beat pass 5" had to be demoted to descriptive after the fact
     # (RUNLOG-p2_c.md §2). ~100 floats per row.
     pair_scores: list = field(default_factory=list)
+    # Does the opponent randomize its own play? A row that says so cannot be
+    # read as a reproducible measurement, and a single row of a nondeterministic
+    # rung cannot be compared to another single row -- it needs repetitions.
+    # Same lineage as `role` and `calibration_note`: the row announces what kind
+    # of fact it is, rather than leaving the reader to know.
+    nondeterministic: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

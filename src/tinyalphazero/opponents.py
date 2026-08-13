@@ -180,6 +180,24 @@ class StockfishOpponent:
     kind: str = "move"
     _engine: Any = field(default=None, repr=False)
 
+    @property
+    def nondeterministic(self) -> bool:
+        """Does this opponent randomize its own play?
+
+        Skill levels below 20 do: Stockfish's skill limiter picks among near-best
+        moves with a randomized tie-break, so the same position yields different
+        moves across processes. Measured 2026-08-13 over five fresh engines per
+        position -- skill 0 gave two distinct moves on quiet positions, skill 20
+        gave one every time.
+
+        This is the property that broke the ladder's reproducibility claim. The
+        claim was proven for net-vs-net rungs and silently extended to a rung
+        family that did not exist when it was made; re-measuring p2_c's endpoint
+        returned 0.180 where 0.233 was recorded. Any consumer that needs a
+        reproducible number must read this and average over repetitions.
+        """
+        return self.skill < 20
+
     def __post_init__(self) -> None:
         if not self.name:
             self.name = f"stockfish_s{self.skill}"
@@ -189,7 +207,12 @@ class StockfishOpponent:
             import chess.engine
 
             self._engine = chess.engine.SimpleEngine.popen_uci(self.path)
-            self._engine.configure({"Skill Level": self.skill})
+            # Threads and Hash pinned so the engine cannot vary with machine load
+            # or default drift. Neither is the cause of the skill-limiter's
+            # randomization -- see `nondeterministic` -- but an anchor that moves
+            # with what else the box is doing is not an anchor, and removing a
+            # lurking second source costs two lines.
+            self._engine.configure({"Skill Level": self.skill, "Threads": 1, "Hash": 16})
         return self._engine
 
     def choose(self, board: chess.Board, rng: np.random.Generator) -> chess.Move:

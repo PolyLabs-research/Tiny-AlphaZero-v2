@@ -225,3 +225,78 @@ constraint.
 Allowance is measured flag-off and assumed unchanged by the flag. That is
 approximately, not exactly, true — see the "extra conversions" branch above. The
 prediction is registered with this assumption explicit rather than silently.
+
+---
+
+## Addendum 2 (2026-08-13 19:30) — quantifying the skill-0 rung's own randomization
+
+**Run state:** Track 2 complete (20 iterations). Track 1's protocol running. **No
+repetition measurement has been taken**, and no RUNLOG line has been written for
+p2_d. This addendum registers the statistic and the verdict rule before either.
+
+### What was found
+
+Re-running `p2_c/ckpt_iter0020`'s skill-0 matchup at the same seed, config and
+book returned **31W/10D/159L, score 0.180** where the campaign recorded
+**37W/19D/144L, score 0.233**. Mechanism, measured over five fresh engine
+processes per position, both polarities: **skill 0 is nondeterministic** (two
+distinct moves on quiet positions), **skill 20 is deterministic** (one move,
+every time). Stockfish's skill limiter randomizes its tie-break.
+
+Consequences, stated plainly:
+
+- Same-checkpoint run-to-run swing: **0.053**, from one re-measurement.
+- p2_c's P1 verdict (0.025 → 0.233) survives at ~4× that margin.
+- p2_d's P2 comparison (0.233 → 0.315) is 0.082 — under two swings.
+- **Every skill-0 CI on record understates uncertainty.** The paired bootstrap
+  resamples openings within a run; it cannot see an engine that re-randomizes
+  between runs.
+- The reproducibility claim that licensed p2_a's backfill and the offline rungs
+  holds for net-vs-net rungs and **not** for this one.
+
+### The registered design
+
+**Three offline replays per endpoint checkpoint** (`p2_c/0020`, `p2_d/0020`),
+identical seed and config, each to its own log. Only the engine differs between
+reps — the learner is deterministic at seed 42 — so the spread across reps *is*
+the instrument's noise.
+
+**The statistic.** Per-opening **rep-means**: each opening's score averaged over
+its three reps, per checkpoint. Then the **paired bootstrap over openings** on the
+mean-differences. This handles both noise sources in the place each belongs —
+engine randomization averages out *within* an opening, opening difficulty pairs
+out *across* checkpoints. Eyeballing three means would waste the `pair_scores`
+persisted for exactly this.
+
+**Verdict rule.** **P2 stands iff the pooled paired difference's 95% CI excludes
+zero** (and the difference is positive). If the result lands in the ambiguous band
+— roughly 1.5–2.5 SE — **one escalation of +2 reps each**, then the verdict is
+whatever it is. No further escalation.
+
+Arithmetic says three reps should suffice if the point estimates hold: a per-run
+σ near 0.037 gives the 0.082 difference about 2.7 SE. **The measurement decides,
+not the arithmetic.**
+
+### Permanent fixes (landed with this addendum)
+
+1. **`nondeterministic` on every ladder row** — the row announces whether it is
+   reproducible. Same lineage as `role` and `calibration_note`.
+2. **`Threads=1`, `Hash=16` pinned** on the engine. Not the cause; a lurking
+   second source removed for two lines.
+3. **A determinism probe is a construction gate for every future opponent
+   family** — five fresh processes, both polarities — promoted from incident to
+   law, under the sentence this project has now paid for three times: *a property
+   proven for a set must be re-proven when the set grows.*
+4. **A `reps` config for engine rungs** (default 3 for skill-limited, 1 for
+   deterministic), storing per-rep results alongside the pooled row. Filed as the
+   remaining item; the reps for this verdict are run by script.
+
+### What is not being done
+
+Switching to a deterministic skill-20 rung is **parked, not adopted**. M4's
+criterion is written against skill 0, and changing opponents mid-campaign is how
+continuity dies. A deterministic rung may be *added* later alongside quantified
+skill-0, never as a replacement. **M4's clause is restated as mean-over-reps with
+honest CIs** — the fourth criterion restatement of this project, after monotone,
+E6 and ECE, and for the same reason each time: written against an instrument model
+that turned out to be wrong, restated once measured, verdict discipline intact.

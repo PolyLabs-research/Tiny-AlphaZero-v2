@@ -823,3 +823,50 @@ def test_watchlist_verdict_is_live_and_the_pinned_one_says_so() -> None:
         assert "asof" in e, f"{e['id']} has no asof; its pinned verdict is undated"
     raw = json.loads(WATCHLIST.read_text())
     assert all(r.get("asof") for r in raw)
+
+
+def test_opponent_families_declare_whether_they_randomize() -> None:
+    """Construction gate: a new opponent family must answer the determinism question.
+
+    Promoted from incident to law on 2026-08-13. This project has now paid three
+    times for the same mistake — a property proven for a set, then silently
+    extended when the set grew: promotion-free fixtures, the `stockfish_s0` dedup
+    key, and the ladder's reproducibility claim, which was true for net-vs-net
+    rungs and false for the skill-limited engine rung that arrived later.
+
+    Measured, not assumed: five fresh engine processes per position, both
+    polarities. Skill 0 returned two distinct moves on quiet positions; skill 20
+    returned one every time.
+    """
+    from tinyalphazero.opponents import StockfishOpponent
+
+    assert StockfishOpponent(path="/nonexistent", skill=0, nodes=10).nondeterministic is True
+    assert StockfishOpponent(path="/nonexistent", skill=20, nodes=10).nondeterministic is False
+
+
+def test_ladder_row_carries_the_nondeterminism_flag() -> None:
+    """The row says whether it is reproducible, so a reader never has to know."""
+    from tinyalphazero import logschema
+
+    base = {
+        "checkpoint": "runs/x/ckpt.pt",
+        "iteration": 20,
+        "anchor": "stockfish_s0",
+        "games": 200,
+        "wins": 37,
+        "draws": 19,
+        "losses": 144,
+        "score": 0.2325,
+        "elo": -207.5,
+        "elo_lo": -260.5,
+        "elo_hi": -159.8,
+        "elo_clamped": False,
+        "draw_rate": 0.095,
+        "mean_plies": 119.9,
+        "match_sims": 48,
+        "max_plies": 300,
+        "seconds": 427.0,
+        "git_sha": "abc",
+    }
+    assert logschema.ladder_match_row(**base)["nondeterministic"] is False
+    assert logschema.ladder_match_row(**base, nondeterministic=True)["nondeterministic"] is True
