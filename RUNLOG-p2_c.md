@@ -33,10 +33,28 @@ p2_c @15   13W/15D/172L   0.102   −376.9  [−456.1, −315.4]
 p2_c @20   37W/19D/144L   0.233   −207.5  [−260.5, −159.8]
 ```
 
-Score nearly tenfold, **+429 Elo**, and pass 20's interval is disjoint from *every*
-earlier interval in the series — from p2_b's endpoint, and from passes 5, 10 and 15.
-P1 registered direction and separation; the result is a monotone climb with four
-disjoint steps.
+Score nearly tenfold, **+429 Elo**. Pass 20's interval is disjoint from p2_b's
+endpoint and from every earlier p2_c pass, which is what P1 registered.
+
+**Correction, and a method note.** During the run I reported at pass 15 that its
+interval was "disjoint from pass 5's". It is not: pass 5 is [−563.8, −367.7] and
+pass 15 is [−456.1, −315.4], which overlap. Adjacent steps overlap generally —
+5↔10, 5↔15 and 10↔15 all do — so this is a climb whose *endpoints* separate, not
+one with four separating steps. The earlier phrasing overstated it.
+
+More importantly, **marginal-interval overlap is the wrong test** and was the wrong
+test even where it happened to agree with the conclusion. Two independent CIs can
+overlap while a paired comparison separates cleanly, because the pairing removes
+opening difficulty as a shared source of variance. The test of record for
+"pass X beat pass Y" is a **paired-difference bootstrap over opening pairs**, the
+same unit `paired_bootstrap_elo` already resamples within a single matchup.
+
+That test cannot be computed from this log: ladder rows store the aggregate but not
+`pair_scores`, so the per-opening vector needed to pair two passes is gone once the
+matchup ends. **P1's verdict stands on the wider claim** — pass 20 vs p2_b's endpoint
+separates by a margin no pairing correction would close, 0.025 vs 0.233 across 200
+games. The finer between-pass claims in this section should be read as descriptive.
+Persisting `pair_scores` is filed for p2_d so the test of record becomes computable.
 
 **The slope accelerates rather than saturating.** The last five iterations were the
 steepest of the run (wins 13 → 37, losses 172 → 144), which is the opposite of what a
@@ -105,6 +123,34 @@ converted:
 conviction without a solve is the visits-not-conviction story surviving the round aimed
 squarely at it.
 
+### The competitor's q̂ — what the key edge actually loses to
+
+`key_edge_q` alone cannot say why a near-certain edge loses the argmax; it needs the
+number it lost *to*. Per checkpoint, the key edge against the move actually chosen
+(`competitor_q_trajectory.json`):
+
+| ckpt | id | key q̂ | key N | chosen | chosen q̂ | chosen N |
+|---|---|---|---|---|---|---|
+| 0005 | mate2_165 | 0.9987 | **30** | Rb5 *(the key move)* | 0.9987 | 30 |
+| 0010 | mate2_165 | 0.9995 | 14 | Rd7+ | 0.9956 | 30 |
+| 0015 | mate2_165 | 0.9990 | 30 | Rd7+ | 0.9958 | 30 |
+| 0020 | mate2_165 | 0.9993 | 14 | Rd7+ | 0.9958 | 30 |
+| 0005 | mate2_166 | 0.9976 | 2 | Bxg3 | 0.9956 | 30 |
+| 0010 | mate2_166 | 0.9980 | 6 | Re7+ | 0.9956 | 30 |
+| 0015 | mate2_166 | 0.9981 | 14 | Bxg3 | 0.9983 | 30 |
+| 0020 | mate2_166 | 0.9988 | 6 | Bxg3 | 0.9958 | 30 |
+
+**In seven of eight rows the key edge's estimate is *higher* than the winner's and it
+still loses.** Value ordering is not the failure. The one row where the key move won
+(0005/165) is also the only row where it held a full 30 visits — and the pass-5 solve
+that broke and reverted is exactly that row.
+
+This is the visits story stated in the sharpest available form: the search prefers the
+move it believes in *less*, because Sequential Halving gave that move the visits and
+`logits + σ(q̂)` scales σ with visit count. A better estimate on an under-visited edge
+loses to a worse estimate on a well-visited one. It is the direct motivating measurement
+for p2_d's breadth lever.
+
 **A lever that fixes its predicted targets and leaves its predicted non-targets alone is
 the strongest form this evidence could take.** The mechanism story is not merely
 consistent with the result; it discriminated between two sets of positions in advance.
@@ -114,6 +160,12 @@ consistent with the result; it discriminated between two sets of positions in ad
 14 failures, unchanged in count from p2_b but not in composition (13 CAPABILITY,
 1 COVERAGE; p2_b was 11/3). Of them, **5 SLOWER_FORCED_WIN, 9 GENUINE_MISS** —
 so the true residual is 9 wrong positions out of 200.
+
+`mate2_129` closed the round where it has been heading all campaign: watchlist
+`value_on_key_child` **−0.9579** at pass 20 (from +0.036 at the 2026-08-09 pin, via
+−0.858 → −0.978 → −0.984 across p2_c's passes), and key-edge q̂ 0.0211. It is now
+confidently wrong about a won position rather than uncertain about it — the honest
+residual of the residual, and the one position where more search would not help.
 
 CAPABILITY key-edge q̂: median 0.9670, min 0.0211, max 1.0000. The distribution has
 grown a low tail it did not have in p2_b (`mate2_129` at 0.0211, `mate2_126` at 0.2385)
