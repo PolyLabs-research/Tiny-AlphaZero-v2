@@ -72,6 +72,30 @@ class MCTSConfig:
     eval_m: int | None = None
     eval_c_visit: float | None = None
     eval_c_scale: float | None = None
+    # --- proof-directed reply expansion (p2_d Track 1) -------------------
+    # MCTS-Solver can only induct a proof back through an edge once *every*
+    # opponent reply beneath it has been refuted. Ordinary selection re-grinds
+    # the single strongest reply instead, so a key move can hold more visits
+    # than a proof costs and still never prove: mate2_165 held 14 against a cost
+    # of 7 across four p2_c passes and never landed one.
+    #
+    # Measured coordinate (RUNLOG-p2_c.md §4): the key edge loses at *elimination*,
+    # not at the final argmax -- 14 visits is what an edge has when Sequential
+    # Halving drops it after an early phase, and in seven of eight measured rows
+    # the key edge's q-hat was HIGHER than the move that beat it. So the proof has
+    # to land inside the pre-elimination allowance, which a breadth-first reply
+    # sweep costing 1 + len(replies) does and a depth-first grind does not.
+    #
+    # When on: at an opponent node whose parent edge is already believed at
+    # q-hat >= proof_q_threshold, selection prefers *unexpanded* replies until the
+    # reply set is complete, then reverts to normal selection. Exactly one ply of
+    # breadth at near-certain edges -- bounded by construction.
+    #
+    # OFF by default and off in self-play: enabling it in data generation changes
+    # what the training corpus is, which is a separate decision from changing what
+    # a measurement sees.
+    proof_directed_expansion: bool = False
+    proof_q_threshold: float = 0.95
     # PUCT (ablation control)
     c_puct: float = 1.25
     dirichlet_alpha: float = 0.3

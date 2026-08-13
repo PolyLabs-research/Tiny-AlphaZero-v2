@@ -1120,3 +1120,172 @@ def test_solver_marks_a_forced_mate_proven() -> None:
     assert tree.proven[sl].any() or tree.terminal[sl].any(), (
         "256 sims on a mate-in-2 should prove at least one edge"
     )
+
+
+# ---------------------------------------------------------------------------
+# Proof-directed reply expansion (p2_d Track 1)
+# ---------------------------------------------------------------------------
+
+
+def _pde_cfg(**kw):
+    """Eval profile with the breadth lever on."""
+    from dataclasses import replace as _replace
+
+    from tinyalphazero.config import MCTSConfig
+
+    return _replace(MCTSConfig(root_noise=False, proof_directed_expansion=True), **kw)
+
+
+def _stub_evaluator(value: float = 0.99):
+    """The project's uniform stub with a fixed value. Deterministic, no checkpoint.
+
+    Reuses ``uniform_stub_evaluator`` for the policy and promo planes rather than
+    hand-rolling shapes — the interface has bitten twice, and a stub that
+    disagrees with the real one about array rank is a test that measures the stub.
+    """
+
+    def ev(tokens):
+        policy, promo, _ = uniform_stub_evaluator(tokens)
+        return policy, promo, value
+
+    return ev
+
+
+def test_breadth_lever_is_inert_below_the_threshold() -> None:
+    """A parent edge the mover does not believe in gets normal selection.
+
+    The lever spends visits on breadth instead of depth; spending them anywhere
+    other than beneath a near-certain edge would be a search regression wearing a
+    flag, so the guard is the threshold and this asserts it holds.
+    """
+    import numpy as np
+
+    from tinyalphazero.mcts.search import Search
+
+    search = Search(_stub_evaluator(), _pde_cfg(proof_q_threshold=0.95), np.random.default_rng(0))
+    board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
+    tree, root, _ = search.run_tree(board, None, 8)
+    sl = tree.edge_slice(root)
+    e = sl.start
+    tree.N[e], tree.W[e] = 4, 0.4 * 4  # q-hat 0.4, far below threshold
+    child = int(tree.child[e])
+    if child < 0:
+        pytest.skip("root edge never expanded at this budget")
+    assert search._unexpanded_reply(tree, tree.edge_slice(child), e) is None
+
+
+def test_breadth_lever_returns_unexpanded_replies_then_stops() -> None:
+    """Above the threshold it hands back unexpanded replies, and only those.
+
+    Once the reply set is complete it must return None rather than continuing to
+    interfere — the contract is exactly one ply of breadth, bounded, after which
+    normal selection resumes.
+    """
+    from dataclasses import replace as _replace
+
+    import numpy as np
+
+    from tinyalphazero.config import MCTSConfig
+    from tinyalphazero.mcts.search import Search
+
+    # Build the tree with the lever OFF. With it on, the sweep completes the reply
+    # set during the run and there is nothing left to hand back — which is the
+    # lever working, and would have made this assertion vacuous.
+    off = Search(
+        _stub_evaluator(), _replace(MCTSConfig(root_noise=False)), np.random.default_rng(0)
+    )
+    search = Search(_stub_evaluator(), _pde_cfg(), np.random.default_rng(0))
+    # A quiet position on purpose: a mate-in-1 resolves on a terminal edge and
+    # never grows a child, so the assertion below would never run.
+    board = chess.Board()
+    # 32 sims leaves part of the reply set unexpanded (measured: 12/20); at 64 it
+    # is complete and the lever would correctly stand down, making this vacuous.
+    tree, root, _ = off.run_tree(board, None, 32)
+    sl = tree.edge_slice(root)
+    e = int(np.argmax([int(tree.N[i]) for i in range(sl.start, sl.stop)])) + sl.start
+    child = int(tree.child[e])
+    assert child >= 0, "the search never expanded a child; the test cannot run"
+    tree.N[e], tree.W[e] = 8, 0.99 * 8  # believed
+
+    csl = tree.edge_slice(child)
+    picked = search._unexpanded_reply(tree, csl, e)
+    assert picked is not None, "the lever stood down while replies were still unexpanded"
+    assert csl.start <= picked < csl.stop
+    assert tree.child[picked] == -1 and not tree.terminal[picked]
+
+    # Mark every reply expanded or terminal; the lever must then stand down.
+    for i in range(csl.start, csl.stop):
+        if tree.child[i] == -1 and not tree.terminal[i]:
+            tree.child[i] = child  # any non -1 marks "expanded" for this check
+    assert search._unexpanded_reply(tree, csl, e) is None
+
+
+def test_breadth_lever_converts_mate2_165_on_a_real_checkpoint() -> None:
+    """The lever's registered claim (W3), measured where it actually lives.
+
+    Every synthetic version of this test was vacuous, and the reasons are worth
+    keeping: under a uniform-prior stub PUCT already expands breadth-first, so
+    the lever is a no-op; under a concentrated prior the budget goes to root
+    breadth before any reply is reached; and a constant-value stub backs up to a
+    *negative* parent-edge q-hat, so the threshold never trips at all. The regime
+    the failure lives in needs a real value head that is genuinely near-certain
+    about a specific edge — which is exactly what mate2_165 is, at q-hat 0.9993
+    across four p2_c passes.
+
+    CPU on purpose: Track 1 must never contend with a training run for the GPU.
+    """
+    import json
+
+    import torch
+
+    from tinyalphazero.config import load_config
+    from tinyalphazero.mcts.search import move_solves, network_evaluator_from_net
+    from tinyalphazero.train import load_checkpoint
+
+    repo = Path(__file__).resolve().parents[1]
+    ckpt = repo / "runs" / "p2_c" / "ckpt_iter0020.pt"
+    cfg_path = repo / "runs" / "p2_c" / "config.yaml"
+    if not (ckpt.exists() and cfg_path.exists()):
+        pytest.skip("p2_c endpoint checkpoint not present in this working tree")
+
+    torch.set_num_threads(4)
+    cfg = load_config(str(cfg_path))
+    net, _ = load_checkpoint(ckpt, device=torch.device("cpu"))
+    net.eval()
+    evaluate = network_evaluator_from_net(net, torch.device("cpu"))
+    fen = {
+        w["id"]: w["fen"]
+        for w in json.loads((repo / "benchmarks" / "m3_watchlist.json").read_text())
+    }
+    board = chess.Board(fen["mate2_165"])
+
+    solved = {}
+    for flag in (False, True):
+        search = Search(
+            evaluate,
+            replace(cfg.mcts, root_noise=False, proof_directed_expansion=flag),
+            np.random.default_rng(0),
+        )
+        mv = search.run(board, None, cfg.eval.suite_sims).best_move()
+        solved[flag] = move_solves(board, mv, 2)
+
+    assert solved[False] is False, "flag-off solved 165; the baseline this asserts against moved"
+    assert solved[True] is True, "the breadth lever failed to convert mate2_165 (W3)"
+
+
+def test_breadth_lever_is_deterministic_under_the_eval_profile() -> None:
+    """Two runs at identical settings pick identical moves.
+
+    A measurement instrument that reorders under reseeding is no better than the
+    one it replaces (the argument that retired root noise from the ladder).
+    """
+    import numpy as np
+
+    from tinyalphazero.mcts.search import Search
+
+    board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
+    moves = []
+    for _ in range(2):
+        search = Search(_stub_evaluator(), _pde_cfg(), np.random.default_rng(0))
+        moves.append(search.run(board, None, 32).best_move())
+    assert moves[0] == moves[1]

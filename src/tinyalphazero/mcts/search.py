@@ -417,12 +417,26 @@ class Search:
 
     # -- selection -------------------------------------------------------
 
-    def _select_edge(self, tree: Tree, node: int) -> int:
+    def _select_edge(self, tree: Tree, node: int, parent_edge: int | None = None) -> int:
         """PUCT: ``Q + c_puct * prior * sqrt(N_parent) / (1 + N_edge)``.
 
         Unvisited edges take completed-Q = this node's Q rather than 0.
+
+        ``parent_edge`` is the edge that led here, and is read only by
+        proof-directed expansion (``cfg.proof_directed_expansion``, off by
+        default): beneath an edge the mover already believes at
+        ``q >= proof_q_threshold``, this returns an *unexpanded* reply until the
+        node's reply set is complete. That is what the solver needs — it can
+        induct a proof back only when every reply has been refuted — and it is
+        what ordinary selection never provides, because ordinary selection
+        re-grinds the strongest reply. See the config comment for the measured
+        coordinate this is aimed at.
         """
         sl = tree.edge_slice(node)
+        if self.cfg.proof_directed_expansion and parent_edge is not None:
+            forced = self._unexpanded_reply(tree, sl, parent_edge)
+            if forced is not None:
+                return forced
         n = tree.N[sl].astype(np.float32)
         w = tree.W[sl]
         prior = tree.prior[sl]
@@ -450,6 +464,32 @@ class Search:
             q = np.where(has_exact, -exact, q)
         u = self.cfg.c_puct * prior * np.sqrt(max(float(n_eff.sum()), 1.0)) / (1.0 + n_eff)
         return int(np.argmax(q + u)) + sl.start
+
+    def _unexpanded_reply(self, tree: Tree, sl: slice, parent_edge: int) -> int | None:
+        """An unexpanded reply beneath a near-certain parent edge, or None.
+
+        None means "do not interfere": the parent edge is not believed strongly
+        enough, or the reply set is already complete, in which case normal
+        selection resumes and the extra breadth costs nothing further.
+
+        Ties are broken by prior, so the sweep is deterministic under the
+        evaluation profile — a measurement that reorders under reseeding would
+        be no better than the one it replaces.
+        """
+        n_pe = int(tree.N[parent_edge])
+        if n_pe <= 0:
+            return None
+        if float(tree.W[parent_edge]) / n_pe < self.cfg.proof_q_threshold:
+            return None
+        # A terminal edge needs no expansion: it is already exact.
+        pending = [
+            e
+            for e in range(sl.start, sl.stop)
+            if tree.child[e] == -1 and not tree.terminal[e]
+        ]
+        if not pending:
+            return None
+        return max(pending, key=lambda e: (float(tree.prior[e]), -e))
 
     # -- the loop ---------------------------------------------------------
 
@@ -726,7 +766,7 @@ class Search:
             if forced_edge is not None and node == root and not path:
                 e = forced_edge
             else:
-                e = self._select_edge(tree, node)
+                e = self._select_edge(tree, node, parent_edge=path[-1] if path else None)
             path.append(e)
 
             mv = _move_of(int(tree.move_ft[e]), int(tree.promo[e]))
