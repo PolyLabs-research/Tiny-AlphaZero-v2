@@ -150,3 +150,78 @@ this project can construct.
 - The flag reaching self-play data generation. It stays off in Track 2's config and
   in self-play generally; enabling it in generation is a `p2_e` decision, not a side
   effect.
+
+---
+
+## Addendum 1 (2026-08-13 06:40) — Track 1's convertibility prediction
+
+**Run state:** Track 2 at iteration 1, 23 minutes elapsed, no ladder pass yet.
+Track 1's full measurement protocol has **not been run** — the only reading taken
+is a preliminary two-position CPU probe on `p2_c/0020` (165 converts flag-on, 166
+does not), recorded in commit `ea63564`. This addendum registers a prediction over
+**thirteen** positions, eleven of which have no data at all, and it is filed before
+the protocol runs.
+
+### The rule, with zero free parameters
+
+A residual CAPABILITY position converts flag-on **iff**
+
+```
+key-edge q̂ ≥ proof_q_threshold (0.95)      AND      flag-off allowance ≥ proof cost
+```
+
+where *allowance* is the edge's flag-off visit count and *cost* is
+`1 + len(replies)`, both already recorded by `triage_mate2`. Nothing is fitted.
+
+**Why this is the rule.** The sweep changes the *order* in which replies are
+expanded, not the *number* of visits an edge receives — an edge's pre-elimination
+allowance is set by Sequential Halving and is untouched by the flag. So the lever
+can only land a proof that fits inside the allowance the edge already had. 165 held
+14 against a cost of 7: the sweep fits, the proof lands, and it converted. 166 holds
+6 against 7 — structurally one visit short, and no expansion order proves a
+six-reply refutation in six visits.
+
+### The prediction, per position, at `p2_c/0020`
+
+| id | q̂ | allowance | cost | prediction |
+|---|---|---|---|---|
+| mate2_054 | 0.9894 | 14 | 8 | **CONVERT** |
+| mate2_091 | 0.9989 | 14 | 9 | **CONVERT** |
+| mate2_165 | 0.9993 | 14 | 7 | **CONVERT** *(already observed)* |
+| mate2_196 | 1.0000 | 14 | 7 | **CONVERT** |
+| mate2_166 | 0.9988 | 6 | 7 | no — one visit short |
+| mate2_009 | 0.9670 | 2 | 3 | no |
+| mate2_127 | 0.9679 | 6 | 14 | no |
+| mate2_128 | 0.8407 | 2 | 14 | no — below threshold *and* short |
+| mate2_087 | 0.6935 | 2 | 3 | no — below threshold |
+| mate2_139 | 0.6818 | 2 | 3 | no — below threshold |
+| mate2_186 | 0.7458 | 2 | 3 | no — below threshold |
+| mate2_126 | 0.2385 | 2 | 17 | no — below threshold |
+| mate2_129 | 0.0211 | 2 | 17 | no — below threshold |
+
+**4 of 13 convert.** COVERAGE positions are excluded by construction: the lever
+cannot help a move that was never in the considered set.
+
+### What each outcome means
+
+- **Prediction holds across all four checkpoints** → the mechanism is not merely
+  fixed but *fully characterised*: Track 1 closes as "it converts precisely the set
+  the arithmetic says it can", which is a stronger claim than "it helped".
+- **Extra conversions** → allowance is not flag-invariant after all. Plausible: the
+  sweep changes which values back up, which can change halving outcomes, so an edge
+  may survive elimination it would otherwise have lost. That would be a real finding
+  and the RUNLOG says so.
+- **Missing conversions** → the arithmetic is not sufficient, and the residual needs
+  a mechanism beyond breadth.
+
+**The survivors define the parked eval-profile conversation.** Whatever fails to
+convert with search fully out of the way is what an `m` change — and only `m` —
+would be about, with **`mate2_166` as its named boundary case**: one visit from the
+line, and therefore the cleanest possible test of whether allowance is the binding
+constraint.
+
+### Stated caveat
+
+Allowance is measured flag-off and assumed unchanged by the flag. That is
+approximately, not exactly, true — see the "extra conversions" branch above. The
+prediction is registered with this assumption explicit rather than silently.
