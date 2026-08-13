@@ -206,6 +206,32 @@ class StockfishOpponent:
             self._engine.quit()
             self._engine = None
 
+    # Context-manager protocol so releasing the subprocess is an idiom rather
+    # than something a caller has to remember. close() existed from chunk 10 and
+    # was called by nobody until 2026-08-12, when the first Stockfish rung played
+    # its games, wrote a correct row, and then hung at interpreter exit for seven
+    # hours on a non-daemon transport thread.
+    def __enter__(self) -> StockfishOpponent:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+
+def anchor_identity(opponent: Any) -> str:
+    """The single spelling of an anchor's identity, for rows and for skip-sets.
+
+    Ladder rows record an opponent's *name*; resumability used to test the CLI
+    *spec*. For random, greedy and phase1 those strings are identical, so the
+    mismatch was invisible everywhere it had ever run — and "stockfish:0" never
+    matched the logged "stockfish_s0", so the one anchor family whose spec carries
+    a parameter silently recomputed its matchup and appended a duplicate row.
+
+    Two spellings of one intent is the defect. This is the one spelling: every
+    writer and every reader derives identity from here.
+    """
+    return str(opponent.name)
+
 
 def build_opponent(
     spec: str,

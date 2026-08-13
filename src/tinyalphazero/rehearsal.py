@@ -208,6 +208,11 @@ class RehearsalSampler:
             "from_sq": torch.tensor(from_sq, dtype=torch.long),
             "to_sq": torch.tensor(to_sq, dtype=torch.long),
             "iteration": torch.full((count,), ANCHOR_ITERATION, dtype=torch.long),
+            # No tree ever searched these positions, so there is no search-Q to
+            # blend toward (p2_c's lever). Same signal a pre-v3 replay ring sends,
+            # and handled by the same masking: their value loss stays pure CE.
+            "root_q": torch.zeros(count, dtype=torch.float32),
+            "root_q_mask": torch.zeros(count, dtype=torch.bool),
             # Not a self-play row, so "did the latest weights choose this move" has
             # no answer. 0 is the honest one; nothing reads it after the mix,
             # because ``latest_only`` filters the ring *before* anchors are added.

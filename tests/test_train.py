@@ -582,3 +582,58 @@ def test_mate1_topk_is_monotone_and_solve_rate_is_the_k1_slice() -> None:
     assert rates == sorted(rates), f"top-k coverage must be non-decreasing in k: {rates}"
     assert metrics["mate1_solve_rate"] == metrics["mate1_top1_masked"]
     assert all(0.0 <= r <= 1.0 for r in rates)
+
+
+def test_value_blend_masks_rows_without_a_search() -> None:
+    """The z/q blend (p2_c) reaches only rows that carry a real root_q.
+
+    Two batches identical except for the *values* under masked-off rows must
+    produce the same loss. If they don't, the blend is reading fabricated targets
+    on rehearsal rows and on any ring older than replay version 3.
+    """
+    import torch
+
+    from tinyalphazero.config import load_config
+    from tinyalphazero.model import ChessNet
+    from tinyalphazero.train import train_step_phase2
+
+    cfg = load_config(None)
+    cfg.model.n_layers, cfg.model.d_model, cfg.model.d_ff, cfg.model.n_heads = 1, 32, 64, 2
+    cfg.train.value_q_mse_weight = 0.5
+    torch.manual_seed(0)
+
+    def _batch(hidden_value: float) -> dict:
+        b = 8
+        return {
+            "tokens": torch.zeros((b, 72), dtype=torch.long),
+            "legals": torch.full((b, 512), 255, dtype=torch.uint8),
+            "outcome": torch.ones(b, dtype=torch.long),
+            "policy": torch.full((b, 4096), 1 / 4096),
+            "promo_target": torch.zeros((b, 4)),
+            "promo_mask": torch.zeros(b, dtype=torch.bool),
+            "from_sq": torch.zeros(b, dtype=torch.long),
+            "to_sq": torch.ones(b, dtype=torch.long),
+            # First four rows real; last four masked off with wildly different values.
+            "root_q": torch.tensor(
+                [0.9, 0.9, 0.9, 0.9, hidden_value, hidden_value, hidden_value, hidden_value]
+            ),
+            "root_q_mask": torch.tensor([True] * 4 + [False] * 4),
+        }
+
+    losses = []
+    for hidden in (-1.0, 1.0):
+        torch.manual_seed(0)
+        net = ChessNet(cfg.model)
+        opt = torch.optim.AdamW(net.parameters(), lr=1e-4)
+        losses.append(train_step_phase2(_batch(hidden), net, opt, torch.device("cpu"), cfg.train))
+
+    assert losses[0]["value_loss"] == pytest.approx(losses[1]["value_loss"]), (
+        "masked-off rows changed the value loss; the blend is reading targets that do not exist"
+    )
+
+
+def test_value_blend_is_off_by_default() -> None:
+    """value_q_mse_weight defaults to 0.0, so every pre-p2_c run is unchanged."""
+    from tinyalphazero.config import Config
+
+    assert Config().train.value_q_mse_weight == 0.0

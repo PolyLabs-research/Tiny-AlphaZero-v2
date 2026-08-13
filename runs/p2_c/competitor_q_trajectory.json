@@ -1,0 +1,82 @@
+[
+  {
+    "checkpoint": "ckpt_iter0005.pt",
+    "id": "mate2_165",
+    "key_q": 0.9987,
+    "key_visits": 30,
+    "chosen": "Rb5",
+    "chosen_q": 0.9987,
+    "chosen_visits": 30,
+    "chosen_was_key": true
+  },
+  {
+    "checkpoint": "ckpt_iter0005.pt",
+    "id": "mate2_166",
+    "key_q": 0.9976,
+    "key_visits": 2,
+    "chosen": "Bxg3",
+    "chosen_q": 0.9956,
+    "chosen_visits": 30,
+    "chosen_was_key": false
+  },
+  {
+    "checkpoint": "ckpt_iter0010.pt",
+    "id": "mate2_165",
+    "key_q": 0.9995,
+    "key_visits": 14,
+    "chosen": "Rd7+",
+    "chosen_q": 0.9956,
+    "chosen_visits": 30,
+    "chosen_was_key": false
+  },
+  {
+    "checkpoint": "ckpt_iter0010.pt",
+    "id": "mate2_166",
+    "key_q": 0.998,
+    "key_visits": 6,
+    "chosen": "Re7+",
+    "chosen_q": 0.9956,
+    "chosen_visits": 30,
+    "chosen_was_key": false
+  },
+  {
+    "checkpoint": "ckpt_iter0015.pt",
+    "id": "mate2_165",
+    "key_q": 0.999,
+    "key_visits": 30,
+    "chosen": "Rd7+",
+    "chosen_q": 0.9958,
+    "chosen_visits": 30,
+    "chosen_was_key": false
+  },
+  {
+    "checkpoint": "ckpt_iter0015.pt",
+    "id": "mate2_166",
+    "key_q": 0.9981,
+    "key_visits": 14,
+    "chosen": "Bxg3",
+    "chosen_q": 0.9983,
+    "chosen_visits": 30,
+    "chosen_was_key": false
+  },
+  {
+    "checkpoint": "ckpt_iter0020.pt",
+    "id": "mate2_165",
+    "key_q": 0.9993,
+    "key_visits": 14,
+    "chosen": "Rd7+",
+    "chosen_q": 0.9958,
+    "chosen_visits": 30,
+    "chosen_was_key": false
+  },
+  {
+    "checkpoint": "ckpt_iter0020.pt",
+    "id": "mate2_166",
+    "key_q": 0.9988,
+    "key_visits": 6,
+    "chosen": "Bxg3",
+    "chosen_q": 0.9958,
+    "chosen_visits": 30,
+    "chosen_was_key": false
+  }
+]

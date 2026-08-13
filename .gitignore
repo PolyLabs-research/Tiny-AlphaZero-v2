@@ -34,6 +34,7 @@ runs/**
 !runs/**/annotations.jsonl
 !runs/**/watchlist_coverage_*.json
 !runs/**/semantic_residual_*.json
+!runs/**/competitor_q_trajectory.json
 
 # Root-scoped: a bare `data/` would also swallow runs/data/ as a directory ignore,
 # and git cannot descend into an ignored directory to reach the negations above.

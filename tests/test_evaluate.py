@@ -788,3 +788,38 @@ def test_stockfish_rung_is_resumable_by_name_not_spec() -> None:
             )
     assert played == [], "the already-logged stockfish matchup was replayed"
     assert rows == []
+
+
+def test_stockfish_opponent_is_a_context_manager() -> None:
+    """Closure is an idiom, not something a caller must remember (cure for 1231b65)."""
+    from tinyalphazero.opponents import StockfishOpponent
+
+    opp = StockfishOpponent(path="/nonexistent", skill=0, nodes=10)
+    calls: list[str] = []
+    opp.close = lambda: calls.append("closed")  # type: ignore[method-assign]
+    with opp as ctx:
+        assert ctx is opp
+    assert calls == ["closed"], "__exit__ did not release the engine"
+
+
+def test_anchor_identity_is_the_single_spelling() -> None:
+    """Row-writer and skip-set derive identity from one function (cure for 5bb9216)."""
+    from tinyalphazero.opponents import RandomMover, StockfishOpponent, anchor_identity
+
+    sf = StockfishOpponent(path="/nonexistent", skill=0, nodes=10)
+    assert anchor_identity(sf) == "stockfish_s0" != "stockfish:0"
+    assert anchor_identity(RandomMover()) == "random"
+
+
+def test_watchlist_verdict_is_live_and_the_pinned_one_says_so() -> None:
+    """A field that looks live must be live; a pinned one must carry its date."""
+    import json
+
+    from tinyalphazero.evaluate import WATCHLIST, load_watchlist
+
+    entries = load_watchlist()
+    assert entries, "watchlist is empty"
+    for e in entries:
+        assert "asof" in e, f"{e['id']} has no asof; its pinned verdict is undated"
+    raw = json.loads(WATCHLIST.read_text())
+    assert all(r.get("asof") for r in raw)

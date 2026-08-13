@@ -512,6 +512,7 @@ def _store(
             iteration=iteration,
             resign_disabled=resign_disabled,
             mover_is_latest=mover_is_latest,
+            root_q=float(pos.root_q),
         )
     return pool_positions
 
