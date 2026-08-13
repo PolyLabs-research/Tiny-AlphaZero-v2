@@ -247,3 +247,27 @@ pre-registered rule, the `p2_d` conversation opens on:
 | `triage_mate2_iter0020.json` | 14 failures, verdicts, q̂, visit budgets |
 | `semantic_residual_ckpt_iter0020.json` | SLOWER_FORCED_WIN vs GENUINE_MISS |
 | `config.yaml`, `provenance.json` | one field from p2_b, fingerprinted |
+
+---
+
+## Addendum (2026-08-13) — scope note on every skill-0 CI in this log
+
+The skill-0 rung **randomizes its own play**: Stockfish's skill limiter picks among
+near-best moves with a randomized tie-break. Measured over five fresh engine
+processes per position — skill 0 gave two distinct moves on quiet positions, skill
+20 gave one every time — and confirmed at campaign scale: `ckpt_iter0020` has now
+been measured at **0.233, 0.180, 0.165, 0.230**, σ ≈ 0.033.
+
+**Every skill-0 confidence interval in this document is narrower than the true
+measurement error.** The paired bootstrap resamples opening pairs within a single
+run; it cannot see an engine that re-randomizes between runs. The per-pass
+trajectory in §2 should be read with roughly ±0.03 of run-to-run noise on each
+point, which is most of the pass-to-pass movement.
+
+**P1's verdict is re-affirmed with the margin stated.** 0.025 → 0.233 is +0.208,
+about six times the measured per-run σ. No reading of this noise reaches it. The
+finer between-pass claims, already demoted to descriptive in §2 for a different
+reason, are demoted again for this one.
+
+See `RUNLOG-p2_d.md` §2 for the finding, the four permanent fixes, and M4's
+restated clause.
