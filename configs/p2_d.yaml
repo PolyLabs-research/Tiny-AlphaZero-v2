@@ -1,0 +1,90 @@
+# p2_d Track 2 — the null lever (2026-08-13)
+#
+# Byte-identical to runs/p2_c/config.yaml. Zero new levers, by design.
+#
+# The flywheel is engaged and accelerating: p2_c took skill-0 score 0.025 -> 0.233
+# with the last five iterations the steepest. The control question is whether that
+# continues with NOTHING added -- which is the cheapest and cleanest round this
+# campaign can run, and the only one that can tell a self-sustaining loop from a
+# one-off adjustment to a new target.
+#
+# tests/test_rehearsal.py::test_p2d_config_is_the_brief asserts ZERO deltas against
+# p2_c: the null lever verified as null, rehearsal_frac still 0.05,
+# value_q_mse_weight still 0.5, proof_directed_expansion off.
+eval:
+  anchor_games: 200
+  bootstrap_resamples: 10000
+  eval_every_n_iters: 10
+  eval_match_max_plies: 300
+  eval_match_sims: 48
+  openings_path: tests/suites/openings_4ply.epd
+  stockfish_path: ''
+  suite_sims: 128
+mcts:
+  batch_leaves: 512
+  c_puct: 1.25
+  c_scale: 1.0
+  c_visit: 50.0
+  dirichlet_alpha: 0.3
+  dirichlet_frac: 0.25
+  eval_c_scale: null
+  eval_c_visit: null
+  eval_m: null
+  gumbel_m: 16
+  promo_prior_from_head: false
+  root_mode: gumbel
+  root_noise: true
+  sims: 48
+  temperature_ply_cutoff: 30
+model:
+  aux_legality: true
+  d_ff: 1024
+  d_model: 256
+  d_policy: 128
+  dropout: 0.0
+  n_heads: 8
+  n_layers: 8
+  seq_len: 72
+phase2:
+  iterations: 1000
+  league_opponents_per_iter: 4
+  masked_policy: true
+  nan_abort_frac: 0.01
+  nan_abort_min_steps: 20
+  train_on_pool_moves: true
+seed: 42
+selfplay:
+  concurrent_games: 256
+  games_per_iteration: 512
+  league_latest_frac: 0.8
+  league_pool_size: 20
+  max_plies: 160
+  resign_consecutive: 8
+  resign_disabled_frac: 0.1
+  resign_threshold: -0.9
+  sims_per_move: 48
+train:
+  batch_size: 1024
+  grad_clip: 1.0
+  legality_loss_weight: 0.0
+  lr: 0.0002
+  phase1_epochs: 3
+  phase1_lr_end: 3.0e-05
+  phase1_lr_start: 0.0003
+  phase1_mate1_mix: 0.05
+  phase1_mate2_mix: 0.0
+  phase1_policy_masked: false
+  phase1_value_weight_anchor: 1.0
+  phase1_value_weight_random: 0.25
+  policy_loss_weight: 1.0
+  promo_loss_weight: 1.0
+  rehearsal_frac: 0.05
+  rehearsal_mate1_dir: runs/data/mate1_100k_clean
+  rehearsal_mate1_frac: 0.02
+  rehearsal_mate2_dir: runs/data/mate2_50k_clean
+  rehearsal_mate2_frac: 0.03
+  replay_capacity: 500000
+  train_steps_per_iter: 400
+  value_loss_weight: 1.0
+  value_q_mse_weight: 0.5
+  weight_decay: 0.0001

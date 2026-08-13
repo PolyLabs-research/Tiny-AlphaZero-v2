@@ -34,11 +34,11 @@ themselves whether the value head was uncalibrated or simply never asked.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: Fields whose value may legitimately be ``null`` in the JSONL.
 NULLABLE = frozenset({"false_resign_rate", "mean_plies_decisive"})
@@ -240,6 +240,13 @@ class LadderMatchRow:
     schema_version: int = SCHEMA_VERSION
     role: str = ROLE_PROTOCOL
     produced: str = PRODUCED_OFFLINE
+    # The learner's mean score over each opening's two colour-swapped games —
+    # the unit paired_bootstrap_elo already resamples within a matchup. Stored
+    # (v3) because comparing two *passes* needs the per-opening vector, and
+    # p2_c discarded it: the aggregate cannot support a paired-difference test,
+    # so "pass 15 beat pass 5" had to be demoted to descriptive after the fact
+    # (RUNLOG-p2_c.md §2). ~100 floats per row.
+    pair_scores: list = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

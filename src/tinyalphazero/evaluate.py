@@ -700,6 +700,7 @@ def run_ladder_pass(
             git_sha=_git_sha(),
             role=role,
             produced=produced,
+            pair_scores=[round(float(x), 4) for x in result.pair_scores],
         )
         logschema.append_ladder_row(out, row)
         rows.append(row)

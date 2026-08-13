@@ -321,6 +321,39 @@ def test_split_must_agree_with_total(tmp_path: Path) -> None:
         load_config(str(cfg_path))
 
 
+def test_p2d_config_is_the_brief() -> None:
+    """configs/p2_d.yaml differs from p2_c's resolved config in NOTHING.
+
+    Track 2 is the null lever: twenty more iterations at an identical
+    configuration, asking whether the flywheel continues with nothing added. The
+    claim "zero new levers" has exactly one form of evidence — that zero fields
+    moved — and an accidental delta would turn a control into an uncontrolled
+    experiment while still looking like a clean result.
+    """
+    import dataclasses
+
+    p2d = REPO / "configs" / "p2_d.yaml"
+    p2c = REPO / "runs" / "p2_c" / "config.yaml"
+    if not (p2d.exists() and p2c.exists()):
+        pytest.skip("p2_d config or p2_c run config not present")
+
+    a = dataclasses.asdict(load_config(str(p2c)))
+    b = dataclasses.asdict(load_config(str(p2d)))
+    differences = [
+        f"{section}.{key}: p2_c={a[section][key]} p2_d={b[section][key]}"
+        for section in a
+        if isinstance(a[section], dict)
+        for key in a[section]
+        if a[section][key] != b[section][key]
+    ]
+    assert not differences, "the null lever is not null:\n  " + "\n  ".join(differences)
+    # The two standing settings and the flag Track 1 adds, asserted by name so a
+    # future default change cannot silently redefine "identical".
+    assert b["train"]["value_q_mse_weight"] == 0.5
+    assert b["train"]["rehearsal_frac"] == 0.05
+    assert b["mcts"].get("proof_directed_expansion", False) is False
+
+
 def test_p2c_config_is_the_brief() -> None:
     """configs/p2_c.yaml differs from p2_b's resolved config in exactly one field.
 
