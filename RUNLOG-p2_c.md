@@ -151,6 +151,23 @@ move it believes in *less*, because Sequential Halving gave that move the visits
 loses to a worse estimate on a well-visited one. It is the direct motivating measurement
 for p2_d's breadth lever.
 
+**The site of the loss is elimination, not the final argmax.** The visit counts say so:
+the key edge holds 14 where the winner holds 30, and 14 is what an edge has when it is
+halved out after an early phase rather than carried to the end. So the key move's
+*interim* q̂ — measured before its subtree could prove anything — lost the elimination
+to a competitor ranked higher on `logits + σ(q̂)`. By the time the acting argmax runs,
+the key move is already gone.
+
+The eighth row is a natural experiment that ran itself. `mate2_165` at checkpoint 0005
+is the only row where the key edge held a full 30 visits, and it is the only solve. Give
+the key move a survivor's allowance and it wins; let halving starve it and its conviction
+is irrelevant.
+
+That pins the requirement for p2_d's breadth lever to a measured coordinate: **the proof
+must land inside the pre-elimination visit allowance**. A breadth-first reply sweep
+costing 7, triggered at q̂ ≥ 0.95, fits inside 14 — which is why the lever is aimed at
+this failure rather than merely consistent with it.
+
 **A lever that fixes its predicted targets and leaves its predicted non-targets alone is
 the strongest form this evidence could take.** The mechanism story is not merely
 consistent with the result; it discriminated between two sets of positions in advance.
