@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -22,11 +23,13 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from tinyalphazero.config import load_config
+from tinyalphazero.config import Config, config_fingerprint, load_config, save_config
 from tinyalphazero.data import assert_dataset_mode
+from tinyalphazero.envinfo import environment_report
 from tinyalphazero.model import ChessNet
 from tinyalphazero.phase1 import build_phase1_loader
 from tinyalphazero.train import (
+    _git_sha,
     compute_metrics,
     load_checkpoint,
     save_checkpoint,
@@ -44,6 +47,47 @@ def _config_diff(a: dict, b: dict, prefix: str = "") -> list[str]:
         elif va != vb:
             out.append(f"{prefix}{key}: {va!r} vs {vb!r}")
     return out
+
+
+def _write_run_artifacts(
+    out: Path, cfg: Config, device: torch.device, resume: dict | None
+) -> list[str]:
+    """The AGENTS §4 run-dir artifacts: resolved config.yaml and provenance.json.
+
+    provenance.json carries the git SHA of the running code, the config
+    fingerprint, torch/device and the check_env report (the matmul probe only on
+    GPU, where it costs well under a second). A resume appends to a ``resumes``
+    list rather than overwriting the record of the run's start; a run dir whose
+    config.yaml disagrees with the checkpoint being resumed is refused.
+    Returns the conflicts found (empty on success) so the caller can report them.
+    """
+    config_path = out / "config.yaml"
+    if resume is not None and config_path.exists():
+        diff = _config_diff(asdict(load_config(str(config_path))), asdict(cfg))
+        if diff:
+            return [f"{config_path} does not describe the checkpoint being resumed: {diff}"]
+    else:
+        save_config(cfg, str(config_path))
+
+    report = environment_report(matmul=device.type == "cuda")
+    entry = {
+        "git_sha": _git_sha(),
+        "config_fingerprint": config_fingerprint(cfg),
+        "torch": torch.__version__,
+        "device": str(device),
+        "device_name": report.get("device_name", "cpu"),
+        "seed": cfg.seed,
+        "argv": sys.argv,
+        "environment": report,
+    }
+    prov_path = out / "provenance.json"
+    if resume is None:
+        record = entry
+    else:
+        record = json.loads(prov_path.read_text()) if prov_path.exists() else dict(entry)
+        record.setdefault("resumes", []).append({**entry, **resume})
+    prov_path.write_text(json.dumps(record, indent=2) + "\n")
+    return []
 
 
 def main() -> None:
@@ -201,6 +245,16 @@ def main() -> None:
         )
     else:
         net = ChessNet(cfg.model).to(device)
+
+    # ---- Run artifacts (AGENTS §4): resolved config, git SHA, check_env report ----
+    conflicts = _write_run_artifacts(
+        args.out,
+        cfg,
+        device,
+        resume=None if args.ckpt is None else {"from": str(args.ckpt), "step": start_step},
+    )
+    if conflicts:
+        parser.error("\n  ".join(["refusing to resume into this run dir:", *conflicts]))
 
     # Keep the uncompiled module: torch.compile wraps it, and the wrapper's
     # state_dict() carries `_orig_mod.` prefixes that would break checkpoint I/O.
