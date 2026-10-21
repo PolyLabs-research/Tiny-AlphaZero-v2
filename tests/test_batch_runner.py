@@ -641,6 +641,61 @@ def test_claim_draw_ends_the_game_at_the_actor() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("fen", "result"),
+    [
+        ("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1", "draw"),  # stalemate, Black to move
+        ("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3", "checkmate"),  # fool's
+    ],
+)
+@pytest.mark.parametrize("external_mover", [True, False], ids=["move_fn", "searcher"])
+def test_terminal_opening_is_adjudicated_before_anyone_is_asked_to_move(
+    fen: str, result: str, external_mover: bool
+) -> None:
+    """Review D15: a terminal opening must end the game, not reach a mover.
+
+    ``_begin_move`` consulted ``move_fn`` before ``is_game_over()``; a
+    ``RandomMover`` on a stalemate or mate opening then drew from zero legal
+    moves and raised ValueError. Unreachable with the frozen book (every
+    opening is non-terminal), reachable with custom ``openings=``. The
+    searching side had the same hole with a softer symptom: it spent one
+    evaluator call building a root with no edges. Both sides now adjudicate
+    the opening first, with the same rulebook ``_play`` applies after a push:
+    no plies, no trace rows, no simulations, no forwards. A live opening with
+    the external side to move must still be played by that side first.
+    """
+    from tinyalphazero.opponents import RandomMover
+
+    board = _board(fen)
+    assert board.is_game_over(), "fixture must be terminal"
+    rng = np.random.default_rng(0)
+    mover = RandomMover()
+
+    def external(_index: int, b: chess.Board) -> chess.Move | None:
+        return mover.choose(b, rng)
+
+    runner = BatchRunner(stub_batch, _cfg(batch_leaves=4), max_plies=8)
+    (trace,) = runner.play_games(
+        1, seeds=[1], num_sims=8, boards=[board], move_fn=external if external_mover else None
+    )
+    assert trace.result == result
+    assert trace.plies == 0 and trace.positions == []
+    assert runner.stats == {"forwards": 0, "leaves": 0, "sims": 0, "terminal_shortcircuits": 0}
+
+    # Unchanged on a live opening: White is external and moves first, then
+    # Black searches, and the game runs to the ply cap.
+    def white_external(_index: int, b: chess.Board) -> chess.Move | None:
+        return mover.choose(b, rng) if b.turn == chess.WHITE else None
+
+    live = BatchRunner(stub_batch, _cfg(batch_leaves=4), max_plies=2)
+    (t2,) = live.play_games(
+        1, seeds=[1], num_sims=8, boards=[_board(MIDGAME)], move_fn=white_external
+    )
+    assert t2.result == "ply_cap" and t2.plies == 2
+    assert [p.side_to_move for p in t2.positions] == [chess.BLACK]
+    assert live.stats["sims"] == 8
+
+
 def test_batched_runner_resolves_eval_overrides() -> None:
     """``eval_m`` must reach the runner's own considered-set arithmetic.
 

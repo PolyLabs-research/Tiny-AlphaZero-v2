@@ -522,18 +522,30 @@ class BatchRunner:
         gs.history[gs.board._transposition_key()] += 1
         gs.board.push(move)
         gs.ply += 1
+        stop = self._stop_fn(gs.trace) if self._stop_fn is not None else None
+        return self._adjudicate(gs, stop)
 
-        # Claim draws at game level with exactly the in-search semantics: a
-        # rational player claims, so the actor must treat these as over rather
-        # than playing on into a position the search already scores 0. Using the
-        # same THREEFOLD_COUNT / FIFTY_MOVE_PLIES constants keeps the two in
-        # step by construction — a game that ended one way inside the tree and
-        # another way at the actor would put contradictory value targets into
-        # the replay buffer.
+    def _adjudicate(self, gs: _GameState, stop: str | None = None) -> bool:
+        """Is the position ``gs`` stands on over? If so mark the game done and say why.
+
+        One rulebook, consulted after every push by ``_play`` and once on the
+        opening by ``_begin_move``. The opening case exists because a terminal
+        opening has nothing to push: it used to fall straight through to
+        ``move_fn``, and ``RandomMover`` then drew from zero legal moves and
+        raised (review D15). ``stop`` is the actor's verdict on the trace; the
+        opening passes None because no decision has been made yet.
+
+        Claim draws at game level with exactly the in-search semantics: a
+        rational player claims, so the actor must treat these as over rather
+        than playing on into a position the search already scores 0. Using the
+        same THREEFOLD_COUNT / FIFTY_MOVE_PLIES constants keeps the two in
+        step by construction — a game that ended one way inside the tree and
+        another way at the actor would put contradictory value targets into
+        the replay buffer.
+        """
         occurrences = gs.history[gs.board._transposition_key()] + 1
         claim_draw = occurrences >= THREEFOLD_COUNT or gs.board.halfmove_clock >= FIFTY_MOVE_PLIES
 
-        stop = self._stop_fn(gs.trace) if self._stop_fn is not None else None
         if stop or gs.board.is_game_over() or claim_draw or gs.ply >= self.max_plies:
             gs.done = True
             gs.trace.plies = gs.ply
@@ -560,7 +572,13 @@ class BatchRunner:
         ladder opponent that is a random mover, a 1-ply greedy, or an engine. The
         loop is a ``while`` because both sides can be external in principle, and
         because a game must never be left sitting on a position nobody will move.
+
+        The opening is adjudicated before anyone is asked for a move. Every
+        later position has already been through ``_play``'s adjudication, so
+        the check is made once, at ply 0 (review D15).
         """
+        if gs.ply == 0 and self._adjudicate(gs):
+            return  # a terminal opening: no side has a move to make
         while not gs.done:
             move = None if self._move_fn is None else self._move_fn(gs.index, gs.board)
             if move is None:
