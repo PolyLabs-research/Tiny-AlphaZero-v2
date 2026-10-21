@@ -475,6 +475,11 @@ class Search:
         Ties are broken by prior, so the sweep is deterministic under the
         evaluation profile — a measurement that reorders under reseeding would
         be no better than the one it replaces.
+
+        A reply carrying virtual loss is not pending: a simulation still in
+        flight is already expanding it, and handing it out again would build
+        the same child twice (review P12). Harmless while ``BatchRunner`` keeps
+        one simulation per game in flight; wrong for any runner that keeps more.
         """
         n_pe = int(tree.N[parent_edge])
         if n_pe <= 0:
@@ -482,14 +487,12 @@ class Search:
         if float(tree.W[parent_edge]) / n_pe < self.cfg.proof_q_threshold:
             return None
         # A terminal edge needs no expansion: it is already exact.
-        pending = [
-            e
-            for e in range(sl.start, sl.stop)
-            if tree.child[e] == -1 and not tree.terminal[e]
-        ]
-        if not pending:
+        pending = (tree.child[sl] == -1) & ~tree.terminal[sl] & (tree.vloss[sl] == 0)
+        if not pending.any():
             return None
-        return max(pending, key=lambda e: (float(tree.prior[e]), -e))
+        # argmax returns the first maximum, so ties go to the lowest edge index —
+        # the same order as max(key=(prior, -e)) over a Python list (review P13).
+        return sl.start + int(np.argmax(np.where(pending, tree.prior[sl], -np.inf)))
 
     # -- the loop ---------------------------------------------------------
 

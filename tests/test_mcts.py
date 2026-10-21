@@ -1403,6 +1403,75 @@ def pinned_torch_threads() -> Iterator[None]:
 
 
 @pytest.mark.slow
+def test_breadth_lever_skips_replies_already_in_flight() -> None:
+    """Review P12: an unexpanded reply with virtual loss on it is being built.
+
+    ``child == -1`` alone cannot tell "never expanded" from "a suspended
+    simulation is expanding it right now"; the second case carries vloss.
+    Handing that edge out again would create the same child twice. The lever
+    must pass over it, and stand down when every pending reply is in flight.
+    """
+    tree = Tree(cap_nodes=4)
+    root = tree.add_node([(0, 0, 1.0)])
+    pe = tree.edge_slice(root).start
+    node = tree.add_node([(1, 0, 0.6), (2, 0, 0.3), (3, 0, 0.1)])
+    tree.child[pe] = node
+    tree.N[pe], tree.W[pe] = 4, 0.99 * 4  # believed
+    sl = tree.edge_slice(node)
+    tree.vloss[sl.start] = 1  # the highest-prior reply is in flight
+
+    search = Search(_stub_evaluator(), _pde_cfg(), np.random.default_rng(0))
+    assert search._unexpanded_reply(tree, sl, pe) == sl.start + 1, (
+        "the lever handed out a reply a suspended simulation is already expanding"
+    )
+    tree.vloss[sl.start + 1] = 1
+    assert search._unexpanded_reply(tree, sl, pe) == sl.start + 2
+    tree.vloss[sl.start + 2] = 1
+    assert search._unexpanded_reply(tree, sl, pe) is None, "every pending reply is in flight"
+    tree.vloss[sl] = 0
+    assert search._unexpanded_reply(tree, sl, pe) == sl.start, "vloss removed, the best is back"
+
+
+def test_breadth_lever_vectorised_scan_matches_the_first_max_tie_break() -> None:
+    """Review P13: the numpy scan must pick exactly what the Python one did.
+
+    Reference: ``max(pending, key=(prior, -e))`` — highest prior, and among
+    equal priors the *lowest* edge index. Priors are quantised to force ties
+    and child/terminal/vloss masks are drawn at random, so the None cases and
+    the tie cases are both exercised many times.
+    """
+    rng = np.random.default_rng(1234)
+    search = Search(_stub_evaluator(), _pde_cfg(), np.random.default_rng(0))
+    checked_ties = checked_none = 0
+    for _ in range(300):
+        n = int(rng.integers(1, 12))
+        tree = Tree(cap_nodes=4)
+        root = tree.add_node([(0, 0, 1.0)])
+        pe = tree.edge_slice(root).start
+        tree.N[pe], tree.W[pe] = 2, 2.0
+        priors = rng.choice([0.1, 0.2, 0.3], size=n).astype(np.float32)
+        node = tree.add_node([(i + 1, 0, float(p)) for i, p in enumerate(priors)])
+        tree.child[pe] = node
+        sl = tree.edge_slice(node)
+        tree.child[sl] = np.where(rng.random(n) < 0.3, node, -1)
+        tree.terminal[sl] = rng.random(n) < 0.2
+        tree.vloss[sl] = (rng.random(n) < 0.2).astype(np.int16)
+
+        reference = [
+            e
+            for e in range(sl.start, sl.stop)
+            if tree.child[e] == -1 and not tree.terminal[e] and tree.vloss[e] == 0
+        ]
+        expected = max(reference, key=lambda e: (float(tree.prior[e]), -e)) if reference else None
+        assert search._unexpanded_reply(tree, sl, pe) == expected
+        if expected is None:
+            checked_none += 1
+        elif sum(1 for e in reference if tree.prior[e] == tree.prior[expected]) > 1:
+            checked_ties += 1
+    assert checked_none >= 10 and checked_ties >= 30, (checked_none, checked_ties)
+
+
+@pytest.mark.slow
 def test_breadth_lever_converts_mate2_165_on_a_real_checkpoint(pinned_torch_threads: None) -> None:
     """The lever's registered claim (W3), measured where it actually lives.
 
