@@ -95,16 +95,22 @@ class MCTSConfig:
     # to land inside the pre-elimination allowance, which a breadth-first reply
     # sweep costing 1 + len(replies) does and a depth-first grind does not.
     #
-    # When on: at an opponent node whose parent edge is already believed at
-    # q-hat >= proof_q_threshold, selection prefers *unexpanded* replies until the
-    # reply set is complete, then reverts to normal selection. Exactly one ply of
-    # breadth at near-certain edges -- bounded by construction.
+    # When on: beneath any edge already believed at q-hat >= proof_q_threshold —
+    # for *either* mover, not only at opponent nodes (REVIEW-2026-10-21 P6: the
+    # trigger is symmetric, and the 13/13 Track 1 result was measured that way) —
+    # selection prefers *unexpanded* replies until the reply set is complete, then
+    # reverts to normal selection. Exactly one ply of breadth at near-certain
+    # edges -- bounded by construction.
     #
-    # OFF by default and off in self-play: enabling it in data generation changes
-    # what the training corpus is, which is a separate decision from changing what
-    # a measurement sees.
+    # This field is the *self-play* setting, OFF: enabling it in data generation
+    # changes what the training corpus is, which is a separate decision from
+    # changing what a measurement sees. The measurement side is
+    # ``eval_proof_directed_expansion`` below, folded by ``resolved()`` exactly
+    # like ``eval_m`` — the one mechanism this config has for "on the ladder and
+    # the suites but not in the corpus" (REVIEW-2026-10-21 P2).
     proof_directed_expansion: bool = False
     proof_q_threshold: float = 0.95
+    eval_proof_directed_expansion: bool | None = None
     # PUCT (ablation control)
     c_puct: float = 1.25
     dirichlet_alpha: float = 0.3
@@ -131,6 +137,11 @@ class MCTSConfig:
             gumbel_m=self.gumbel_m if self.eval_m is None else self.eval_m,
             c_visit=self.c_visit if self.eval_c_visit is None else self.eval_c_visit,
             c_scale=self.c_scale if self.eval_c_scale is None else self.eval_c_scale,
+            proof_directed_expansion=(
+                self.proof_directed_expansion
+                if self.eval_proof_directed_expansion is None
+                else self.eval_proof_directed_expansion
+            ),
         )
 
 
@@ -291,9 +302,29 @@ class EvalConfig:
     # the score reads 0.938, with the residual draws structural (stalemate and
     # insufficient material) rather than truncation.
     eval_match_max_plies: int = 300
-    eval_every_n_iters: int = 10  # how often to run the ladder during Phase 2
-    openings_path: str = "tests/suites/openings_4ply.epd"
-    stockfish_path: str = ""  # empty = skip Stockfish anchors if binary absent
+    # --- the protocol, in one place (REVIEW-2026-10-21 C3/D7/E9) --------------
+    # These used to be CLI defaults spelled in four files while the config fields
+    # here were read by nothing: every committed config.yaml said
+    # ``eval_every_n_iters: 10`` while the runs used ``--ladder-every 5``, and
+    # p2_a lost its passes 30/40/50 because ``--resume`` could not know the
+    # cadence. Now the CLI *overrides into* these fields before the run saves its
+    # config, so the saved config describes the protocol the run actually ran and
+    # a resumed run reads it back.
+    eval_every_n_iters: int = 10  # ladder cadence during Phase 2; 0 disables
+    ladder_anchors: str = "random,greedy,phase1"  # comma-separated opponent specs
+    anchor_ckpt: str = "runs/phase1_anchor.pt"  # the `phase1` rung, relative to the repo
+    # sha256 of the file `anchor_ckpt` must hash to — anchor v2 (runs/ANCHORS.sha256).
+    # Empty disables the check. The ladder refuses a file that hashes differently.
+    anchor_digest: str = "27dcdd05f7d578e7cc3e833d0def0d6e1794d1138144da4f79f6037aa7c84ef5"
+    openings_path: str = "tests/suites/openings_4ply.epd"  # relative to the repo
+    stockfish_path: str = ""  # empty = `which stockfish`; a rung with no binary is skipped
+    # Seed for offline ladder passes. None = the run seed (``Config.seed``), which
+    # is what the inline pass uses — so a backfill and an inline pass draw the
+    # same opponent move streams and the same bootstrap resamples.
+    eval_seed: int | None = None
+
+    def seed_or(self, run_seed: int) -> int:
+        return run_seed if self.eval_seed is None else self.eval_seed
 
 
 @dataclass
@@ -340,7 +371,58 @@ def _dict_to_dataclass(cls: type, d: dict) -> Any:
     return cls(**kwargs)
 
 
-def _resolve_field_types(cfg_dict: dict, cls: type) -> Any:
+def _check_leaf(name: str, value: Any, annotation: Any) -> Any:
+    """Type-check one leaf against its annotation (REVIEW-2026-10-21 D9).
+
+    PyYAML hands back whatever the text parsed as, and the dataclass took it:
+    ``'false'`` (a truthy string) left ``root_noise`` on while ``resolved()``
+    believed noise was off, ``1e-4`` (a YAML 1.1 *string*) crashed hours later in
+    the optimizer, and ``mcts: 5`` replaced a whole section with an int. The only
+    coercion allowed is the lossless int → float; everything else must already be
+    the declared type, and the error says what to write instead.
+    """
+    import types
+    import typing
+
+    origin = typing.get_origin(annotation)
+    if origin is typing.Union or origin is types.UnionType:
+        args = typing.get_args(annotation)
+        if value is None and type(None) in args:
+            return None
+        inner = [a for a in args if a is not type(None)]
+        if len(inner) == 1:
+            return _check_leaf(name, value, inner[0])
+        return value
+    if isinstance(annotation, type) and hasattr(annotation, "__dataclass_fields__"):
+        raise TypeError(
+            f"config section {name!r} must be a mapping of {annotation.__name__} fields, "
+            f"got {type(value).__name__} {value!r}"
+        )
+    if annotation is bool:
+        if isinstance(value, bool):
+            return value
+        hint = " (YAML booleans are the bare words true/false, unquoted)"
+    elif annotation is int:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        hint = ""
+    elif annotation is float:
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return float(value)
+        hint = " (YAML reads 1e-4 as a string; write 1.0e-4)" if isinstance(value, str) else ""
+    elif annotation is str:
+        if isinstance(value, str):
+            return value
+        hint = ""
+    else:
+        return value  # an annotation this checker does not know; leave it alone
+    expected = getattr(annotation, "__name__", str(annotation))
+    raise TypeError(
+        f"config field {name!r} expects {expected}, got {type(value).__name__} {value!r}{hint}"
+    )
+
+
+def _resolve_field_types(cfg_dict: dict, cls: type, prefix: str = "") -> Any:
     """Reconstruct dataclass hierarchy from nested dicts, resolving types from annotations."""
     import typing
 
@@ -354,6 +436,7 @@ def _resolve_field_types(cfg_dict: dict, cls: type) -> Any:
         if f.name not in cfg_dict:
             continue
         val = cfg_dict[f.name]
+        dotted = f"{prefix}{f.name}"
         # Resolve string annotations
         annotation = hints.get(f.name, f.type)
         if isinstance(annotation, str):
@@ -363,7 +446,9 @@ def _resolve_field_types(cfg_dict: dict, cls: type) -> Any:
             and isinstance(annotation, type)
             and hasattr(annotation, "__dataclass_fields__")
         ):
-            val = _resolve_field_types(val, annotation)
+            val = _resolve_field_types(val, annotation, prefix=f"{dotted}.")
+        else:
+            val = _check_leaf(dotted, val, annotation)
         kwargs[f.name] = val
     return cls(**kwargs)
 
@@ -398,6 +483,32 @@ def _assert_known_keys(raw: dict, cls: type, source: str, prefix: str = "") -> N
             _assert_known_keys(value, nested, source, prefix=f"{dotted}.")
 
 
+def _assert_known_override(key: str) -> None:
+    """Reject a dotted override path that names no field (REVIEW-2026-10-21 D10).
+
+    The YAML path has ``_assert_known_keys``; overrides used to write into the
+    plain dict and ``_resolve_field_types`` then iterated over *fields*, so an
+    unknown leaf (``model.n_layer``) was silently dropped and the default stayed.
+    """
+    import dataclasses
+    import typing
+
+    cls: type = Config
+    parts = key.split(".")
+    for i, part in enumerate(parts):
+        valid = {f.name for f in dataclasses.fields(cls)}
+        if part not in valid:
+            raise ValueError(
+                f"override {key!r}: unknown config key {part!r} for {cls.__name__}. "
+                f"Valid: {sorted(valid)}"
+            )
+        if i < len(parts) - 1:
+            nested = typing.get_type_hints(cls).get(part)
+            if not dataclasses.is_dataclass(nested):
+                raise ValueError(f"override {key!r}: {part!r} is a leaf field, not a section")
+            cls = nested
+
+
 def load_config(path: str | None = None, overrides: dict | None = None) -> Config:
     """Load a Config from a YAML file, optionally applying flat key overrides.
 
@@ -416,6 +527,7 @@ def load_config(path: str | None = None, overrides: dict | None = None) -> Confi
     if overrides:
         cfg_dict = _dataclass_to_dict(cfg)
         for key, value in overrides.items():
+            _assert_known_override(key)
             parts = key.split(".")
             target = cfg_dict
             for part in parts[:-1]:
@@ -449,14 +561,27 @@ def _validate_rehearsal(t: TrainConfig) -> None:
         )
 
 
+def canonical_yaml(cfg: Config) -> str:
+    """The one serialisation: sorted keys, every current field, block style."""
+    return yaml.safe_dump(_dataclass_to_dict(cfg), default_flow_style=False, sort_keys=True)
+
+
 def save_config(cfg: Config, path: str) -> None:
     """Serialise a Config to YAML. Round-trips exactly with load_config."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as fh:
-        yaml.safe_dump(_dataclass_to_dict(cfg), fh, default_flow_style=False, sort_keys=True)
+    Path(path).write_text(canonical_yaml(cfg))
 
 
 def config_fingerprint(cfg: Config) -> str:
-    """SHA-256 of the canonical (sorted-key) YAML representation."""
-    canonical = yaml.safe_dump(_dataclass_to_dict(cfg), default_flow_style=False, sort_keys=True)
-    return hashlib.sha256(canonical.encode()).hexdigest()
+    """SHA-256 of :func:`canonical_yaml` — i.e. of the bytes :func:`save_config` writes.
+
+    **How to check a recorded fingerprint:** ``sha256sum runs/<run>/config.yaml``.
+    That identity is the durable one, and a test pins it. Re-loading the file
+    under newer code and calling this function is *not* reliable: the dump
+    includes every field the dataclass currently has, so adding a field with a
+    default changes the fingerprint of every unchanged YAML — which is exactly
+    what happened to p2_a..p2_d when the Track 1 flag landed (REVIEW-2026-10-21
+    D11). The recorded value therefore means "this file", not "this config under
+    whatever the code is now".
+    """
+    return hashlib.sha256(canonical_yaml(cfg).encode()).hexdigest()

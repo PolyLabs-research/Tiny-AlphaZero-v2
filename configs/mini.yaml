@@ -69,7 +69,12 @@ phase2:
 eval:
   anchor_games: 20
   bootstrap_resamples: 1000
-  eval_every_n_iters: 1
+  # The ladder is off in the mini config (0): a pass is minutes and the golden
+  # run and the tests are not. A test that wants a pass asks for one explicitly.
+  eval_every_n_iters: 0
+  # No pinned anchor: tests play the `phase1` rung against whatever small
+  # checkpoint they just built.
+  anchor_digest: ''
   openings_path: tests/suites/openings_4ply.epd
   stockfish_path: ''
   suite_sims: 16

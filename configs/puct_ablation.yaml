@@ -1,13 +1,24 @@
-# PUCT ablation: identical to default but uses classic PUCT+Dirichlet at root
-# For the Gumbel-vs-PUCT comparison at equal sims (spec §6.2, chunk 12)
+# PUCT ablation: configs/default.yaml with exactly one value changed —
+# mcts.root_mode: puct — for the Gumbel-vs-PUCT comparison at equal sims (spec
+# §6.2, M4). Regenerated from default.yaml on 2026-10-21 (REVIEW-2026-10-21 D8):
+# the previous copy had drifted (dropout 0.1, legality_loss_weight 1.0) and
+# would have confounded the ablation. tests/test_config.py pins the one-field diff.
 seed: 42
 
 model:
+  # The legality head stays *instantiated* — it is a model-shape key, and the
+  # Phase 1 anchor this campaign starts from has its weights. §7 turns the
+  # auxiliary off in the *loss* (train.legality_loss_weight below), which is
+  # where the table puts it; dropping the module would make the anchor unloadable.
   aux_legality: true
+  # Per-layer trunc_normal(0.02) attention init. The dataclass default keeps the
+  # legacy shared-xavier init so old checkpoints describe themselves; only runs
+  # that initialise fresh weights (no --init) are affected. REVIEW-2026-10-21 B3.
+  attn_init: trunc_normal
   d_ff: 1024
   d_model: 256
   d_policy: 128
-  dropout: 0.1
+  dropout: 0.0  # §7: 0.0 in Phase 2 (0.1 in Phase 1) — config, not code
   n_heads: 8
   n_layers: 8
   seq_len: 72
@@ -21,6 +32,10 @@ mcts:
   dirichlet_frac: 0.25
   gumbel_m: 16
   root_mode: puct
+  # Self-play explores; evaluation does not. Suites, the anchor ladder and match
+  # play override this to false (the runner defaults to it). See
+  # BLOCKED-2026-08-08-mate2-gate.md.
+  root_noise: true
   sims: 48
   temperature_ply_cutoff: 30
 
@@ -38,11 +53,12 @@ selfplay:
 train:
   batch_size: 1024
   grad_clip: 1.0
-  legality_loss_weight: 1.0
+  legality_loss_weight: 0.0  # §7: legality auxiliary OFF in Phase 2
   lr: 0.0002
   phase1_epochs: 3
   phase1_lr_end: 3.0e-05
   phase1_lr_start: 0.0003
+  phase1_anchor_weighting: exact  # a mix of 0.05 IS 5% of the batch (REVIEW-2026-10-21 E1)
   phase1_mate1_mix: 0.05
   phase1_value_weight_anchor: 1.0
   phase1_value_weight_random: 0.25
@@ -51,7 +67,19 @@ train:
   replay_capacity: 500000
   train_steps_per_iter: 400
   value_loss_weight: 1.0
+  # Rows without a root_q keep their outcome CE at full weight when the z/q blend
+  # is on (train.value_q_mse_weight > 0). p2_c/p2_d ran "batch_mean", which halved
+  # it; see REVIEW-2026-10-21 C1 and the RUNLOG-p2_c erratum.
+  value_q_blend: per_row
   weight_decay: 0.0001
+
+phase2:
+  iterations: 1000
+  league_opponents_per_iter: 4
+  masked_policy: true
+  nan_abort_frac: 0.01
+  nan_abort_min_steps: 20
+  train_on_pool_moves: true
 
 eval:
   anchor_games: 200
