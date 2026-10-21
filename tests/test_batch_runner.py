@@ -120,7 +120,7 @@ def test_gate_equivalence_with_synchronous_search(
         _board(epd), None, sims
     )
 
-    runner = BatchRunner(stub_batch, cfg, max_plies=1)
+    runner = BatchRunner(stub_batch, cfg, max_plies=1, keep_debug_trees=True)
     list(runner.play_games(1, seeds=[7], num_sims=sims, boards=[_board(epd)]))
     tree, root, sims_run = runner.debug_trees[(0, 0)]
     sl = tree.edge_slice(root)
@@ -156,7 +156,7 @@ def test_regression_phase_remainder_goes_to_the_best_survivor() -> None:
     sync = Search(uniform_stub_evaluator, cfg, np.random.default_rng(7)).run(
         _board(MIDGAME), None, sims
     )
-    runner = BatchRunner(stub_batch, cfg, max_plies=1)
+    runner = BatchRunner(stub_batch, cfg, max_plies=1, keep_debug_trees=True)
     list(runner.play_games(1, seeds=[7], num_sims=sims, boards=[_board(MIDGAME)]))
     tree, root, _ = runner.debug_trees[(0, 0)]
 
@@ -190,7 +190,7 @@ def test_equivalence_holds_across_a_whole_game() -> None:
     cfg = _cfg()
     board_a, board_b = _board(MIDGAME), _board(MIDGAME)
 
-    runner = BatchRunner(stub_batch, cfg, max_plies=4)
+    runner = BatchRunner(stub_batch, cfg, max_plies=4, keep_debug_trees=True)
     list(runner.play_games(1, seeds=[3], num_sims=16, boards=[board_b]))
 
     search = Search(uniform_stub_evaluator, cfg, np.random.default_rng(3))
@@ -199,6 +199,104 @@ def test_equivalence_holds_across_a_whole_game() -> None:
         tree, root, _ = runner.debug_trees[(0, ply)]
         assert list(tree.N[tree.edge_slice(root)]) == list(result.visits), f"ply {ply}"
         board_a.push(result.best_move())
+
+
+@pytest.mark.parametrize("batch_leaves", [1, 2, 3])
+@pytest.mark.parametrize("root_noise", [True, False], ids=["selfplay", "eval"])
+def test_scheduler_cannot_change_a_game_when_batches_are_smaller_than_the_game_count(
+    batch_leaves: int, root_noise: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review A1: ``batch_leaves <= num_games`` must not alter any game's search.
+
+    With fewer buffer slots than live games a flush can fire *inside* the
+    per-game ``for`` loop, at a lower game index than a root request that is
+    still pending. The resumed root then sat in a half-finished state (``gen``
+    None, ``in_root`` True) that the loop read as "root not yet requested" and
+    opened a second ``expand_root_gen`` on the same tree. Two consequences, both
+    asserted here: the second build either re-drew Gumbel noise and re-pointed
+    ``root`` at node 1 (node 0 orphaned), or was counted as a simulation.
+
+    Every production path runs ``batch_leaves > concurrent games``, and the
+    existing accounting tests use three games against ``batch_leaves >= 1``
+    with no mid-loop flush, which is why 264 green tests coexisted with it.
+    The decisive property is the last block: each game's move sequence and root
+    visit vector equal those of the same ``(seed, index)`` game played under a
+    batch that can never flush mid-loop. One generator per game is what makes
+    that equality the contract; the scheduler was its only violator.
+    """
+    seeds = [11, 12, 13, 14]
+    sims = 8
+
+    def boards() -> list[chess.Board]:
+        return [
+            chess.Board(),
+            _board(MIDGAME),
+            _board(FIXTURES["mate_in_2"]),
+            _board(FIXTURES["promotions"]),
+        ]
+
+    from collections import Counter
+
+    finish_calls: Counter = Counter()
+    orig_finish = BatchRunner._finish_root
+
+    def spy_finish(self, gs, *a, **k):  # noqa: ANN001, ANN002, ANN003
+        finish_calls[(id(gs), gs.ply)] += 1
+        return orig_finish(self, gs, *a, **k)
+
+    expand_calls: list[int] = []
+    orig_expand = Search.expand_root_gen
+
+    def spy_expand(self, *a, **k):  # noqa: ANN001, ANN002, ANN003
+        expand_calls.append(1)
+        return orig_expand(self, *a, **k)
+
+    monkeypatch.setattr(BatchRunner, "_finish_root", spy_finish)
+    monkeypatch.setattr(Search, "expand_root_gen", spy_expand)
+
+    cfg = _cfg(root_noise=root_noise, batch_leaves=batch_leaves)
+    runner = BatchRunner(stub_batch, cfg, max_plies=6, keep_debug_trees=True)
+    traces = list(runner.play_games(4, seeds=seeds, num_sims=sims, boards=boards()))
+    positions = sum(len(t.positions) for t in traces)
+    assert positions >= 4
+
+    # Budget identity: a root build is never a simulation.
+    assert runner.stats["sims"] == sims * positions, runner.stats
+    # One root request and one root completion per searched position.
+    assert len(expand_calls) == positions, "a root was expanded twice"
+    assert sum(finish_calls.values()) == positions
+    assert set(finish_calls.values()) == {1}, "finish_root ran twice for one position"
+    # One root per tree: node 0, and every other node hangs off exactly one edge.
+    assert len(runner.debug_trees) == positions
+    for (gi, ply), (tree, root, sims_run) in runner.debug_trees.items():
+        assert root == 0, f"game {gi} ply {ply}: root re-pointed to node {root}"
+        assert sims_run == sims
+        children = tree.child[: tree.n_edges]
+        assert sorted(children[children >= 0].tolist()) == list(range(1, tree.n_nodes)), (
+            f"game {gi} ply {ply}: orphan or doubly-referenced node"
+        )
+
+    # The property A1 breaks: the same (seed, index) game under a batch that can
+    # never flush mid-loop must be move-for-move and visit-for-visit identical.
+    wide = BatchRunner(
+        stub_batch,
+        _cfg(root_noise=root_noise, batch_leaves=512),
+        max_plies=6,
+        keep_debug_trees=True,
+    )
+    list(wide.play_games(4, seeds=seeds, num_sims=sims, boards=boards()))
+    for gi in range(4):
+        narrow = [m.uci() for m in runner._games_debug[gi].board.move_stack]
+        reference = [m.uci() for m in wide._games_debug[gi].board.move_stack]
+        assert narrow == reference, f"game {gi} diverged under batch_leaves={batch_leaves}"
+    visits = {
+        k: tree.N[tree.edge_slice(root)].tolist()
+        for k, (tree, root, _) in runner.debug_trees.items()
+    }
+    reference_visits = {
+        k: tree.N[tree.edge_slice(root)].tolist() for k, (tree, root, _) in wide.debug_trees.items()
+    }
+    assert visits == reference_visits
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +383,7 @@ def test_leaf_accounting_balances_with_terminals_present(batch_leaves: int) -> N
 def test_vloss_is_zero_after_every_flush() -> None:
     """Virtual loss is a flight-window artefact; none may survive the batch."""
     cfg = _cfg(batch_leaves=8)
-    runner = BatchRunner(stub_batch, cfg, max_plies=4)
+    runner = BatchRunner(stub_batch, cfg, max_plies=4, keep_debug_trees=True)
     list(runner.play_games(4, seeds=[1, 2, 3, 4], num_sims=16))
     for (_g, _ply), (tree, _root, _s) in runner.debug_trees.items():
         assert (tree.vloss[: tree.n_edges] == 0).all(), "leaked virtual loss"
@@ -344,6 +442,78 @@ def test_inline_evaluation_is_refused() -> None:
         _unused_evaluator(np.zeros(72, dtype=np.int8))
 
 
+def test_root_result_reports_the_batched_evaluation_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review A6: ``RootResult.evaluations`` was the shared Search's counter — 0 here.
+
+    The result is built by ``Search._root_result`` and then filled in by
+    ``_commit_move``, so a spy on the former sees the same object the runner
+    reports. The count must equal the synchronous search's for the same
+    ``(seed, position)`` at ``batch_leaves=1`` (root plus one per simulation on
+    a quiet midgame; strictly fewer on a mate-in-1, where terminal
+    short-circuits never reach the evaluator), equal ``stats["leaves"]`` for a
+    one-game one-move run, and reset per move across a game.
+    """
+    captured: list = []
+    orig = Search._root_result
+
+    def spy(self, *a, **k):  # noqa: ANN001, ANN002, ANN003
+        result = orig(self, *a, **k)
+        captured.append(result)
+        return result
+
+    monkeypatch.setattr(Search, "_root_result", spy)
+    cfg = _cfg()
+    sims = 16
+
+    for name in ("midgame", "mate_in_1"):
+        epd = FIXTURES[name]
+        sync = Search(uniform_stub_evaluator, cfg, np.random.default_rng(7)).run(
+            _board(epd), None, sims
+        )
+        captured.clear()
+        runner = BatchRunner(stub_batch, cfg, max_plies=1)
+        list(runner.play_games(1, seeds=[7], num_sims=sims, boards=[_board(epd)]))
+        (batched,) = captured
+        assert batched.evaluations > 0, f"{name}: the batched path reported no evaluations"
+        assert batched.evaluations == sync.evaluations, f"{name}: differs from the sync search"
+        assert batched.evaluations == runner.stats["leaves"], f"{name}: not the runner's count"
+        if name == "midgame":
+            assert batched.evaluations == sims + 1, "root expansion plus one per simulation"
+        else:
+            assert batched.evaluations < sims + 1 and runner.stats["terminal_shortcircuits"] > 0
+
+    captured.clear()
+    runner = BatchRunner(stub_batch, _cfg(batch_leaves=4), max_plies=3)
+    traces = list(runner.play_games(1, seeds=[7], num_sims=sims, boards=[_board(MIDGAME)]))
+    assert len(captured) == traces[0].plies == 3
+    assert all(0 < r.evaluations <= sims + 1 for r in captured), "the count must reset per move"
+    assert sum(r.evaluations for r in captured) == runner.stats["leaves"]
+
+
+def test_debug_trees_are_retained_only_on_request() -> None:
+    """Review A4/C7: trees are a test instrument, not a production retention.
+
+    Every searched tree used to be kept for the whole ``play_games`` call —
+    ~63 KiB per ``Tree(cap_nodes=49)``, ~1.9 GiB per 256-game wave at chunk-8
+    ply counts, on the box whose scarce resource is host RAM. The default must
+    keep nothing; the flag must keep exactly one entry per searched position,
+    keyed by ``(game_index, ply)`` so the equivalence gate can address them.
+    """
+    cfg = _cfg(batch_leaves=8)
+    plain = BatchRunner(stub_batch, cfg, max_plies=3)
+    traces = list(plain.play_games(2, seeds=[1, 2], num_sims=8))
+    positions = sum(len(t.positions) for t in traces)
+    assert positions > 0
+    assert plain.debug_trees == {}, "trees retained without being asked for"
+
+    keeper = BatchRunner(stub_batch, cfg, max_plies=3, keep_debug_trees=True)
+    traces = list(keeper.play_games(2, seeds=[1, 2], num_sims=8))
+    expected_keys = {(gi, pos.ply) for gi, trace in enumerate(traces) for pos in trace.positions}
+    assert set(keeper.debug_trees) == expected_keys
+    for tree, root, sims_run in keeper.debug_trees.values():
+        assert isinstance(tree, Tree) and root == 0 and sims_run == 8
+
+
 # ---------------------------------------------------------------------------
 # The evaluation profile on the batched path (BLOCKED-2026-08-08)
 #
@@ -359,7 +529,7 @@ def test_eval_profile_batched_is_seed_independent() -> None:
     cfg = _cfg(root_noise=False, batch_leaves=8)
     trees = []
     for seed in (11, 22):
-        runner = BatchRunner(stub_batch, cfg, max_plies=3)
+        runner = BatchRunner(stub_batch, cfg, max_plies=3, keep_debug_trees=True)
         list(runner.play_games(2, seeds=[seed, seed + 1], num_sims=24))
         trees.append(
             {
@@ -374,7 +544,7 @@ def test_selfplay_profile_batched_still_varies() -> None:
     """The other side of it: self-play data diversity must survive."""
     seen = set()
     for seed in range(5):
-        runner = BatchRunner(stub_batch, _cfg(batch_leaves=8), max_plies=3)
+        runner = BatchRunner(stub_batch, _cfg(batch_leaves=8), max_plies=3, keep_debug_trees=True)
         list(runner.play_games(1, seeds=[seed], num_sims=24))
         tree, root, _ = runner.debug_trees[(0, 0)]
         seen.add(tuple(tree.N[tree.edge_slice(root)].tolist()))
@@ -469,6 +639,61 @@ def test_claim_draw_ends_the_game_at_the_actor() -> None:
         assert gs.board.halfmove_clock >= FIFTY_MOVE_PLIES or occurrences >= THREEFOLD_COUNT, (
             "draw_claim must be justified by the same rule the search uses"
         )
+
+
+@pytest.mark.parametrize(
+    ("fen", "result"),
+    [
+        ("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1", "draw"),  # stalemate, Black to move
+        ("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3", "checkmate"),  # fool's
+    ],
+)
+@pytest.mark.parametrize("external_mover", [True, False], ids=["move_fn", "searcher"])
+def test_terminal_opening_is_adjudicated_before_anyone_is_asked_to_move(
+    fen: str, result: str, external_mover: bool
+) -> None:
+    """Review D15: a terminal opening must end the game, not reach a mover.
+
+    ``_begin_move`` consulted ``move_fn`` before ``is_game_over()``; a
+    ``RandomMover`` on a stalemate or mate opening then drew from zero legal
+    moves and raised ValueError. Unreachable with the frozen book (every
+    opening is non-terminal), reachable with custom ``openings=``. The
+    searching side had the same hole with a softer symptom: it spent one
+    evaluator call building a root with no edges. Both sides now adjudicate
+    the opening first, with the same rulebook ``_play`` applies after a push:
+    no plies, no trace rows, no simulations, no forwards. A live opening with
+    the external side to move must still be played by that side first.
+    """
+    from tinyalphazero.opponents import RandomMover
+
+    board = _board(fen)
+    assert board.is_game_over(), "fixture must be terminal"
+    rng = np.random.default_rng(0)
+    mover = RandomMover()
+
+    def external(_index: int, b: chess.Board) -> chess.Move | None:
+        return mover.choose(b, rng)
+
+    runner = BatchRunner(stub_batch, _cfg(batch_leaves=4), max_plies=8)
+    (trace,) = runner.play_games(
+        1, seeds=[1], num_sims=8, boards=[board], move_fn=external if external_mover else None
+    )
+    assert trace.result == result
+    assert trace.plies == 0 and trace.positions == []
+    assert runner.stats == {"forwards": 0, "leaves": 0, "sims": 0, "terminal_shortcircuits": 0}
+
+    # Unchanged on a live opening: White is external and moves first, then
+    # Black searches, and the game runs to the ply cap.
+    def white_external(_index: int, b: chess.Board) -> chess.Move | None:
+        return mover.choose(b, rng) if b.turn == chess.WHITE else None
+
+    live = BatchRunner(stub_batch, _cfg(batch_leaves=4), max_plies=2)
+    (t2,) = live.play_games(
+        1, seeds=[1], num_sims=8, boards=[_board(MIDGAME)], move_fn=white_external
+    )
+    assert t2.result == "ply_cap" and t2.plies == 2
+    assert [p.side_to_move for p in t2.positions] == [chess.BLACK]
+    assert live.stats["sims"] == 8
 
 
 def test_batched_runner_resolves_eval_overrides() -> None:

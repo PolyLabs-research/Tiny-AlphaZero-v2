@@ -112,7 +112,11 @@ def allocate_within_phase(budget: int, n_survivors: int) -> list[int]:
 
 
 def force_include_proven_wins(
-    tree: Any, root: int, considered: list[int], rank_score: np.ndarray
+    tree: Any,
+    root: int,
+    considered: list[int],
+    rank_score: np.ndarray,
+    cap: int | None = None,
 ) -> list[int]:
     """Ensure exactly-known wins are in the considered set.
 
@@ -126,6 +130,14 @@ def force_include_proven_wins(
 
     Swaps rather than appends, so ``len(considered)`` is unchanged and the
     halving schedule's budget arithmetic still lands exactly on num_sims.
+
+    The one exception is when there are more wins than slots: every non-win
+    has been evicted and the rest of the wins are appended, which is more
+    actions than ``num_sims`` can sample once each — the guarantee
+    ``halving_phase_budgets`` is built on, and it raised (review A2: 28/100
+    mate-in-1 positions at sims=1). ``cap`` bounds the result, keeping wins
+    first, best-ranked first. Default None keeps the uncapped behaviour so
+    the two drivers' shared call site is the only place the cap is chosen.
     """
     sl = tree.edge_slice(root)
     wins = [
@@ -145,6 +157,14 @@ def force_include_proven_wins(
     for win in missing[len(evictable) :]:
         if win not in out:
             out.append(win)
+    if cap is not None and len(out) > cap:
+        # Reached only via the appends above, so `out` is all wins at this
+        # point; ordering by rank keeps the ones the prior (and g) like best.
+        # Stable, so ties keep their slot order under the eval profile.
+        win_set = set(wins)
+        kept_wins = sorted((a for a in out if a in win_set), key=lambda a: -rank_score[a])
+        others = [a for a in out if a not in win_set]
+        out = (kept_wins + others)[:cap]
     return out
 
 
@@ -183,7 +203,11 @@ def form_considered_set(
 
     m = min(cfg.gumbel_m, n_actions, max(num_sims, 1))
     order = np.argsort(-(g + logits), kind="stable")
-    considered = force_include_proven_wins(tree, root, list(order[:m]), g + logits)
+    # Cap at the budget, not at m: a win swapped in keeps the set at m, but
+    # wins appended past the evictable set may exceed what num_sims can sample.
+    considered = force_include_proven_wins(
+        tree, root, list(order[:m]), g + logits, cap=max(num_sims, 1)
+    )
     return g, logits, considered
 
 

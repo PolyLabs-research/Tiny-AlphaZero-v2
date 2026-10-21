@@ -210,11 +210,22 @@ def test_gate_invariants_full_tree_vloss_and_w() -> None:
         assert (np.abs(tree.W[used][visited]) <= tree.N[used][visited] + 1e-5).all()
 
         # Node-level identity: a node's visits equal the sum over its edges plus
-        # the one visit that created it.
+        # the one visit that created it. The root's creating visit is the
+        # expansion, so its edge sum is sims_run; every other node's is the
+        # backup of the simulation that expanded it through its parent edge,
+        # so N[parent_edge] == 1 + sum(N over the node's edges). The loop used
+        # to assert only the root case (review A5).
+        children = tree.child[: tree.n_edges]
+        assert sorted(children[children >= 0].tolist()) == list(range(1, tree.n_nodes)), (
+            "every non-root node must hang off exactly one edge"
+        )
+        parent_edge = {int(children[e]): e for e in np.where(children >= 0)[0]}
         for node in range(tree.n_nodes):
-            sl = tree.edge_slice(node)
+            edge_sum = int(tree.N[tree.edge_slice(node)].sum())
             if node == root:
-                assert int(tree.N[sl].sum()) == sims_run
+                assert edge_sum == sims_run
+            else:
+                assert int(tree.N[parent_edge[node]]) == edge_sum + 1, f"node {node}"
 
 
 def test_terminal_root_returns_no_edges() -> None:
@@ -324,22 +335,31 @@ def test_gate_board_copy_ban_also_covers_the_suite_runner(
 
 
 def test_unvisited_edges_use_completed_q_not_zero() -> None:
-    """v1 treated unvisited Q as 0, overrating them from losing positions (§6.2)."""
+    """v1 treated unvisited Q as 0, overrating them from losing positions (§6.2).
+
+    Two edges: A (prior 0.9) visited four times and losing, Q = -1; B (prior
+    0.1) unvisited. With one visited edge the node's Q *is* A's Q, so under
+    completed-Q both edges carry -1 and only the exploration term decides:
+    ``u = c_puct * prior * sqrt(N) / (1 + N_edge)`` is 1.25 * 0.9 * 2 / 5 = 0.45
+    for A against 1.25 * 0.1 * 2 / 1 = 0.25 for B, so A is selected. Under v1
+    semantics B scores 0 + 0.25 against A's -1 + 0.45 = -0.55 and *B* is
+    selected — the losing node's untried move reads as a free escape. The old
+    assertion, ``chosen in (A, B)``, was true for any return (review A5).
+    """
     tree = Tree(cap_nodes=4)
-    node = tree.add_node([(1, 0, 0.5), (2, 0, 0.5)])
+    node = tree.add_node([(1, 0, 0.9), (2, 0, 0.1)])
     sl = tree.edge_slice(node)
-    # One edge visited with a bad outcome; the node is losing.
     tree.N[sl.start] = 4
-    tree.W[sl.start] = -4.0  # Q = -1
+    tree.W[sl.start] = -4.0  # Q = -1: the node is losing
     assert tree.node_q(node) == pytest.approx(-1.0)
 
-    # The unvisited sibling must inherit -1, not 0. With 0 it would look like a
-    # free escape and be selected forever.
     search = _search()
-    q_unvisited = tree.node_q(node)
-    assert q_unvisited < 0.0
-    chosen = search._select_edge(tree, node)
-    assert chosen in (sl.start, sl.start + 1)
+    assert search.cfg.c_puct == 1.25, "the arithmetic in the docstring assumes c_puct=1.25"
+    completed = search._root_completed_q(tree, node)
+    assert completed[1] == pytest.approx(-1.0), "unvisited edge must inherit the node's Q, not 0"
+    assert search._select_edge(tree, node) == sl.start, (
+        "the unvisited edge was scored as 0 and chosen as a free escape"
+    )
 
 
 def test_backup_flips_sign_per_ply() -> None:
@@ -375,23 +395,49 @@ def test_in_search_repetition_counts_on_top_of_game_history() -> None:
     repetitions_fn supplies the count from game history before the search; the
     path-local counter adds occurrences created by the search itself. Only the
     sum can reach the threefold threshold when the history already holds two.
-    """
-    # King shuffle: the only moves repeat the position.
-    board = chess.Board("7k/8/8/8/8/8/8/K6R w - - 0 1")
-    seen: dict[str, int] = {}
 
-    def reps(b: chess.Board) -> int:
-        return seen.get(b.epd(), 0)
+    Asserted on the tree rather than on the budget (review A5: ``visits.sum()
+    == 32`` holds whatever the repetition handling does). One child position
+    of the root is given a history of two prior occurrences; the search's own
+    arrival there is the third, so that edge — and only that edge — must be a
+    terminal draw that is never expanded. With a history of one, the same
+    edge must be ordinary: one in history plus one on the path is two.
+
+    (Not the ``7k/.../K6R`` shuffle FEN used above: there the black king
+    stands on the rook's file with White to move, so python-chess's first
+    "legal" move captures the king and the child is a stalemate on its own.)
+    """
+    board = chess.Board("8/8/8/4k3/8/8/4K3/4R3 w - - 0 1")
+    first = next(iter(board.legal_moves))
+    board.push(first)
+    marked = board.epd()
+    board.pop()
+    ft = first.from_square * 64 + first.to_square
+
+    def history(count: int):
+        return lambda b: count if b.epd() == marked else 0
 
     search = _search()
-    result = search.run(board, reps, 32)
-    assert int(result.visits.sum()) == 32
-
-    # Now claim two prior occurrences of every position: draws become reachable
-    # one repetition earlier, which must change the search's value estimates.
-    seen = dict.fromkeys([board.epd()], 2)
-    result_with_history = search.run(board, reps, 32)
-    assert int(result_with_history.visits.sum()) == 32
+    terminal_by_history: dict[int, set[int]] = {}
+    for count in (0, 1, 2):
+        tree, root, sims = search.run_tree(board, history(count), 32)
+        sl = tree.edge_slice(root)
+        assert sims == 32 and int(tree.N[sl].sum()) == 32
+        (idx,) = np.where(tree.move_ft[sl] == ft)[0]
+        terminal_by_history[count] = set(np.where(tree.terminal[sl])[0].tolist())
+        if count == 2:
+            e = sl.start + int(idx)
+            assert tree.terminal[e], "two in history + one on the path must be a threefold"
+            assert tree.terminal_value[e] == 0.0, "a claimable repetition is a draw"
+            assert tree.child[e] == -1, "a terminal edge is never expanded"
+        else:
+            assert int(idx) not in terminal_by_history[count], (
+                f"history {count} + one on the path is not yet a threefold"
+            )
+    assert terminal_by_history[2] == terminal_by_history[0] | {int(idx)}, (
+        "history must create exactly the marked terminal edge and no other"
+    )
+    assert terminal_by_history[1] == terminal_by_history[0]
 
 
 def _repetition_oracle_mismatches(
@@ -726,6 +772,75 @@ def test_proven_wins_are_never_dropped_from_the_considered_set() -> None:
     board.pop()
 
 
+@pytest.mark.parametrize("sims", [1, 2, 3])
+@pytest.mark.parametrize("root_noise", [True, False], ids=["selfplay", "eval"])
+def test_force_include_cannot_push_the_considered_set_past_the_budget(
+    sims: int, root_noise: bool
+) -> None:
+    """Review A2: more proven wins than simulations must not raise.
+
+    ``form_considered_set`` caps ``m <= num_sims``, but force-include *appended*
+    wins once every non-win had been evicted, and ``halving_phase_budgets``
+    then refused ``m=2 > num_sims=1``. The mate-in-1 suite has positions with
+    several mating moves: at sims=1 28/100 raised, at sims=2 4/100, at sims=3
+    1/100. The set is now truncated back to the budget with wins first, so the
+    search still plays a mate on every position — a win that survives
+    force-include is always in the considered set.
+
+    Runs the batched driver too: both consume the shared helper, and the
+    equivalence gate's smallest budget is 6, above where this bites.
+    """
+    cfg = (_gumbel_cfg if root_noise else _eval_cfg)()
+    solved, total, failed = run_suite(
+        MATE_IN_1,
+        sims=sims,
+        evaluate_fn=uniform_stub_evaluator,
+        cfg=cfg,
+        mate_in=1,
+        rng=np.random.default_rng(0),
+    )
+    assert total == 100
+    assert solved == total, f"sims={sims}: {solved}/{total}; failed {failed[:8]}"
+
+    from tinyalphazero.mcts.batch_runner import BatchRunner, uniform_stub_batch
+
+    for epd_line, ident in load_epd(MATE_IN_1)[:12]:
+        board = chess.Board()
+        board.set_epd(epd_line)
+        runner = BatchRunner(uniform_stub_batch, replace(cfg, batch_leaves=1), max_plies=1)
+        list(runner.play_games(1, seeds=[0], num_sims=sims, boards=[board]))
+        gs = runner._games_debug[0]
+        assert gs.board.is_checkmate(), (
+            f"{ident}: batched driver did not play the mate at sims={sims}"
+        )
+
+
+def test_force_include_cap_keeps_wins_first_and_is_off_by_default() -> None:
+    """Unit shape of the A2 fix on a hand-built root with three mating moves."""
+    from tinyalphazero.mcts.gumbel import force_include_proven_wins
+
+    tree = Tree(cap_nodes=2)
+    node = tree.add_node([(i, 0, 0.2) for i in range(5)])
+    sl = tree.edge_slice(node)
+    for i in (1, 3, 4):  # three immediate mates
+        tree.terminal[sl.start + i] = True
+        tree.terminal_value[sl.start + i] = -1.0
+    rank = np.array([0.0, 0.5, 0.9, 0.1, 0.7], dtype=np.float32)
+
+    uncapped = force_include_proven_wins(tree, node, [2, 0], rank)
+    assert sorted(uncapped) == [1, 3, 4], "every win forced in, both non-wins evicted"
+
+    capped = force_include_proven_wins(tree, node, [2, 0], rank, cap=2)
+    assert len(capped) == 2
+    assert set(capped) <= {1, 3, 4}, "truncation must keep wins over everything else"
+    assert capped == [4, 1], "among wins, the better-ranked survive"
+
+    # Below the cap nothing changes: the swap path leaves len(considered) at m.
+    assert force_include_proven_wins(
+        tree, node, [2, 0, 1], rank, cap=3
+    ) == force_include_proven_wins(tree, node, [2, 0, 1], rank)
+
+
 def test_improved_policy_is_a_distribution_over_legal_actions() -> None:
     search = Search(uniform_stub_evaluator, _gumbel_cfg(), np.random.default_rng(0))
     for board in _random_boards(15, seed=42):
@@ -963,6 +1078,56 @@ def test_proven_depth_is_odd_and_never_immediate() -> None:
     for i in wins:
         depth = int(tree.proven_depth[sl.start + i])
         assert depth >= 3 and depth % 2 == 1, f"edge {i}: proven_depth {depth}"
+
+
+def test_proven_depth_updates_when_a_shorter_proof_arrives() -> None:
+    """Review A3: a proof is permanent, its distance is not.
+
+    Hand-built tree, A to move at the root. e0 leads to a node where B has two
+    replies: f1 lets A mate at once; f2 leads to a node where A's only proved
+    line (g2) is a slow mate in 5 plies. Inducting bottom-up proves e0 as a
+    loss for B at depth 1 + max(2, 6) = 7 — B is lost and picks the slowest
+    defence. Then a faster line h (mate in 3) is proved beneath f2. With the
+    early return on ``proven`` f2 kept depth 6 and e0 depth 7, so the root
+    ordered this win as a mate-in-7 against siblings for the rest of the
+    search; the induction must shorten them to 4 and 5 while the values stay
+    exactly where they were.
+    """
+    tree = Tree(cap_nodes=8)
+    root = tree.add_node([(0, 0, 1.0)])  # A to move
+    e0 = tree.edge_slice(root).start
+    n1 = tree.add_node([(1, 0, 0.5), (2, 0, 0.5)])  # B to move: replies f1, f2
+    tree.child[e0] = n1
+    f1, f2 = tree.edge_slice(n1).start, tree.edge_slice(n1).start + 1
+    n2 = tree.add_node([(3, 0, 1.0)])  # A to move after f1
+    tree.child[f1] = n2
+    g1 = tree.edge_slice(n2).start
+    tree.terminal[g1] = True
+    tree.terminal_value[g1] = -1.0  # B is mated: A wins in one ply
+    n3 = tree.add_node([(4, 0, 0.5), (5, 0, 0.5)])  # A to move after f2
+    tree.child[f2] = n3
+    g2, h = tree.edge_slice(n3).start, tree.edge_slice(n3).start + 1
+    tree.proven[g2] = True
+    tree.proven_value[g2] = -1.0  # proven win for A ...
+    tree.proven_depth[g2] = 5  # ... but a slow one
+
+    search = _search()
+    for e in (f1, f2, e0):  # bottom-up, the order backup visits them
+        search._solve_edge(tree, e)
+    assert tree.proven[f1] and tree.proven_value[f1] == 1.0 and tree.proven_depth[f1] == 2
+    assert tree.proven[f2] and tree.proven_value[f2] == 1.0 and tree.proven_depth[f2] == 6
+    assert tree.proven[e0] and tree.proven_value[e0] == -1.0 and tree.proven_depth[e0] == 7
+
+    # The shorter proof arrives beneath f2.
+    tree.proven[h] = True
+    tree.proven_value[h] = -1.0
+    tree.proven_depth[h] = 3
+    for e in (f2, e0):
+        search._solve_edge(tree, e)
+    assert tree.proven_depth[f2] == 4, "f2 kept the slow line's distance"
+    assert tree.proven_depth[e0] == 5, "the root edge kept the stale mate distance"
+    assert (tree.proven_value[f2], tree.proven_value[e0]) == (1.0, -1.0), "values must not move"
+    assert tree.proven[f1] and tree.proven_depth[f1] == 2, "an unaffected edge is untouched"
 
 
 def test_exact_win_bonus_dominates_prior_and_sigma() -> None:
@@ -1220,7 +1385,94 @@ def test_breadth_lever_returns_unexpanded_replies_then_stops() -> None:
     assert search._unexpanded_reply(tree, csl, e) is None
 
 
-def test_breadth_lever_converts_mate2_165_on_a_real_checkpoint() -> None:
+@pytest.fixture
+def pinned_torch_threads() -> Iterator[None]:
+    """Pin torch to four threads for one test and put the process back afterwards.
+
+    ``torch.set_num_threads`` is process-global; left set, it changed the thread
+    count for every later test in the session (review P8).
+    """
+    import torch
+
+    before = torch.get_num_threads()
+    torch.set_num_threads(4)
+    try:
+        yield
+    finally:
+        torch.set_num_threads(before)
+
+
+@pytest.mark.slow
+def test_breadth_lever_skips_replies_already_in_flight() -> None:
+    """Review P12: an unexpanded reply with virtual loss on it is being built.
+
+    ``child == -1`` alone cannot tell "never expanded" from "a suspended
+    simulation is expanding it right now"; the second case carries vloss.
+    Handing that edge out again would create the same child twice. The lever
+    must pass over it, and stand down when every pending reply is in flight.
+    """
+    tree = Tree(cap_nodes=4)
+    root = tree.add_node([(0, 0, 1.0)])
+    pe = tree.edge_slice(root).start
+    node = tree.add_node([(1, 0, 0.6), (2, 0, 0.3), (3, 0, 0.1)])
+    tree.child[pe] = node
+    tree.N[pe], tree.W[pe] = 4, 0.99 * 4  # believed
+    sl = tree.edge_slice(node)
+    tree.vloss[sl.start] = 1  # the highest-prior reply is in flight
+
+    search = Search(_stub_evaluator(), _pde_cfg(), np.random.default_rng(0))
+    assert search._unexpanded_reply(tree, sl, pe) == sl.start + 1, (
+        "the lever handed out a reply a suspended simulation is already expanding"
+    )
+    tree.vloss[sl.start + 1] = 1
+    assert search._unexpanded_reply(tree, sl, pe) == sl.start + 2
+    tree.vloss[sl.start + 2] = 1
+    assert search._unexpanded_reply(tree, sl, pe) is None, "every pending reply is in flight"
+    tree.vloss[sl] = 0
+    assert search._unexpanded_reply(tree, sl, pe) == sl.start, "vloss removed, the best is back"
+
+
+def test_breadth_lever_vectorised_scan_matches_the_first_max_tie_break() -> None:
+    """Review P13: the numpy scan must pick exactly what the Python one did.
+
+    Reference: ``max(pending, key=(prior, -e))`` — highest prior, and among
+    equal priors the *lowest* edge index. Priors are quantised to force ties
+    and child/terminal/vloss masks are drawn at random, so the None cases and
+    the tie cases are both exercised many times.
+    """
+    rng = np.random.default_rng(1234)
+    search = Search(_stub_evaluator(), _pde_cfg(), np.random.default_rng(0))
+    checked_ties = checked_none = 0
+    for _ in range(300):
+        n = int(rng.integers(1, 12))
+        tree = Tree(cap_nodes=4)
+        root = tree.add_node([(0, 0, 1.0)])
+        pe = tree.edge_slice(root).start
+        tree.N[pe], tree.W[pe] = 2, 2.0
+        priors = rng.choice([0.1, 0.2, 0.3], size=n).astype(np.float32)
+        node = tree.add_node([(i + 1, 0, float(p)) for i, p in enumerate(priors)])
+        tree.child[pe] = node
+        sl = tree.edge_slice(node)
+        tree.child[sl] = np.where(rng.random(n) < 0.3, node, -1)
+        tree.terminal[sl] = rng.random(n) < 0.2
+        tree.vloss[sl] = (rng.random(n) < 0.2).astype(np.int16)
+
+        reference = [
+            e
+            for e in range(sl.start, sl.stop)
+            if tree.child[e] == -1 and not tree.terminal[e] and tree.vloss[e] == 0
+        ]
+        expected = max(reference, key=lambda e: (float(tree.prior[e]), -e)) if reference else None
+        assert search._unexpanded_reply(tree, sl, pe) == expected
+        if expected is None:
+            checked_none += 1
+        elif sum(1 for e in reference if tree.prior[e] == tree.prior[expected]) > 1:
+            checked_ties += 1
+    assert checked_none >= 10 and checked_ties >= 30, (checked_none, checked_ties)
+
+
+@pytest.mark.slow
+def test_breadth_lever_converts_mate2_165_on_a_real_checkpoint(pinned_torch_threads: None) -> None:
     """The lever's registered claim (W3), measured where it actually lives.
 
     Every synthetic version of this test was vacuous, and the reasons are worth
@@ -1233,6 +1485,9 @@ def test_breadth_lever_converts_mate2_165_on_a_real_checkpoint() -> None:
     across four p2_c passes.
 
     CPU on purpose: Track 1 must never contend with a training run for the GPU.
+    Marked slow (two 128-sim searches through a real net on four CPU threads)
+    and skipped where the gitignored checkpoint is absent, so it runs where the
+    record it pins was made and nowhere else.
     """
     import json
 
@@ -1248,7 +1503,7 @@ def test_breadth_lever_converts_mate2_165_on_a_real_checkpoint() -> None:
     if not (ckpt.exists() and cfg_path.exists()):
         pytest.skip("p2_c endpoint checkpoint not present in this working tree")
 
-    torch.set_num_threads(4)
+    assert torch.get_num_threads() == 4, "the pinned_torch_threads fixture is not in effect"
     cfg = load_config(str(cfg_path))
     net, _ = load_checkpoint(ckpt, device=torch.device("cpu"))
     net.eval()
@@ -1273,19 +1528,48 @@ def test_breadth_lever_converts_mate2_165_on_a_real_checkpoint() -> None:
     assert solved[True] is True, "the breadth lever failed to convert mate2_165 (W3)"
 
 
-def test_breadth_lever_is_deterministic_under_the_eval_profile() -> None:
-    """Two runs at identical settings pick identical moves.
+def test_breadth_lever_is_deterministic_under_the_eval_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two *differently seeded* runs at identical settings give identical trees.
 
     A measurement instrument that reorders under reseeding is no better than the
-    one it replaces (the argument that retired root noise from the ladder).
+    one it replaces (the argument that retired root noise from the ladder). The
+    eval profile draws no Gumbel noise and the lever breaks ties on the prior,
+    so the seed must be unable to reach the result. Both runs used to be built
+    with ``default_rng(0)``, which could not detect the failure the docstring
+    names (review P4).
+
+    The threshold is dropped to -1 so the lever fires beneath every visited
+    edge. At 0.95 the constant-value stub never trips it (the real-checkpoint
+    test above records why), and a determinism test of a lever that never
+    runs is the plain eval profile's, which is gated earlier in this file. A
+    spy asserts it fired; with the firings in place, a tie-break that consulted
+    the rng instead of the prior makes the two seeds disagree.
     """
     import numpy as np
 
     from tinyalphazero.mcts.search import Search
 
+    fired: list[bool] = []
+    orig = Search._unexpanded_reply
+
+    def spy(self, tree, sl, parent_edge):  # noqa: ANN001
+        picked = orig(self, tree, sl, parent_edge)
+        fired.append(picked is not None)
+        return picked
+
+    monkeypatch.setattr(Search, "_unexpanded_reply", spy)
+
     board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
-    moves = []
-    for _ in range(2):
-        search = Search(_stub_evaluator(), _pde_cfg(), np.random.default_rng(0))
-        moves.append(search.run(board, None, 32).best_move())
-    assert moves[0] == moves[1]
+    results = []
+    for seed in (0, 999):
+        fired.clear()
+        search = Search(
+            _stub_evaluator(), _pde_cfg(proof_q_threshold=-1.0), np.random.default_rng(seed)
+        )
+        results.append(search.run(board, None, 32))
+        assert sum(fired) > 0, "the lever never fired; this would test only the eval profile"
+    assert results[0].best_move() == results[1].best_move()
+    assert results[0].chosen == results[1].chosen
+    np.testing.assert_array_equal(results[0].visits, results[1].visits)

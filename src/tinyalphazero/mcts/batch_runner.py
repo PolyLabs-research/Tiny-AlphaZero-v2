@@ -115,6 +115,10 @@ class _GameState:
         self.phase_queue: list[int] = []  # survivor-local indices left in this phase
         self.phase_ran = False  # did the phase just drained actually spend visits?
         self.sims_run = 0
+        # Evaluator answers this move's search has consumed, root included. The
+        # shared Search never evaluates on the batched path, so its own counter
+        # would report 0 for every RootResult built here (review A6).
+        self.evaluations = 0
         self.g: np.ndarray | None = None
         self.logits: np.ndarray | None = None
         self.survivors: list[int] = []
@@ -129,12 +133,20 @@ class BatchRunner:
         cfg: MCTSConfig | None = None,
         device: str = "cpu",
         max_plies: int = 160,
+        keep_debug_trees: bool = False,
     ) -> None:
         """``evaluate_batch(tokens (B,72)) -> (policy (B,64,64), promo (B,64,64,4), value (B,))``.
 
         Raw policy logits: the legal mask is applied runner-side, because the mask
         is cheap on CPU exactly when the leaf yields and would otherwise have to be
         shipped to the device and back.
+
+        ``keep_debug_trees`` retains every searched ``(tree, root, sims_run)`` in
+        ``debug_trees`` for the equivalence gate and the parity probe. Off by
+        default: a ``Tree(cap_nodes=49)`` is ~63 KiB, so a 256-game self-play
+        wave at chunk-8 ply counts held ~1.9 GiB of trees for the whole
+        ``play_games`` call, on the box whose scarce resource is host RAM
+        (review A4/C7).
         """
         self.evaluate_batch = evaluate_batch
         # Resolve the evaluation profile here for the same reason Search does:
@@ -149,10 +161,16 @@ class BatchRunner:
         # (game_index, ply) -> (tree, root, sims_run) for the equivalence gate. The
         # gate has to compare visit counts and solver flags, not just chosen moves:
         # two searches can agree on the move while disagreeing about everything else.
+        # Filled only when keep_debug_trees is set; empty otherwise.
+        self.keep_debug_trees = keep_debug_trees
         self.debug_trees: dict[tuple[int, int], tuple[Tree, int, int]] = {}
         self._stop_fn: Any = None
         self._evaluator_for: Any = None
         self._move_fn: Any = None
+        # Per-call search context, stashed so ``_resume`` can finish a root the
+        # moment its evaluation lands (see ``_resume`` for why it must).
+        self._search: Search | None = None
+        self._num_sims: int = 0
 
     # -- evaluation plumbing ---------------------------------------------
 
@@ -199,12 +217,28 @@ class BatchRunner:
             self._resume(games[req.game], (probs, promo, float(values[i])))
 
     def _resume(self, gs: _GameState, answer: tuple[np.ndarray, np.ndarray, float]) -> None:
+        """Hand one evaluation back to its suspended simulation.
+
+        A root that completes here is finished *here*, synchronously. It used to
+        be queued and finished at the top of the next ``while`` pass, which left
+        a window — ``gen is None`` and ``in_root`` still True — that the
+        per-game ``for`` loop could reach first whenever a flush fired at a
+        lower game index than the root's owner (only possible with
+        ``batch_leaves <= concurrent games``). The loop read that state as "root
+        not yet requested" and opened a **second** ``expand_root_gen`` on the
+        same tree: Gumbel noise drawn twice, ``root`` re-pointed to node 1 with
+        node 0 orphaned, or the second build counted as a simulation (review
+        A1). Finishing inline leaves no state in which a completed root is
+        ambiguous, so the scheduler cannot change a game's search — which is
+        the whole contract of this class.
+        """
+        gs.evaluations += 1  # one answer, one evaluation of this game's leaf
         try:
             gs.gen.send(answer)
         except StopIteration as stop:
             gs.gen = None
             if gs.in_root:
-                self._pending_roots.append((gs, stop.value))
+                self._finish_root(gs, self._search, self._num_sims, stop.value)
             else:
                 gs.sims_run += 1
                 self.stats["sims"] += 1
@@ -220,6 +254,7 @@ class BatchRunner:
         gs.path_reps = Counter()
         gs.path_reps[gs.board._transposition_key()] += 1
         gs.sims_run = 0
+        gs.evaluations = 0
         gs.schedule = []
         gs.phase_queue = []
         gs.phase_ran = False
@@ -346,20 +381,17 @@ class BatchRunner:
         self._stop_fn = stop_fn
         self._evaluator_for = evaluator_for
         self._move_fn = move_fn
+        self._search = search
+        self._num_sims = num_sims
         for gs in games:
             # _begin_move, not _start_move: a game whose opening has the opponent
             # to move must play that move before any tree is built for it.
             self._begin_move(gs, search, num_sims, game_reps(gs))
 
         pending: list[_LeafRequest] = []
-        self._pending_roots: list[tuple[_GameState, int]] = []
         batch_leaves = max(1, self.cfg.batch_leaves)
 
         while any(not gs.done for gs in games):
-            for gs_done, root_idx in self._pending_roots:
-                self._finish_root(gs_done, search, num_sims, root_idx)
-            self._pending_roots.clear()
-
             progressed = False
             for gi, gs in enumerate(games):
                 if gs.done or gs.gen is not None:
@@ -367,6 +399,9 @@ class BatchRunner:
 
                 if gs.in_root:
                     # The root is a leaf like any other; it goes through the buffer.
+                    # ``in_root`` with no generator means exactly one thing here —
+                    # "not yet requested" — because ``_resume`` clears it the
+                    # moment the root's evaluation lands (review A1).
                     gs.gen = search.expand_root_gen(gs.tree, gs.board, gs.path_reps, game_reps(gs))
                 else:
                     forced = self._next_forced_edge(gs, search)
@@ -414,7 +449,7 @@ class BatchRunner:
                 # wait for a full batch that can never arrive.
                 self._flush(pending, games)
                 continue  # the flush unblocked games -- that IS progress
-            if not progressed and not pending and not self._pending_roots:
+            if not progressed and not pending:
                 break
 
         self._flush(pending, games)
@@ -438,6 +473,9 @@ class BatchRunner:
 
         sl = tree.edge_slice(root)
         result = search._root_result(tree, root, sl, gs.sims_run)
+        # _root_result reports the Search's own counter, which never moves on
+        # this path; the game's count is the real one (review A6).
+        result.evaluations = gs.evaluations
         completed_q = search._root_completed_q(tree, root)
         max_n = int(tree.N[sl].max())
         result.improved_policy_probs = gumbel.improved_policy(
@@ -464,7 +502,8 @@ class BatchRunner:
             )
         )
 
-        self.debug_trees[(id(gs), gs.ply)] = (tree, root, gs.sims_run)
+        if self.keep_debug_trees:
+            self.debug_trees[(id(gs), gs.ply)] = (tree, root, gs.sims_run)
         if self._play(gs, result.best_move()):
             return
         self._begin_move(gs, search, num_sims, base_reps)
@@ -483,18 +522,30 @@ class BatchRunner:
         gs.history[gs.board._transposition_key()] += 1
         gs.board.push(move)
         gs.ply += 1
+        stop = self._stop_fn(gs.trace) if self._stop_fn is not None else None
+        return self._adjudicate(gs, stop)
 
-        # Claim draws at game level with exactly the in-search semantics: a
-        # rational player claims, so the actor must treat these as over rather
-        # than playing on into a position the search already scores 0. Using the
-        # same THREEFOLD_COUNT / FIFTY_MOVE_PLIES constants keeps the two in
-        # step by construction — a game that ended one way inside the tree and
-        # another way at the actor would put contradictory value targets into
-        # the replay buffer.
+    def _adjudicate(self, gs: _GameState, stop: str | None = None) -> bool:
+        """Is the position ``gs`` stands on over? If so mark the game done and say why.
+
+        One rulebook, consulted after every push by ``_play`` and once on the
+        opening by ``_begin_move``. The opening case exists because a terminal
+        opening has nothing to push: it used to fall straight through to
+        ``move_fn``, and ``RandomMover`` then drew from zero legal moves and
+        raised (review D15). ``stop`` is the actor's verdict on the trace; the
+        opening passes None because no decision has been made yet.
+
+        Claim draws at game level with exactly the in-search semantics: a
+        rational player claims, so the actor must treat these as over rather
+        than playing on into a position the search already scores 0. Using the
+        same THREEFOLD_COUNT / FIFTY_MOVE_PLIES constants keeps the two in
+        step by construction — a game that ended one way inside the tree and
+        another way at the actor would put contradictory value targets into
+        the replay buffer.
+        """
         occurrences = gs.history[gs.board._transposition_key()] + 1
         claim_draw = occurrences >= THREEFOLD_COUNT or gs.board.halfmove_clock >= FIFTY_MOVE_PLIES
 
-        stop = self._stop_fn(gs.trace) if self._stop_fn is not None else None
         if stop or gs.board.is_game_over() or claim_draw or gs.ply >= self.max_plies:
             gs.done = True
             gs.trace.plies = gs.ply
@@ -521,7 +572,13 @@ class BatchRunner:
         ladder opponent that is a random mover, a 1-ply greedy, or an engine. The
         loop is a ``while`` because both sides can be external in principle, and
         because a game must never be left sitting on a position nobody will move.
+
+        The opening is adjudicated before anyone is asked for a move. Every
+        later position has already been through ``_play``'s adjudication, so
+        the check is made once, at ply 0 (review D15).
         """
+        if gs.ply == 0 and self._adjudicate(gs):
+            return  # a terminal opening: no side has a move to make
         while not gs.done:
             move = None if self._move_fn is None else self._move_fn(gs.index, gs.board)
             if move is None:

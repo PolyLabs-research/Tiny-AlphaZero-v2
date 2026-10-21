@@ -424,13 +424,22 @@ class Search:
 
         ``parent_edge`` is the edge that led here, and is read only by
         proof-directed expansion (``cfg.proof_directed_expansion``, off by
-        default): beneath an edge the mover already believes at
+        default): beneath any non-root edge that its own mover believes at
         ``q >= proof_q_threshold``, this returns an *unexpanded* reply until the
-        node's reply set is complete. That is what the solver needs — it can
-        induct a proof back only when every reply has been refuted — and it is
-        what ordinary selection never provides, because ordinary selection
-        re-grinds the strongest reply. See the config comment for the measured
-        coordinate this is aimed at.
+        node's reply set is complete. The condition is parity-blind — it fires
+        for **either mover** (review P6). Beneath the root mover's believed
+        move it widens the opponent's replies, which is what the solver needs:
+        it can induct a proof back only when every reply has been refuted, and
+        ordinary selection never provides that because it re-grinds the
+        strongest reply. Beneath an opponent reply the opponent believes at the
+        threshold it widens the *root mover's* replies instead — breadth in a
+        line the root mover is losing, which proves nothing the root argmax can
+        use and costs ``1 + len(replies)`` simulations per descent. The Track 1
+        record (13/13) was measured with exactly this symmetric behaviour, so
+        the behaviour stays as measured and is described here as it is;
+        restricting it to odd depth relative to the root would be a new lever
+        version to pre-register, not a fix. See the config comment for the
+        measured coordinate this is aimed at.
         """
         sl = tree.edge_slice(node)
         if self.cfg.proof_directed_expansion and parent_edge is not None:
@@ -468,6 +477,11 @@ class Search:
     def _unexpanded_reply(self, tree: Tree, sl: slice, parent_edge: int) -> int | None:
         """An unexpanded reply beneath a near-certain parent edge, or None.
 
+        "Believed" is ``W/N`` of ``parent_edge`` from the perspective of the
+        side that played it — whichever side that is. The check does not ask
+        whether that side is the root mover, so it fires at both parities (see
+        ``_select_edge`` for what each case buys and costs).
+
         None means "do not interfere": the parent edge is not believed strongly
         enough, or the reply set is already complete, in which case normal
         selection resumes and the extra breadth costs nothing further.
@@ -475,6 +489,11 @@ class Search:
         Ties are broken by prior, so the sweep is deterministic under the
         evaluation profile — a measurement that reorders under reseeding would
         be no better than the one it replaces.
+
+        A reply carrying virtual loss is not pending: a simulation still in
+        flight is already expanding it, and handing it out again would build
+        the same child twice (review P12). Harmless while ``BatchRunner`` keeps
+        one simulation per game in flight; wrong for any runner that keeps more.
         """
         n_pe = int(tree.N[parent_edge])
         if n_pe <= 0:
@@ -482,14 +501,12 @@ class Search:
         if float(tree.W[parent_edge]) / n_pe < self.cfg.proof_q_threshold:
             return None
         # A terminal edge needs no expansion: it is already exact.
-        pending = [
-            e
-            for e in range(sl.start, sl.stop)
-            if tree.child[e] == -1 and not tree.terminal[e]
-        ]
-        if not pending:
+        pending = (tree.child[sl] == -1) & ~tree.terminal[sl] & (tree.vloss[sl] == 0)
+        if not pending.any():
             return None
-        return max(pending, key=lambda e: (float(tree.prior[e]), -e))
+        # argmax returns the first maximum, so ties go to the lowest edge index —
+        # the same order as max(key=(prior, -e)) over a Python list (review P13).
+        return sl.start + int(np.argmax(np.where(pending, tree.prior[sl], -np.inf)))
 
     # -- the loop ---------------------------------------------------------
 
@@ -613,9 +630,16 @@ class Search:
         distance every proven win ties at q̂ = +1, and the acting argmax then
         breaks the tie on the prior — which is how a proven mate-in-5 was played
         over a proven mate-in-2 on nine positions of the gate suite.
+
+        An edge that is already proven is still revisited for its *distance*:
+        the value is exact and cannot move, but a shorter proof arriving later
+        beneath it shortens the line, and the acting rule orders proven wins on
+        exactly that number. Returning early on ``proven`` froze the depth at
+        the first proof — a slow line proved first left an overestimate for
+        the rest of the search (review A3).
         """
         c = int(tree.child[e])
-        if c < 0 or tree.terminal[e] or tree.proven[e]:
+        if c < 0 or tree.terminal[e]:
             return
         sl = tree.edge_slice(c)
         if sl.stop <= sl.start:
@@ -635,9 +659,15 @@ class Search:
             depth = 1 + int(depths.max() if solved <= -1.0 else depths[int(np.argmax(mover_view))])
         else:
             return
+        depth = min(depth, np.iinfo(np.int16).max)
+        if tree.proven[e]:
+            # Already exact; only the distance can have changed (and only downward).
+            if depth != int(tree.proven_depth[e]):
+                tree.proven_depth[e] = depth
+            return
         tree.proven[e] = True
         tree.proven_value[e] = solved
-        tree.proven_depth[e] = min(depth, np.iinfo(np.int16).max)
+        tree.proven_depth[e] = depth
 
     def _gumbel_scores(
         self, tree: Tree, root: int, g: np.ndarray, logits: np.ndarray
