@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import multiprocessing as mp
 import os
 import time
@@ -17,6 +18,11 @@ from tinyalphazero.data import (
     generate_random_games,
     write_dataset,
 )
+
+
+def _library_default(fn, name: str):
+    """The generator's own default for ``name`` — read, not restated (AGENTS §4)."""
+    return inspect.signature(fn).parameters[name].default
 
 
 def load_exclusion_keys(paths: list[str]) -> set[str]:
@@ -48,18 +54,18 @@ def load_exclusion_keys(paths: list[str]) -> set[str]:
     return keys
 
 
-def _mate2_shard(spec: tuple[int, int, frozenset]) -> list:
+def _mate2_shard(spec: tuple[int, int, frozenset, int]) -> list:
     """Harvest one shard of mate-in-2 positions. Top level so it is picklable."""
     from tinyalphazero.data import position_key
 
-    count, seed, excluded = spec
+    count, seed, excluded, max_plies = spec
     rng = np.random.default_rng(seed)
     out = []
     if not excluded:
-        return list(generate_mate_in_2(count, rng))
+        return list(generate_mate_in_2(count, rng, max_plies=max_plies))
     # Over-draw and filter: the generator counts what it yields, so filtering
     # afterwards would come up short.
-    for rec in generate_mate_in_2(count * 2, rng):
+    for rec in generate_mate_in_2(count * 2, rng, max_plies=max_plies):
         if position_key(rec.tokens) not in excluded:
             out.append(rec)
             if len(out) >= count:
@@ -68,7 +74,11 @@ def _mate2_shard(spec: tuple[int, int, frozenset]) -> list:
 
 
 def _generate_mate2(
-    total: int, seed: int, workers: int, excluded: frozenset = frozenset()
+    total: int,
+    seed: int,
+    workers: int,
+    excluded: frozenset = frozenset(),
+    max_plies: int | None = None,
 ) -> tuple[list, float, int]:
     """Harvest `total` mate-in-2 positions, sharded across processes.
 
@@ -77,10 +87,12 @@ def _generate_mate2(
     output is reproducible from (seed, workers); both go into meta.json, because a
     different worker count gives a different (still valid) dataset.
     """
+    if max_plies is None:
+        max_plies = _library_default(generate_mate_in_2, "max_plies")
     workers = max(1, min(workers, os.cpu_count() or 1))
     base = total // workers
     counts = [base + (1 if i < total % workers else 0) for i in range(workers)]
-    specs = [(c, seed * 10_000 + i, excluded) for i, c in enumerate(counts) if c > 0]
+    specs = [(c, seed * 10_000 + i, excluded, max_plies) for i, c in enumerate(counts) if c > 0]
     t0 = time.perf_counter()
     if len(specs) == 1:
         shards = [_mate2_shard(specs[0])]
@@ -108,8 +120,23 @@ def main() -> None:
     )
     parser.add_argument("--out", required=True, metavar="DIR", help="Output directory")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--max-plies", type=int, default=200)
-    parser.add_argument("--min-plies", type=int, default=10)
+    parser.add_argument(
+        "--max-plies",
+        type=int,
+        default=None,
+        help="Game length cap for the random walk. --games and --mate2 accept it "
+        f"(library defaults {_library_default(generate_random_games, 'max_plies')} / "
+        f"{_library_default(generate_mate_in_2, 'max_plies')}); --mate1 fixes its own "
+        "and rejects the flag.",
+    )
+    parser.add_argument(
+        "--min-plies",
+        type=int,
+        default=None,
+        help="Skip random games shorter than this (--games only; library default "
+        f"{_library_default(generate_random_games, 'min_plies')}). The anchor "
+        "harvesters have no such parameter and reject the flag.",
+    )
     parser.add_argument(
         "--exclude",
         action="append",
@@ -128,6 +155,18 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    # Inert flags are worse than rejected ones (REVIEW-2026-10-21 E12): a dataset
+    # whose meta.json records a ply cap the harvester never saw misdescribes itself.
+    if args.mate1 is not None and (args.max_plies is not None or args.min_plies is not None):
+        parser.error(
+            "--max-plies/--min-plies do not apply to --mate1: generate_mate_in_1 fixes its "
+            "walk at 150 plies (src/tinyalphazero/data.py) and takes neither parameter."
+        )
+    if args.mate2 is not None and args.min_plies is not None:
+        parser.error(
+            "--min-plies does not apply to --mate2: generate_mate_in_2 has no such parameter."
+        )
+
     rng = np.random.default_rng(args.seed)
     out_dir = Path(args.out)
     t0 = time.perf_counter()
@@ -137,26 +176,38 @@ def main() -> None:
         print(f"Excluding {len(excluded)} positions from {len(args.exclude)} source(s)")
 
     if args.games is not None:
-        records = generate_random_games(
-            args.games, rng, max_plies=args.max_plies, min_plies=args.min_plies
-        )
+        kw = {
+            k: v
+            for k, v in (("max_plies", args.max_plies), ("min_plies", args.min_plies))
+            if v is not None
+        }
+        records = generate_random_games(args.games, rng, **kw)
         cfg = {
             "mode": "random_games",
             "num_games": args.games,
             "seed": args.seed,
-            "max_plies": args.max_plies,
-            "min_plies": args.min_plies,
+            # The effective values: the flag if given, else the generator's own default.
+            "max_plies": kw.get("max_plies", _library_default(generate_random_games, "max_plies")),
+            "min_plies": kw.get("min_plies", _library_default(generate_random_games, "min_plies")),
         }
         meta = write_dataset(records, out_dir, generation_config=cfg)
         elapsed = time.perf_counter() - t0
         print(f"Generated {meta.n} positions from {args.games} games in {elapsed:.1f}s → {out_dir}")
     elif args.mate2 is not None:
-        records, harvest_s, workers = _generate_mate2(args.mate2, args.seed, args.workers, excluded)
+        max_plies = (
+            args.max_plies
+            if args.max_plies is not None
+            else _library_default(generate_mate_in_2, "max_plies")
+        )
+        records, harvest_s, workers = _generate_mate2(
+            args.mate2, args.seed, args.workers, excluded, max_plies=max_plies
+        )
         cfg = {
             "mode": "mate_in_2",
             "num_positions": args.mate2,
             "seed": args.seed,
             "workers": workers,
+            "max_plies": max_plies,
             "positions_per_sec": round(len(records) / max(harvest_s, 1e-9), 2),
             "excluded_sources": list(args.exclude),
         }
