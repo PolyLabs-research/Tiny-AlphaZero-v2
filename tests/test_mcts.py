@@ -1034,6 +1034,56 @@ def test_proven_depth_is_odd_and_never_immediate() -> None:
         assert depth >= 3 and depth % 2 == 1, f"edge {i}: proven_depth {depth}"
 
 
+def test_proven_depth_updates_when_a_shorter_proof_arrives() -> None:
+    """Review A3: a proof is permanent, its distance is not.
+
+    Hand-built tree, A to move at the root. e0 leads to a node where B has two
+    replies: f1 lets A mate at once; f2 leads to a node where A's only proved
+    line (g2) is a slow mate in 5 plies. Inducting bottom-up proves e0 as a
+    loss for B at depth 1 + max(2, 6) = 7 — B is lost and picks the slowest
+    defence. Then a faster line h (mate in 3) is proved beneath f2. With the
+    early return on ``proven`` f2 kept depth 6 and e0 depth 7, so the root
+    ordered this win as a mate-in-7 against siblings for the rest of the
+    search; the induction must shorten them to 4 and 5 while the values stay
+    exactly where they were.
+    """
+    tree = Tree(cap_nodes=8)
+    root = tree.add_node([(0, 0, 1.0)])  # A to move
+    e0 = tree.edge_slice(root).start
+    n1 = tree.add_node([(1, 0, 0.5), (2, 0, 0.5)])  # B to move: replies f1, f2
+    tree.child[e0] = n1
+    f1, f2 = tree.edge_slice(n1).start, tree.edge_slice(n1).start + 1
+    n2 = tree.add_node([(3, 0, 1.0)])  # A to move after f1
+    tree.child[f1] = n2
+    g1 = tree.edge_slice(n2).start
+    tree.terminal[g1] = True
+    tree.terminal_value[g1] = -1.0  # B is mated: A wins in one ply
+    n3 = tree.add_node([(4, 0, 0.5), (5, 0, 0.5)])  # A to move after f2
+    tree.child[f2] = n3
+    g2, h = tree.edge_slice(n3).start, tree.edge_slice(n3).start + 1
+    tree.proven[g2] = True
+    tree.proven_value[g2] = -1.0  # proven win for A ...
+    tree.proven_depth[g2] = 5  # ... but a slow one
+
+    search = _search()
+    for e in (f1, f2, e0):  # bottom-up, the order backup visits them
+        search._solve_edge(tree, e)
+    assert tree.proven[f1] and tree.proven_value[f1] == 1.0 and tree.proven_depth[f1] == 2
+    assert tree.proven[f2] and tree.proven_value[f2] == 1.0 and tree.proven_depth[f2] == 6
+    assert tree.proven[e0] and tree.proven_value[e0] == -1.0 and tree.proven_depth[e0] == 7
+
+    # The shorter proof arrives beneath f2.
+    tree.proven[h] = True
+    tree.proven_value[h] = -1.0
+    tree.proven_depth[h] = 3
+    for e in (f2, e0):
+        search._solve_edge(tree, e)
+    assert tree.proven_depth[f2] == 4, "f2 kept the slow line's distance"
+    assert tree.proven_depth[e0] == 5, "the root edge kept the stale mate distance"
+    assert (tree.proven_value[f2], tree.proven_value[e0]) == (1.0, -1.0), "values must not move"
+    assert tree.proven[f1] and tree.proven_depth[f1] == 2, "an unaffected edge is untouched"
+
+
 def test_exact_win_bonus_dominates_prior_and_sigma() -> None:
     """Scale check, so the ordering is not accidentally true at tested priors.
 

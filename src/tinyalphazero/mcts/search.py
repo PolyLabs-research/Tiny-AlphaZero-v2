@@ -613,9 +613,16 @@ class Search:
         distance every proven win ties at q̂ = +1, and the acting argmax then
         breaks the tie on the prior — which is how a proven mate-in-5 was played
         over a proven mate-in-2 on nine positions of the gate suite.
+
+        An edge that is already proven is still revisited for its *distance*:
+        the value is exact and cannot move, but a shorter proof arriving later
+        beneath it shortens the line, and the acting rule orders proven wins on
+        exactly that number. Returning early on ``proven`` froze the depth at
+        the first proof — a slow line proved first left an overestimate for
+        the rest of the search (review A3).
         """
         c = int(tree.child[e])
-        if c < 0 or tree.terminal[e] or tree.proven[e]:
+        if c < 0 or tree.terminal[e]:
             return
         sl = tree.edge_slice(c)
         if sl.stop <= sl.start:
@@ -635,9 +642,15 @@ class Search:
             depth = 1 + int(depths.max() if solved <= -1.0 else depths[int(np.argmax(mover_view))])
         else:
             return
+        depth = min(depth, np.iinfo(np.int16).max)
+        if tree.proven[e]:
+            # Already exact; only the distance can have changed (and only downward).
+            if depth != int(tree.proven_depth[e]):
+                tree.proven_depth[e] = depth
+            return
         tree.proven[e] = True
         tree.proven_value[e] = solved
-        tree.proven_depth[e] = min(depth, np.iinfo(np.int16).max)
+        tree.proven_depth[e] = depth
 
     def _gumbel_scores(
         self, tree: Tree, root: int, g: np.ndarray, logits: np.ndarray
