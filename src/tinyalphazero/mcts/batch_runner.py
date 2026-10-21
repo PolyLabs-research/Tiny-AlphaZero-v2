@@ -129,12 +129,20 @@ class BatchRunner:
         cfg: MCTSConfig | None = None,
         device: str = "cpu",
         max_plies: int = 160,
+        keep_debug_trees: bool = False,
     ) -> None:
         """``evaluate_batch(tokens (B,72)) -> (policy (B,64,64), promo (B,64,64,4), value (B,))``.
 
         Raw policy logits: the legal mask is applied runner-side, because the mask
         is cheap on CPU exactly when the leaf yields and would otherwise have to be
         shipped to the device and back.
+
+        ``keep_debug_trees`` retains every searched ``(tree, root, sims_run)`` in
+        ``debug_trees`` for the equivalence gate and the parity probe. Off by
+        default: a ``Tree(cap_nodes=49)`` is ~63 KiB, so a 256-game self-play
+        wave at chunk-8 ply counts held ~1.9 GiB of trees for the whole
+        ``play_games`` call, on the box whose scarce resource is host RAM
+        (review A4/C7).
         """
         self.evaluate_batch = evaluate_batch
         # Resolve the evaluation profile here for the same reason Search does:
@@ -149,6 +157,8 @@ class BatchRunner:
         # (game_index, ply) -> (tree, root, sims_run) for the equivalence gate. The
         # gate has to compare visit counts and solver flags, not just chosen moves:
         # two searches can agree on the move while disagreeing about everything else.
+        # Filled only when keep_debug_trees is set; empty otherwise.
+        self.keep_debug_trees = keep_debug_trees
         self.debug_trees: dict[tuple[int, int], tuple[Tree, int, int]] = {}
         self._stop_fn: Any = None
         self._evaluator_for: Any = None
@@ -483,7 +493,8 @@ class BatchRunner:
             )
         )
 
-        self.debug_trees[(id(gs), gs.ply)] = (tree, root, gs.sims_run)
+        if self.keep_debug_trees:
+            self.debug_trees[(id(gs), gs.ply)] = (tree, root, gs.sims_run)
         if self._play(gs, result.best_move()):
             return
         self._begin_move(gs, search, num_sims, base_reps)

@@ -120,7 +120,7 @@ def test_gate_equivalence_with_synchronous_search(
         _board(epd), None, sims
     )
 
-    runner = BatchRunner(stub_batch, cfg, max_plies=1)
+    runner = BatchRunner(stub_batch, cfg, max_plies=1, keep_debug_trees=True)
     list(runner.play_games(1, seeds=[7], num_sims=sims, boards=[_board(epd)]))
     tree, root, sims_run = runner.debug_trees[(0, 0)]
     sl = tree.edge_slice(root)
@@ -156,7 +156,7 @@ def test_regression_phase_remainder_goes_to_the_best_survivor() -> None:
     sync = Search(uniform_stub_evaluator, cfg, np.random.default_rng(7)).run(
         _board(MIDGAME), None, sims
     )
-    runner = BatchRunner(stub_batch, cfg, max_plies=1)
+    runner = BatchRunner(stub_batch, cfg, max_plies=1, keep_debug_trees=True)
     list(runner.play_games(1, seeds=[7], num_sims=sims, boards=[_board(MIDGAME)]))
     tree, root, _ = runner.debug_trees[(0, 0)]
 
@@ -190,7 +190,7 @@ def test_equivalence_holds_across_a_whole_game() -> None:
     cfg = _cfg()
     board_a, board_b = _board(MIDGAME), _board(MIDGAME)
 
-    runner = BatchRunner(stub_batch, cfg, max_plies=4)
+    runner = BatchRunner(stub_batch, cfg, max_plies=4, keep_debug_trees=True)
     list(runner.play_games(1, seeds=[3], num_sims=16, boards=[board_b]))
 
     search = Search(uniform_stub_evaluator, cfg, np.random.default_rng(3))
@@ -255,7 +255,7 @@ def test_scheduler_cannot_change_a_game_when_batches_are_smaller_than_the_game_c
     monkeypatch.setattr(Search, "expand_root_gen", spy_expand)
 
     cfg = _cfg(root_noise=root_noise, batch_leaves=batch_leaves)
-    runner = BatchRunner(stub_batch, cfg, max_plies=6)
+    runner = BatchRunner(stub_batch, cfg, max_plies=6, keep_debug_trees=True)
     traces = list(runner.play_games(4, seeds=seeds, num_sims=sims, boards=boards()))
     positions = sum(len(t.positions) for t in traces)
     assert positions >= 4
@@ -278,7 +278,12 @@ def test_scheduler_cannot_change_a_game_when_batches_are_smaller_than_the_game_c
 
     # The property A1 breaks: the same (seed, index) game under a batch that can
     # never flush mid-loop must be move-for-move and visit-for-visit identical.
-    wide = BatchRunner(stub_batch, _cfg(root_noise=root_noise, batch_leaves=512), max_plies=6)
+    wide = BatchRunner(
+        stub_batch,
+        _cfg(root_noise=root_noise, batch_leaves=512),
+        max_plies=6,
+        keep_debug_trees=True,
+    )
     list(wide.play_games(4, seeds=seeds, num_sims=sims, boards=boards()))
     for gi in range(4):
         narrow = [m.uci() for m in runner._games_debug[gi].board.move_stack]
@@ -378,7 +383,7 @@ def test_leaf_accounting_balances_with_terminals_present(batch_leaves: int) -> N
 def test_vloss_is_zero_after_every_flush() -> None:
     """Virtual loss is a flight-window artefact; none may survive the batch."""
     cfg = _cfg(batch_leaves=8)
-    runner = BatchRunner(stub_batch, cfg, max_plies=4)
+    runner = BatchRunner(stub_batch, cfg, max_plies=4, keep_debug_trees=True)
     list(runner.play_games(4, seeds=[1, 2, 3, 4], num_sims=16))
     for (_g, _ply), (tree, _root, _s) in runner.debug_trees.items():
         assert (tree.vloss[: tree.n_edges] == 0).all(), "leaked virtual loss"
@@ -437,6 +442,30 @@ def test_inline_evaluation_is_refused() -> None:
         _unused_evaluator(np.zeros(72, dtype=np.int8))
 
 
+def test_debug_trees_are_retained_only_on_request() -> None:
+    """Review A4/C7: trees are a test instrument, not a production retention.
+
+    Every searched tree used to be kept for the whole ``play_games`` call —
+    ~63 KiB per ``Tree(cap_nodes=49)``, ~1.9 GiB per 256-game wave at chunk-8
+    ply counts, on the box whose scarce resource is host RAM. The default must
+    keep nothing; the flag must keep exactly one entry per searched position,
+    keyed by ``(game_index, ply)`` so the equivalence gate can address them.
+    """
+    cfg = _cfg(batch_leaves=8)
+    plain = BatchRunner(stub_batch, cfg, max_plies=3)
+    traces = list(plain.play_games(2, seeds=[1, 2], num_sims=8))
+    positions = sum(len(t.positions) for t in traces)
+    assert positions > 0
+    assert plain.debug_trees == {}, "trees retained without being asked for"
+
+    keeper = BatchRunner(stub_batch, cfg, max_plies=3, keep_debug_trees=True)
+    traces = list(keeper.play_games(2, seeds=[1, 2], num_sims=8))
+    expected_keys = {(gi, pos.ply) for gi, trace in enumerate(traces) for pos in trace.positions}
+    assert set(keeper.debug_trees) == expected_keys
+    for tree, root, sims_run in keeper.debug_trees.values():
+        assert isinstance(tree, Tree) and root == 0 and sims_run == 8
+
+
 # ---------------------------------------------------------------------------
 # The evaluation profile on the batched path (BLOCKED-2026-08-08)
 #
@@ -452,7 +481,7 @@ def test_eval_profile_batched_is_seed_independent() -> None:
     cfg = _cfg(root_noise=False, batch_leaves=8)
     trees = []
     for seed in (11, 22):
-        runner = BatchRunner(stub_batch, cfg, max_plies=3)
+        runner = BatchRunner(stub_batch, cfg, max_plies=3, keep_debug_trees=True)
         list(runner.play_games(2, seeds=[seed, seed + 1], num_sims=24))
         trees.append(
             {
@@ -467,7 +496,7 @@ def test_selfplay_profile_batched_still_varies() -> None:
     """The other side of it: self-play data diversity must survive."""
     seen = set()
     for seed in range(5):
-        runner = BatchRunner(stub_batch, _cfg(batch_leaves=8), max_plies=3)
+        runner = BatchRunner(stub_batch, _cfg(batch_leaves=8), max_plies=3, keep_debug_trees=True)
         list(runner.play_games(1, seeds=[seed], num_sims=24))
         tree, root, _ = runner.debug_trees[(0, 0)]
         seen.add(tuple(tree.N[tree.edge_slice(root)].tolist()))
