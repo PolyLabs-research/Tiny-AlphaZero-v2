@@ -15,12 +15,11 @@ spent its time.
 from __future__ import annotations
 
 import argparse
-import json
-import subprocess
 import time
 from pathlib import Path
 
 from tinyalphazero.config import MCTSConfig, load_config
+from tinyalphazero.envinfo import append_benchmark_row, benchmark_row
 from tinyalphazero.mcts.batch_runner import (
     BatchRunner,
     torch_evaluate_batch,
@@ -28,27 +27,6 @@ from tinyalphazero.mcts.batch_runner import (
 from tinyalphazero.mcts.batch_runner import (
     uniform_stub_batch as stub_batch,
 )
-
-
-def _git_sha() -> str:
-    try:
-        return (
-            subprocess.check_output(
-                [
-                    "git",
-                    "-C",
-                    str(Path(__file__).resolve().parents[1]),
-                    "rev-parse",
-                    "--short",
-                    "HEAD",
-                ],
-                stderr=subprocess.DEVNULL,
-            )
-            .decode()
-            .strip()
-        )
-    except (OSError, subprocess.SubprocessError):
-        return "no-git"
 
 
 def main() -> int:
@@ -88,27 +66,27 @@ def main() -> int:
     elapsed = time.perf_counter() - t0
 
     s = runner.stats
-    row = {
-        "date": None,  # stamped by the caller; scripts here must stay deterministic
-        "git_sha": _git_sha(),
-        "bench": "selfplay",
-        "config": (
+    row = benchmark_row(
+        "selfplay",
+        device=args.device,
+        config=(
             f"games={args.games} sims={args.sims} batch_leaves={cfg.batch_leaves} "
             f"device={args.device} eval={eval_name}"
         ),
-        "elapsed_s": round(elapsed, 2),
-        "games": len(traces),
-        "plies": sum(t.plies for t in traces),
-        "sims": s["sims"],
-        "leaves": s["leaves"],
-        "forwards": s["forwards"],
-        "terminal_shortcircuits": s["terminal_shortcircuits"],
-        "sims_per_s": round(s["sims"] / elapsed, 1),
-        "leaves_per_s": round(s["leaves"] / elapsed, 1),
-        "forwards_per_s": round(s["forwards"] / elapsed, 2),
-        "mean_batch_fill": round(s["leaves"] / max(s["forwards"], 1), 2),
-        "ms_per_forward": round(1000 * elapsed / max(s["forwards"], 1), 3),
-    }
+        eval=eval_name,
+        elapsed_s=round(elapsed, 2),
+        games=len(traces),
+        plies=sum(t.plies for t in traces),
+        sims=s["sims"],
+        leaves=s["leaves"],
+        forwards=s["forwards"],
+        terminal_shortcircuits=s["terminal_shortcircuits"],
+        sims_per_s=round(s["sims"] / elapsed, 1),
+        leaves_per_s=round(s["leaves"] / elapsed, 1),
+        forwards_per_s=round(s["forwards"] / elapsed, 2),
+        mean_batch_fill=round(s["leaves"] / max(s["forwards"], 1), 2),
+        ms_per_forward=round(1000 * elapsed / max(s["forwards"], 1), 3),
+    )
 
     print(
         f"games={row['games']} plies={row['plies']} in {row['elapsed_s']}s\n"
@@ -125,9 +103,7 @@ def main() -> int:
         )
 
     if not args.no_record:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        with args.out.open("a") as fh:
-            fh.write(json.dumps(row) + "\n")
+        append_benchmark_row(args.out, row)
         print(f"  appended to {args.out}")
     return 0
 
