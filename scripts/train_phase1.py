@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -31,6 +32,18 @@ from tinyalphazero.train import (
     save_checkpoint,
     train_step,
 )
+
+
+def _config_diff(a: dict, b: dict, prefix: str = "") -> list[str]:
+    """Dotted keys whose values differ, with both values, so the refusal names them."""
+    out = []
+    for key in sorted(set(a) | set(b)):
+        va, vb = a.get(key), b.get(key)
+        if isinstance(va, dict) and isinstance(vb, dict):
+            out.extend(_config_diff(va, vb, f"{prefix}{key}."))
+        elif va != vb:
+            out.append(f"{prefix}{key}: {va!r} vs {vb!r}")
+    return out
 
 
 def main() -> None:
@@ -64,8 +77,15 @@ def main() -> None:
     parser.add_argument("--out", required=True, type=Path, help="Output run directory")
     parser.add_argument("--epochs", type=int, default=None, help="Override phase1_epochs")
     parser.add_argument("--batch", type=int, default=None, help="Override batch_size")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--ckpt", type=Path, default=None, help="Resume from checkpoint")
+    parser.add_argument("--seed", type=int, default=None, help="Run seed (default: config seed)")
+    parser.add_argument(
+        "--ckpt",
+        type=Path,
+        default=None,
+        help="Resume a run from its checkpoint: weights, optimizer, step AND config "
+        "(epochs, batch, schedule, mixes, seed) come from the checkpoint; --config, "
+        "--epochs, --batch and --seed are refused if they disagree with it.",
+    )
     parser.add_argument(
         "--init-weights",
         type=Path,
@@ -78,19 +98,58 @@ def main() -> None:
     parser.add_argument("--config", type=str, default=None, help="YAML config file")
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
-    if args.epochs is not None:
-        cfg.train.phase1_epochs = args.epochs
-    if args.batch is not None:
-        cfg.train.batch_size = args.batch
-
-    # ---- Fail fast on mis-generated datasets (see runs/phase1_a post-mortem) ----
-    assert_dataset_mode(args.data, "random_games")
     if args.ckpt is not None and args.init_weights is not None:
         parser.error(
             "--ckpt and --init-weights are mutually exclusive: --ckpt resumes a run "
             "(optimizer + step), --init-weights starts a new one from borrowed weights."
         )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_bf16 = device.type == "cuda"
+
+    # ---- Config: the command line for a fresh run, the checkpoint for a resume ----
+    meta: dict = {}
+    if args.ckpt is not None:
+        # A resumed run cannot silently change what it is (REVIEW-2026-10-21 E2):
+        # epochs set the cosine T_max, the mixes set the data, the seed sets the
+        # draw. All of it comes from the checkpoint, and a command line that says
+        # otherwise is refused rather than overridden either way.
+        net, meta = load_checkpoint(args.ckpt, device=device)
+        cfg = meta["config_obj"]
+        conflicts = []
+        if args.config is not None:
+            diff = _config_diff(asdict(load_config(args.config)), asdict(cfg))
+            if diff:
+                conflicts.append(
+                    f"--config {args.config} differs from the checkpoint config: {diff}"
+                )
+        for flag, value, have in (
+            ("--epochs", args.epochs, cfg.train.phase1_epochs),
+            ("--batch", args.batch, cfg.train.batch_size),
+            ("--seed", args.seed, cfg.seed),
+        ):
+            if value is not None and value != have:
+                conflicts.append(f"{flag} {value} vs checkpoint {have}")
+        if conflicts:
+            parser.error(
+                f"--ckpt {args.ckpt} resumes the run its config describes; drop the "
+                "conflicting flags or start a new run with --init-weights.\n  "
+                + "\n  ".join(conflicts)
+            )
+    else:
+        cfg = load_config(args.config)
+        if args.epochs is not None:
+            cfg.train.phase1_epochs = args.epochs
+        if args.batch is not None:
+            cfg.train.batch_size = args.batch
+        if args.seed is not None:
+            # Into the config, so the checkpoint and config.yaml record the seed
+            # the run actually used (E9: cfg.seed was dead for Phase 1).
+            cfg.seed = args.seed
+    seed = cfg.seed
+
+    # ---- Fail fast on mis-generated datasets (see runs/phase1_a post-mortem) ----
+    assert_dataset_mode(args.data, "random_games")
     if args.mate1 is not None:
         assert_dataset_mode(args.mate1, "mate_in_1")
     if args.mate2 is not None:
@@ -109,11 +168,8 @@ def main() -> None:
     if args.eval_data is None:
         print("WARNING: --eval-data not set; metrics computed on the TRAINING set.")
 
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    use_bf16 = device.type == "cuda"
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
     args.out.mkdir(parents=True, exist_ok=True)
     log_path = args.out / "metrics.jsonl"
@@ -125,9 +181,12 @@ def main() -> None:
     # ---- Model & optimiser ----
     start_step = 0
     if args.ckpt is not None:
-        net, meta = load_checkpoint(args.ckpt, device=device, reference_model_cfg=cfg.model)
         start_step = meta.get("step", 0)
-        print(f"Resumed from {args.ckpt} at step {start_step}")
+        print(
+            f"Resumed from {args.ckpt} at step {start_step} "
+            f"(config from the checkpoint: epochs={cfg.train.phase1_epochs} "
+            f"batch={cfg.train.batch_size} seed={seed})"
+        )
     elif args.init_weights is not None:
         # Warm restart: borrow the weights, discard everything else. start_step
         # stays 0 so the schedule, epoch numbering and metrics.jsonl all describe
@@ -154,7 +213,7 @@ def main() -> None:
         args.data,
         args.mate1,
         cfg.train,
-        args.seed,
+        seed,
         num_workers=args.workers,
         mate2_dir=args.mate2,
     )
@@ -173,16 +232,21 @@ def main() -> None:
         lr=cfg.train.phase1_lr_start,
         weight_decay=cfg.train.weight_decay,
     )
+    if args.ckpt is not None and "optimizer" in meta:
+        optimizer.load_state_dict(meta["optimizer"])
+        # The saved param groups carry the LR *at the checkpoint*. CosineAnnealingLR
+        # steps recursively from whatever lr the group holds, so fast-forwarding
+        # from lr_k lands at lr_2k, not lr_k (measured: 9.75e-5 where 1.65e-4 was
+        # due). Rewind to the start value and replay the schedule from step 0,
+        # which reproduces the uninterrupted trajectory operation for operation.
+        for group in optimizer.param_groups:
+            group["lr"] = cfg.train.phase1_lr_start
+            group["initial_lr"] = cfg.train.phase1_lr_start
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=total_steps,
         eta_min=cfg.train.phase1_lr_end,
     )
-
-    if args.ckpt is not None:
-        meta = meta  # already loaded above
-        if "optimizer" in meta:
-            optimizer.load_state_dict(meta["optimizer"])
 
     # Fast-forward scheduler to start_step
     for _ in range(start_step):
@@ -218,6 +282,9 @@ def main() -> None:
 
     while step < stop_at:
         epoch += 1
+        # Epoch k's multiset is a function of (seed, k): a resumed run draws what
+        # the uninterrupted one would have, instead of replaying epoch 1 (E2).
+        p1.sampler.set_epoch(epoch)
         epoch_losses: dict[str, list[float]] = {k: [] for k in loss_keys}
         epoch_skipped = 0
         t0 = time.perf_counter()
