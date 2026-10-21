@@ -424,13 +424,22 @@ class Search:
 
         ``parent_edge`` is the edge that led here, and is read only by
         proof-directed expansion (``cfg.proof_directed_expansion``, off by
-        default): beneath an edge the mover already believes at
+        default): beneath any non-root edge that its own mover believes at
         ``q >= proof_q_threshold``, this returns an *unexpanded* reply until the
-        node's reply set is complete. That is what the solver needs — it can
-        induct a proof back only when every reply has been refuted — and it is
-        what ordinary selection never provides, because ordinary selection
-        re-grinds the strongest reply. See the config comment for the measured
-        coordinate this is aimed at.
+        node's reply set is complete. The condition is parity-blind — it fires
+        for **either mover** (review P6). Beneath the root mover's believed
+        move it widens the opponent's replies, which is what the solver needs:
+        it can induct a proof back only when every reply has been refuted, and
+        ordinary selection never provides that because it re-grinds the
+        strongest reply. Beneath an opponent reply the opponent believes at the
+        threshold it widens the *root mover's* replies instead — breadth in a
+        line the root mover is losing, which proves nothing the root argmax can
+        use and costs ``1 + len(replies)`` simulations per descent. The Track 1
+        record (13/13) was measured with exactly this symmetric behaviour, so
+        the behaviour stays as measured and is described here as it is;
+        restricting it to odd depth relative to the root would be a new lever
+        version to pre-register, not a fix. See the config comment for the
+        measured coordinate this is aimed at.
         """
         sl = tree.edge_slice(node)
         if self.cfg.proof_directed_expansion and parent_edge is not None:
@@ -467,6 +476,11 @@ class Search:
 
     def _unexpanded_reply(self, tree: Tree, sl: slice, parent_edge: int) -> int | None:
         """An unexpanded reply beneath a near-certain parent edge, or None.
+
+        "Believed" is ``W/N`` of ``parent_edge`` from the perspective of the
+        side that played it — whichever side that is. The check does not ask
+        whether that side is the root mover, so it fires at both parities (see
+        ``_select_edge`` for what each case buys and costs).
 
         None means "do not interfere": the parent edge is not believed strongly
         enough, or the reply set is already complete, in which case normal
