@@ -210,11 +210,22 @@ def test_gate_invariants_full_tree_vloss_and_w() -> None:
         assert (np.abs(tree.W[used][visited]) <= tree.N[used][visited] + 1e-5).all()
 
         # Node-level identity: a node's visits equal the sum over its edges plus
-        # the one visit that created it.
+        # the one visit that created it. The root's creating visit is the
+        # expansion, so its edge sum is sims_run; every other node's is the
+        # backup of the simulation that expanded it through its parent edge,
+        # so N[parent_edge] == 1 + sum(N over the node's edges). The loop used
+        # to assert only the root case (review A5).
+        children = tree.child[: tree.n_edges]
+        assert sorted(children[children >= 0].tolist()) == list(range(1, tree.n_nodes)), (
+            "every non-root node must hang off exactly one edge"
+        )
+        parent_edge = {int(children[e]): e for e in np.where(children >= 0)[0]}
         for node in range(tree.n_nodes):
-            sl = tree.edge_slice(node)
+            edge_sum = int(tree.N[tree.edge_slice(node)].sum())
             if node == root:
-                assert int(tree.N[sl].sum()) == sims_run
+                assert edge_sum == sims_run
+            else:
+                assert int(tree.N[parent_edge[node]]) == edge_sum + 1, f"node {node}"
 
 
 def test_terminal_root_returns_no_edges() -> None:
@@ -324,22 +335,31 @@ def test_gate_board_copy_ban_also_covers_the_suite_runner(
 
 
 def test_unvisited_edges_use_completed_q_not_zero() -> None:
-    """v1 treated unvisited Q as 0, overrating them from losing positions (§6.2)."""
+    """v1 treated unvisited Q as 0, overrating them from losing positions (§6.2).
+
+    Two edges: A (prior 0.9) visited four times and losing, Q = -1; B (prior
+    0.1) unvisited. With one visited edge the node's Q *is* A's Q, so under
+    completed-Q both edges carry -1 and only the exploration term decides:
+    ``u = c_puct * prior * sqrt(N) / (1 + N_edge)`` is 1.25 * 0.9 * 2 / 5 = 0.45
+    for A against 1.25 * 0.1 * 2 / 1 = 0.25 for B, so A is selected. Under v1
+    semantics B scores 0 + 0.25 against A's -1 + 0.45 = -0.55 and *B* is
+    selected — the losing node's untried move reads as a free escape. The old
+    assertion, ``chosen in (A, B)``, was true for any return (review A5).
+    """
     tree = Tree(cap_nodes=4)
-    node = tree.add_node([(1, 0, 0.5), (2, 0, 0.5)])
+    node = tree.add_node([(1, 0, 0.9), (2, 0, 0.1)])
     sl = tree.edge_slice(node)
-    # One edge visited with a bad outcome; the node is losing.
     tree.N[sl.start] = 4
-    tree.W[sl.start] = -4.0  # Q = -1
+    tree.W[sl.start] = -4.0  # Q = -1: the node is losing
     assert tree.node_q(node) == pytest.approx(-1.0)
 
-    # The unvisited sibling must inherit -1, not 0. With 0 it would look like a
-    # free escape and be selected forever.
     search = _search()
-    q_unvisited = tree.node_q(node)
-    assert q_unvisited < 0.0
-    chosen = search._select_edge(tree, node)
-    assert chosen in (sl.start, sl.start + 1)
+    assert search.cfg.c_puct == 1.25, "the arithmetic in the docstring assumes c_puct=1.25"
+    completed = search._root_completed_q(tree, node)
+    assert completed[1] == pytest.approx(-1.0), "unvisited edge must inherit the node's Q, not 0"
+    assert search._select_edge(tree, node) == sl.start, (
+        "the unvisited edge was scored as 0 and chosen as a free escape"
+    )
 
 
 def test_backup_flips_sign_per_ply() -> None:
@@ -375,23 +395,49 @@ def test_in_search_repetition_counts_on_top_of_game_history() -> None:
     repetitions_fn supplies the count from game history before the search; the
     path-local counter adds occurrences created by the search itself. Only the
     sum can reach the threefold threshold when the history already holds two.
-    """
-    # King shuffle: the only moves repeat the position.
-    board = chess.Board("7k/8/8/8/8/8/8/K6R w - - 0 1")
-    seen: dict[str, int] = {}
 
-    def reps(b: chess.Board) -> int:
-        return seen.get(b.epd(), 0)
+    Asserted on the tree rather than on the budget (review A5: ``visits.sum()
+    == 32`` holds whatever the repetition handling does). One child position
+    of the root is given a history of two prior occurrences; the search's own
+    arrival there is the third, so that edge — and only that edge — must be a
+    terminal draw that is never expanded. With a history of one, the same
+    edge must be ordinary: one in history plus one on the path is two.
+
+    (Not the ``7k/.../K6R`` shuffle FEN used above: there the black king
+    stands on the rook's file with White to move, so python-chess's first
+    "legal" move captures the king and the child is a stalemate on its own.)
+    """
+    board = chess.Board("8/8/8/4k3/8/8/4K3/4R3 w - - 0 1")
+    first = next(iter(board.legal_moves))
+    board.push(first)
+    marked = board.epd()
+    board.pop()
+    ft = first.from_square * 64 + first.to_square
+
+    def history(count: int):
+        return lambda b: count if b.epd() == marked else 0
 
     search = _search()
-    result = search.run(board, reps, 32)
-    assert int(result.visits.sum()) == 32
-
-    # Now claim two prior occurrences of every position: draws become reachable
-    # one repetition earlier, which must change the search's value estimates.
-    seen = dict.fromkeys([board.epd()], 2)
-    result_with_history = search.run(board, reps, 32)
-    assert int(result_with_history.visits.sum()) == 32
+    terminal_by_history: dict[int, set[int]] = {}
+    for count in (0, 1, 2):
+        tree, root, sims = search.run_tree(board, history(count), 32)
+        sl = tree.edge_slice(root)
+        assert sims == 32 and int(tree.N[sl].sum()) == 32
+        (idx,) = np.where(tree.move_ft[sl] == ft)[0]
+        terminal_by_history[count] = set(np.where(tree.terminal[sl])[0].tolist())
+        if count == 2:
+            e = sl.start + int(idx)
+            assert tree.terminal[e], "two in history + one on the path must be a threefold"
+            assert tree.terminal_value[e] == 0.0, "a claimable repetition is a draw"
+            assert tree.child[e] == -1, "a terminal edge is never expanded"
+        else:
+            assert int(idx) not in terminal_by_history[count], (
+                f"history {count} + one on the path is not yet a threefold"
+            )
+    assert terminal_by_history[2] == terminal_by_history[0] | {int(idx)}, (
+        "history must create exactly the marked terminal edge and no other"
+    )
+    assert terminal_by_history[1] == terminal_by_history[0]
 
 
 def _repetition_oracle_mismatches(
