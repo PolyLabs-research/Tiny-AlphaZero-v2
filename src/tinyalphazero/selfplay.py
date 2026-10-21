@@ -407,7 +407,11 @@ def play_games(
                 if gs.trace is trace:
                     tr = by_trace[id(trace)] = trackers[i]
                     break
-        return tr(trace) if tr is not None else None
+        if tr is None:
+            # Returning None here would silently disable resignation for this
+            # game and nothing downstream could tell (REVIEW-2026-10-21 C10).
+            raise RuntimeError("resignation callback received a trace the runner does not own")
+        return tr(trace)
 
     evaluator_for = None
     if assignments is not None:

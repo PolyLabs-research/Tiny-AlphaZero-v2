@@ -50,6 +50,7 @@ silent (see ``_pack_policy``).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -122,6 +123,41 @@ def _pack_policy(
     return ft, pr, cls, len(entries)
 
 
+def _check_layout(path: Path, meta: dict, capacity: int, version: int) -> None:
+    """The sidecar and the code must agree before a byte is interpreted.
+
+    ``np.memmap`` in ``r+`` mode silently *extends* a file that is shorter than
+    the requested shape, and nothing compared the sidecar's dtypes or
+    ``max_policy_entries`` to this build's constants — so a wrong ``capacity``
+    produced zero rows that ``sample`` treated as positions, and a changed
+    ``MAX_POLICY_ENTRIES`` without a version bump would have reinterpreted an
+    existing ring at the wrong stride (REVIEW-2026-10-21 B6). Rings written
+    before ``fields``/``max_policy_entries`` were recorded are checked on file
+    size alone.
+    """
+    if "max_policy_entries" in meta and int(meta["max_policy_entries"]) != MAX_POLICY_ENTRIES:
+        raise ValueError(
+            f"replay ring {path} was written with max_policy_entries="
+            f"{meta['max_policy_entries']}; this build uses {MAX_POLICY_ENTRIES}"
+        )
+    recorded = meta.get("fields", {})
+    for name, (dtype, shape) in _FIELDS.items():
+        if version < _FIELDS_SINCE.get(name, 0):
+            continue
+        if name in recorded and recorded[name] != dtype:
+            raise ValueError(
+                f"replay ring {path}: field {name!r} is {recorded[name]} on disk, "
+                f"{dtype} in this build"
+            )
+        expected = capacity * int(np.prod(shape, dtype=np.int64)) * np.dtype(dtype).itemsize
+        actual = (path / f"{name}.dat").stat().st_size
+        if actual != expected:
+            raise ValueError(
+                f"replay ring {path}: {name}.dat is {actual} bytes; capacity {capacity} "
+                f"of {dtype}{shape} needs exactly {expected}"
+            )
+
+
 class ReplayBuffer:
     """Fixed-capacity ring over memmapped arrays."""
 
@@ -175,15 +211,26 @@ class ReplayBuffer:
                 f"replay version {version} is not readable; this build reads "
                 f"{sorted(_READABLE_VERSIONS)}"
             )
-        return cls(path, int(meta["capacity"]), int(meta["total_written"]), version=version)
+        capacity = int(meta["capacity"])
+        _check_layout(path, meta, capacity, version)
+        return cls(path, capacity, int(meta["total_written"]), version=version)
 
     @classmethod
     def open_or_create(cls, path: str | Path, capacity: int = 500_000) -> ReplayBuffer:
         return cls.open(path) if (Path(path) / "meta.json").exists() else cls.create(path, capacity)
 
     def _write_meta(self) -> None:
+        """Move the durable head — atomically.
+
+        ``meta.json`` *is* the head (contract point 2 above), so it is the one
+        file whose torn write costs the run: ``write_text`` truncates and then
+        writes, and a kill between the two leaves 0 bytes, after which ``open``
+        raises and the intact ring data is unreachable without hand repair
+        (REVIEW-2026-10-21 B1). Temp file plus ``os.replace`` makes the move
+        all-or-nothing, the same way ``phase2._commit_state`` moves state.json.
+        """
         fields = {k: v[0] for k, v in _FIELDS.items() if self.has(k)}
-        (self.path / "meta.json").write_text(
+        text = (
             json.dumps(
                 {
                     "version": self.version,
@@ -196,6 +243,9 @@ class ReplayBuffer:
             )
             + "\n"
         )
+        tmp = self.path / "meta.json.tmp"
+        tmp.write_text(text)
+        os.replace(tmp, self.path / "meta.json")
 
     def flush(self) -> None:
         for arr in self._arr.values():

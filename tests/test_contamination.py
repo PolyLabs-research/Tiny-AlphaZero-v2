@@ -21,7 +21,6 @@ import json
 from pathlib import Path
 
 import chess
-import numpy as np
 import pytest
 
 from tinyalphazero.data import Phase1Dataset, position_key
@@ -218,16 +217,31 @@ def test_position_key_normalises_both_sides_identically() -> None:
     assert once == twice
 
 
-def test_contamination_check_can_actually_fail() -> None:
-    """A guard that cannot fire is decoration. Feed it a known overlap."""
-    from tinyalphazero.encoding import encode_board
+def test_contamination_check_can_actually_fail(tmp_path: Path) -> None:
+    """A guard that cannot fire is decoration. Feed it a known overlap — through
+    the real path: a dataset on disk, read by ``Phase1Dataset``, keyed by
+    ``position_key``, against the committed suite (REVIEW-2026-10-21 T12).
+    """
+    from tinyalphazero.data import PositionRecord, write_dataset
+    from tinyalphazero.encoding import encode_board, legal_moves_packed
 
+    epd = next(line for line in (SUITES / "mate_in_1.epd").read_text().splitlines() if line.strip())
     board = chess.Board()
-    shared = position_key(encode_board(board, 0))
-    a = {shared, "other"}
-    b = {shared}
-    assert a & b, "set intersection must detect a planted duplicate"
-    assert np.array_equal(np.array([1]), np.array([1]))
+    board.set_epd(epd)
+    planted = PositionRecord(
+        tokens=encode_board(board, 0),
+        from_sq=0,
+        to_sq=1,
+        promo=0,
+        legals=legal_moves_packed(board),
+        outcome=1,
+    )
+    write_dataset(iter([planted]), tmp_path / "dirty")
+    ds = Phase1Dataset(tmp_path / "dirty")
+    keys = {position_key(ds[i]["tokens"].numpy()) for i in range(len(ds))}
+    suite_keys = _suite_keys("mate_in_1.epd")
+    assert suite_keys is not None
+    assert keys & suite_keys, "a suite position written into a training set must be detected"
 
 
 @pytest.mark.parametrize("anchor_rel", LEGACY_ANCHOR_DIRS)
@@ -291,18 +305,26 @@ def test_rehearsal_dirs_are_guarded() -> None:
         )
 
 
-def test_rehearsal_config_dirs_exist_when_enabled() -> None:
+def test_rehearsal_config_dirs_exist_when_enabled(tmp_path: Path) -> None:
     """A rehearsal config naming a directory that is not there fails loudly.
 
     The sampler raises on construction rather than quietly training without the
     lever — an 11-hour run that silently ran the control is worse than one that
-    refuses to start.
+    refuses to start. Asserted by pointing the sampler at an empty tree, where the
+    configured directories cannot exist (the previous version ended in
+    ``assert True`` — REVIEW-2026-10-21 T12).
     """
-    from tinyalphazero.config import Config
+    from dataclasses import replace
 
-    train = Config().train
-    for field in REHEARSAL_DIR_FIELDS:
-        path = REPO / getattr(train, field)
-        if not (path / "meta.json").exists():
-            pytest.skip(f"{path} not generated in this working tree")
-    assert True
+    from tinyalphazero.config import Config
+    from tinyalphazero.rehearsal import RehearsalSampler
+    from tinyalphazero.replay import ReplayBuffer
+
+    buffer = ReplayBuffer.create(tmp_path / "ring", capacity=8)
+    enabled = replace(
+        Config().train, rehearsal_frac=0.05, rehearsal_mate1_frac=0.03, rehearsal_mate2_frac=0.02
+    )
+    with pytest.raises(FileNotFoundError):
+        RehearsalSampler(buffer, enabled, seed=0, repo=tmp_path)
+    # Off, the sampler is a pass-through and never looks for the directories.
+    RehearsalSampler(buffer, Config().train, seed=0, repo=tmp_path)

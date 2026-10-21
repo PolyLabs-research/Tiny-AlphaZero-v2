@@ -42,6 +42,14 @@ def masked_policy(
     B = policy_ft.size(0)
     logits = policy_ft.reshape(B, 4096)
     mask = legal_mask.reshape(B, 4096).bool()
+    if not bool(mask.any(dim=-1).all()):
+        # A softmax over all -inf is a row of NaN that propagates silently into
+        # the loss and the search (REVIEW-2026-10-21 B7). A position with no
+        # legal move is terminal and must be adjudicated before it reaches here.
+        bad = torch.nonzero(~mask.any(dim=-1)).flatten().tolist()
+        raise ValueError(
+            f"masked_policy: row(s) {bad} have no legal move; a terminal position was evaluated"
+        )
     logits = logits.masked_fill(~mask, float("-inf"))
     return torch.softmax(logits, dim=-1)
 
@@ -133,6 +141,18 @@ class ChessNet(nn.Module):
         self._init_weights()
 
     def _init_weights(self) -> None:
+        """trunc_normal(0.02) on every projection — including, since `attn_init`
+        says so, the attention in-projections.
+
+        ``nn.TransformerEncoder`` deep-copies one ``encoder_layer``, and
+        ``MultiheadAttention.in_proj_weight`` is a bare ``Parameter`` rather than
+        an ``nn.Linear``, so the loop below never reached it: every layer kept
+        PyTorch's xavier draw (std ≈ 0.044) *and the same draw* — eight identical
+        attention in-projections in every network trained up to and including
+        p2_d (REVIEW-2026-10-21 B3). ``attn_init="torch_default"`` reproduces that
+        so old configs and checkpoints describe themselves; ``"trunc_normal"`` is
+        the init the rest of this function applies.
+        """
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 nn.init.trunc_normal_(module.weight, std=0.02)
@@ -143,6 +163,16 @@ class ChessNet(nn.Module):
             elif isinstance(module, nn.LayerNorm):
                 nn.init.ones_(module.weight)
                 nn.init.zeros_(module.bias)
+        if self.cfg.attn_init == "trunc_normal":
+            for module in self.modules():
+                if isinstance(module, nn.MultiheadAttention):
+                    nn.init.trunc_normal_(module.in_proj_weight, std=0.02)
+                    if module.in_proj_bias is not None:
+                        nn.init.zeros_(module.in_proj_bias)
+        elif self.cfg.attn_init != "torch_default":
+            raise ValueError(
+                f"model.attn_init must be 'torch_default' or 'trunc_normal', got {self.cfg.attn_init!r}"
+            )
 
     # ------------------------------------------------------------------
     # Public API

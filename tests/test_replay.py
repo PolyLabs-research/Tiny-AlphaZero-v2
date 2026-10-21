@@ -199,7 +199,17 @@ def test_open_rejects_a_version_mismatch(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_root_q_shares_the_perspective_of_the_outcome_it_blends_with(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("fen", "mover_is_white"),
+    [
+        ("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1", True),  # Ra8#
+        ("r5k1/5ppp/8/8/8/8/5PPP/6K1 b - - 0 1", False),  # Ra1#
+    ],
+    ids=["white-mates", "black-mates"],
+)
+def test_root_q_shares_the_perspective_of_the_outcome_it_blends_with(
+    tmp_path, fen: str, mover_is_white: bool
+) -> None:
     """`root_q` and `outcome` must both be from the position's mover's view.
 
     This is the whole safety of the z/q blend. `outcome` is documented as
@@ -209,42 +219,42 @@ def test_root_q_shares_the_perspective_of_the_outcome_it_blends_with(tmp_path) -
     mover eventually lost — a silent, plausible-looking corruption of exactly the
     kind this project keeps finding in fields nobody asserted on.
 
-    Asserted on a constructed forced-win trace: a mover who is winning has a
-    positive search estimate and a positive outcome, so the two agree in sign.
+    Asserted where the two are *produced* — a real search from a mate-in-1, scored
+    by ``winner_of``/``fill_outcomes``, written through ``_store`` and read back
+    from the ring — for both colours. The previous version round-tripped two
+    hand-written rows whose signs already agreed, so a sign error in either
+    producer passed it (REVIEW-2026-10-21 B8/C6; PREREG-p2_c cites this test).
     """
-    from tinyalphazero.replay import ReplayBuffer
+    import chess
+
+    from tinyalphazero.config import Config
+    from tinyalphazero.mcts.batch_runner import BatchRunner, uniform_stub_batch
+    from tinyalphazero.selfplay import GameAssignment, _store, fill_outcomes, winner_of
+
+    runner = BatchRunner(uniform_stub_batch, Config().mcts, max_plies=40)
+    (trace,) = runner.play_games(1, seeds=[1], num_sims=16, boards=[chess.Board(fen)])
+    gs = runner._games_debug[0]
+    assert trace.result == "checkmate", trace.result
+    winner = winner_of(trace, gs.board, None)
+    assert winner == (chess.WHITE if mover_is_white else chess.BLACK)
+    fill_outcomes(trace, winner)
+
+    first = trace.positions[0]
+    assert first.side_to_move == mover_is_white
+    assert first.root_q == pytest.approx(1.0), "the mate is exact at the root"
+    assert first.outcome == 1, "the mover who mated is labelled +1"
 
     buf = ReplayBuffer.create(tmp_path / "ring", capacity=8)
-    tokens = np.zeros(72, dtype=np.int8)
-    legals = np.zeros(512, dtype=np.uint8)
-
-    # A won position for its mover: search says +0.9, the game confirms +1.
-    buf.add(
-        tokens=tokens,
-        legals=legals,
-        move_ft=0,
-        promo=0,
-        outcome=1,
-        improved_policy=[(0, 0, 1.0)],
-        root_q=0.9,
-    )
-    # A lost one for *its* mover: search says -0.9, the game confirms -1.
-    buf.add(
-        tokens=tokens,
-        legals=legals,
-        move_ft=0,
-        promo=0,
-        outcome=-1,
-        improved_policy=[(0, 0, 1.0)],
-        root_q=-0.9,
-    )
-    batch = buf.sample(2, np.random.default_rng(0))
+    _store(buf, trace, gs, iteration=1, resign_disabled=False, assignment=GameAssignment())
+    assert len(buf) == len(trace.positions) >= 1
+    batch = buf.sample(len(buf), np.random.default_rng(0))
     q, z = batch["root_q"], batch["outcome"].float()
     assert bool(torch.all(torch.sign(q) == torch.sign(z))), (
         f"root_q {q.tolist()} and outcome {z.tolist()} disagree in sign; the blend "
         "would train the value head against its own target"
     )
     assert bool(torch.all(batch["root_q_mask"]))
+    assert float(q.max()) == pytest.approx(1.0) and int(z.max()) == 1
 
 
 def test_a_ring_older_than_root_q_reports_it_absent_not_zero(tmp_path) -> None:
