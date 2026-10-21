@@ -210,7 +210,26 @@ def main() -> None:
     if args.mate2 is not None and args.eval_mate2 is None:
         print("WARNING: --mate2 given without --eval-mate2; the round d gate cannot be read.")
     if args.eval_data is None:
-        print("WARNING: --eval-data not set; metrics computed on the TRAINING set.")
+        print("WARNING: --eval-data not set; random-play metrics computed on the TRAINING set.")
+    if args.eval_mate1 is None and args.mate1 is not None:
+        print(
+            "WARNING: --eval-mate1 not set; the gated mate-in-1 metrics (mate1_top8_masked, "
+            "wdl_anchor_mass) are computed on the TRAINING anchors."
+        )
+    if args.eval_mate1 is None and args.mate1 is None:
+        print(
+            "WARNING: no mate-in-1 dir at all; compute_metrics will score mate-in-1 "
+            "metrics on 200 positions it generates itself. They gate nothing here."
+        )
+    for name, mix, given in (
+        ("mate1", cfg.train.phase1_mate1_mix, args.mate1),
+        ("mate2", cfg.train.phase1_mate2_mix, args.mate2),
+    ):
+        if mix > 0 and given is None:
+            print(
+                f"WARNING: train.phase1_{name}_mix={mix} but no --{name} dir given; "
+                f"no {name} anchors will be sampled."
+            )
 
     torch.manual_seed(seed)
     np.random.seed(seed)
