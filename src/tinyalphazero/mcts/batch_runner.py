@@ -115,6 +115,10 @@ class _GameState:
         self.phase_queue: list[int] = []  # survivor-local indices left in this phase
         self.phase_ran = False  # did the phase just drained actually spend visits?
         self.sims_run = 0
+        # Evaluator answers this move's search has consumed, root included. The
+        # shared Search never evaluates on the batched path, so its own counter
+        # would report 0 for every RootResult built here (review A6).
+        self.evaluations = 0
         self.g: np.ndarray | None = None
         self.logits: np.ndarray | None = None
         self.survivors: list[int] = []
@@ -228,6 +232,7 @@ class BatchRunner:
         ambiguous, so the scheduler cannot change a game's search — which is
         the whole contract of this class.
         """
+        gs.evaluations += 1  # one answer, one evaluation of this game's leaf
         try:
             gs.gen.send(answer)
         except StopIteration as stop:
@@ -249,6 +254,7 @@ class BatchRunner:
         gs.path_reps = Counter()
         gs.path_reps[gs.board._transposition_key()] += 1
         gs.sims_run = 0
+        gs.evaluations = 0
         gs.schedule = []
         gs.phase_queue = []
         gs.phase_ran = False
@@ -467,6 +473,9 @@ class BatchRunner:
 
         sl = tree.edge_slice(root)
         result = search._root_result(tree, root, sl, gs.sims_run)
+        # _root_result reports the Search's own counter, which never moves on
+        # this path; the game's count is the real one (review A6).
+        result.evaluations = gs.evaluations
         completed_q = search._root_completed_q(tree, root)
         max_n = int(tree.N[sl].max())
         result.improved_policy_probs = gumbel.improved_policy(

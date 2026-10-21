@@ -442,6 +442,54 @@ def test_inline_evaluation_is_refused() -> None:
         _unused_evaluator(np.zeros(72, dtype=np.int8))
 
 
+def test_root_result_reports_the_batched_evaluation_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review A6: ``RootResult.evaluations`` was the shared Search's counter — 0 here.
+
+    The result is built by ``Search._root_result`` and then filled in by
+    ``_commit_move``, so a spy on the former sees the same object the runner
+    reports. The count must equal the synchronous search's for the same
+    ``(seed, position)`` at ``batch_leaves=1`` (root plus one per simulation on
+    a quiet midgame; strictly fewer on a mate-in-1, where terminal
+    short-circuits never reach the evaluator), equal ``stats["leaves"]`` for a
+    one-game one-move run, and reset per move across a game.
+    """
+    captured: list = []
+    orig = Search._root_result
+
+    def spy(self, *a, **k):  # noqa: ANN001, ANN002, ANN003
+        result = orig(self, *a, **k)
+        captured.append(result)
+        return result
+
+    monkeypatch.setattr(Search, "_root_result", spy)
+    cfg = _cfg()
+    sims = 16
+
+    for name in ("midgame", "mate_in_1"):
+        epd = FIXTURES[name]
+        sync = Search(uniform_stub_evaluator, cfg, np.random.default_rng(7)).run(
+            _board(epd), None, sims
+        )
+        captured.clear()
+        runner = BatchRunner(stub_batch, cfg, max_plies=1)
+        list(runner.play_games(1, seeds=[7], num_sims=sims, boards=[_board(epd)]))
+        (batched,) = captured
+        assert batched.evaluations > 0, f"{name}: the batched path reported no evaluations"
+        assert batched.evaluations == sync.evaluations, f"{name}: differs from the sync search"
+        assert batched.evaluations == runner.stats["leaves"], f"{name}: not the runner's count"
+        if name == "midgame":
+            assert batched.evaluations == sims + 1, "root expansion plus one per simulation"
+        else:
+            assert batched.evaluations < sims + 1 and runner.stats["terminal_shortcircuits"] > 0
+
+    captured.clear()
+    runner = BatchRunner(stub_batch, _cfg(batch_leaves=4), max_plies=3)
+    traces = list(runner.play_games(1, seeds=[7], num_sims=sims, boards=[_board(MIDGAME)]))
+    assert len(captured) == traces[0].plies == 3
+    assert all(0 < r.evaluations <= sims + 1 for r in captured), "the count must reset per move"
+    assert sum(r.evaluations for r in captured) == runner.stats["leaves"]
+
+
 def test_debug_trees_are_retained_only_on_request() -> None:
     """Review A4/C7: trees are a test instrument, not a production retention.
 
