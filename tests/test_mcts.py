@@ -726,6 +726,75 @@ def test_proven_wins_are_never_dropped_from_the_considered_set() -> None:
     board.pop()
 
 
+@pytest.mark.parametrize("sims", [1, 2, 3])
+@pytest.mark.parametrize("root_noise", [True, False], ids=["selfplay", "eval"])
+def test_force_include_cannot_push_the_considered_set_past_the_budget(
+    sims: int, root_noise: bool
+) -> None:
+    """Review A2: more proven wins than simulations must not raise.
+
+    ``form_considered_set`` caps ``m <= num_sims``, but force-include *appended*
+    wins once every non-win had been evicted, and ``halving_phase_budgets``
+    then refused ``m=2 > num_sims=1``. The mate-in-1 suite has positions with
+    several mating moves: at sims=1 28/100 raised, at sims=2 4/100, at sims=3
+    1/100. The set is now truncated back to the budget with wins first, so the
+    search still plays a mate on every position — a win that survives
+    force-include is always in the considered set.
+
+    Runs the batched driver too: both consume the shared helper, and the
+    equivalence gate's smallest budget is 6, above where this bites.
+    """
+    cfg = (_gumbel_cfg if root_noise else _eval_cfg)()
+    solved, total, failed = run_suite(
+        MATE_IN_1,
+        sims=sims,
+        evaluate_fn=uniform_stub_evaluator,
+        cfg=cfg,
+        mate_in=1,
+        rng=np.random.default_rng(0),
+    )
+    assert total == 100
+    assert solved == total, f"sims={sims}: {solved}/{total}; failed {failed[:8]}"
+
+    from tinyalphazero.mcts.batch_runner import BatchRunner, uniform_stub_batch
+
+    for epd_line, ident in load_epd(MATE_IN_1)[:12]:
+        board = chess.Board()
+        board.set_epd(epd_line)
+        runner = BatchRunner(uniform_stub_batch, replace(cfg, batch_leaves=1), max_plies=1)
+        list(runner.play_games(1, seeds=[0], num_sims=sims, boards=[board]))
+        gs = runner._games_debug[0]
+        assert gs.board.is_checkmate(), (
+            f"{ident}: batched driver did not play the mate at sims={sims}"
+        )
+
+
+def test_force_include_cap_keeps_wins_first_and_is_off_by_default() -> None:
+    """Unit shape of the A2 fix on a hand-built root with three mating moves."""
+    from tinyalphazero.mcts.gumbel import force_include_proven_wins
+
+    tree = Tree(cap_nodes=2)
+    node = tree.add_node([(i, 0, 0.2) for i in range(5)])
+    sl = tree.edge_slice(node)
+    for i in (1, 3, 4):  # three immediate mates
+        tree.terminal[sl.start + i] = True
+        tree.terminal_value[sl.start + i] = -1.0
+    rank = np.array([0.0, 0.5, 0.9, 0.1, 0.7], dtype=np.float32)
+
+    uncapped = force_include_proven_wins(tree, node, [2, 0], rank)
+    assert sorted(uncapped) == [1, 3, 4], "every win forced in, both non-wins evicted"
+
+    capped = force_include_proven_wins(tree, node, [2, 0], rank, cap=2)
+    assert len(capped) == 2
+    assert set(capped) <= {1, 3, 4}, "truncation must keep wins over everything else"
+    assert capped == [4, 1], "among wins, the better-ranked survive"
+
+    # Below the cap nothing changes: the swap path leaves len(considered) at m.
+    assert force_include_proven_wins(
+        tree, node, [2, 0, 1], rank, cap=3
+    ) == force_include_proven_wins(tree, node, [2, 0, 1], rank)
+
+
 def test_improved_policy_is_a_distribution_over_legal_actions() -> None:
     search = Search(uniform_stub_evaluator, _gumbel_cfg(), np.random.default_rng(0))
     for board in _random_boards(15, seed=42):
