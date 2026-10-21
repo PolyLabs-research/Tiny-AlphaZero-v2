@@ -201,6 +201,99 @@ def test_equivalence_holds_across_a_whole_game() -> None:
         board_a.push(result.best_move())
 
 
+@pytest.mark.parametrize("batch_leaves", [1, 2, 3])
+@pytest.mark.parametrize("root_noise", [True, False], ids=["selfplay", "eval"])
+def test_scheduler_cannot_change_a_game_when_batches_are_smaller_than_the_game_count(
+    batch_leaves: int, root_noise: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review A1: ``batch_leaves <= num_games`` must not alter any game's search.
+
+    With fewer buffer slots than live games a flush can fire *inside* the
+    per-game ``for`` loop, at a lower game index than a root request that is
+    still pending. The resumed root then sat in a half-finished state (``gen``
+    None, ``in_root`` True) that the loop read as "root not yet requested" and
+    opened a second ``expand_root_gen`` on the same tree. Two consequences, both
+    asserted here: the second build either re-drew Gumbel noise and re-pointed
+    ``root`` at node 1 (node 0 orphaned), or was counted as a simulation.
+
+    Every production path runs ``batch_leaves > concurrent games``, and the
+    existing accounting tests use three games against ``batch_leaves >= 1``
+    with no mid-loop flush, which is why 264 green tests coexisted with it.
+    The decisive property is the last block: each game's move sequence and root
+    visit vector equal those of the same ``(seed, index)`` game played under a
+    batch that can never flush mid-loop. One generator per game is what makes
+    that equality the contract; the scheduler was its only violator.
+    """
+    seeds = [11, 12, 13, 14]
+    sims = 8
+
+    def boards() -> list[chess.Board]:
+        return [
+            chess.Board(),
+            _board(MIDGAME),
+            _board(FIXTURES["mate_in_2"]),
+            _board(FIXTURES["promotions"]),
+        ]
+
+    from collections import Counter
+
+    finish_calls: Counter = Counter()
+    orig_finish = BatchRunner._finish_root
+
+    def spy_finish(self, gs, *a, **k):  # noqa: ANN001, ANN002, ANN003
+        finish_calls[(id(gs), gs.ply)] += 1
+        return orig_finish(self, gs, *a, **k)
+
+    expand_calls: list[int] = []
+    orig_expand = Search.expand_root_gen
+
+    def spy_expand(self, *a, **k):  # noqa: ANN001, ANN002, ANN003
+        expand_calls.append(1)
+        return orig_expand(self, *a, **k)
+
+    monkeypatch.setattr(BatchRunner, "_finish_root", spy_finish)
+    monkeypatch.setattr(Search, "expand_root_gen", spy_expand)
+
+    cfg = _cfg(root_noise=root_noise, batch_leaves=batch_leaves)
+    runner = BatchRunner(stub_batch, cfg, max_plies=6)
+    traces = list(runner.play_games(4, seeds=seeds, num_sims=sims, boards=boards()))
+    positions = sum(len(t.positions) for t in traces)
+    assert positions >= 4
+
+    # Budget identity: a root build is never a simulation.
+    assert runner.stats["sims"] == sims * positions, runner.stats
+    # One root request and one root completion per searched position.
+    assert len(expand_calls) == positions, "a root was expanded twice"
+    assert sum(finish_calls.values()) == positions
+    assert set(finish_calls.values()) == {1}, "finish_root ran twice for one position"
+    # One root per tree: node 0, and every other node hangs off exactly one edge.
+    assert len(runner.debug_trees) == positions
+    for (gi, ply), (tree, root, sims_run) in runner.debug_trees.items():
+        assert root == 0, f"game {gi} ply {ply}: root re-pointed to node {root}"
+        assert sims_run == sims
+        children = tree.child[: tree.n_edges]
+        assert sorted(children[children >= 0].tolist()) == list(range(1, tree.n_nodes)), (
+            f"game {gi} ply {ply}: orphan or doubly-referenced node"
+        )
+
+    # The property A1 breaks: the same (seed, index) game under a batch that can
+    # never flush mid-loop must be move-for-move and visit-for-visit identical.
+    wide = BatchRunner(stub_batch, _cfg(root_noise=root_noise, batch_leaves=512), max_plies=6)
+    list(wide.play_games(4, seeds=seeds, num_sims=sims, boards=boards()))
+    for gi in range(4):
+        narrow = [m.uci() for m in runner._games_debug[gi].board.move_stack]
+        reference = [m.uci() for m in wide._games_debug[gi].board.move_stack]
+        assert narrow == reference, f"game {gi} diverged under batch_leaves={batch_leaves}"
+    visits = {
+        k: tree.N[tree.edge_slice(root)].tolist()
+        for k, (tree, root, _) in runner.debug_trees.items()
+    }
+    reference_visits = {
+        k: tree.N[tree.edge_slice(root)].tolist() for k, (tree, root, _) in wide.debug_trees.items()
+    }
+    assert visits == reference_visits
+
+
 # ---------------------------------------------------------------------------
 # 2. Virtual loss × proven values
 # ---------------------------------------------------------------------------

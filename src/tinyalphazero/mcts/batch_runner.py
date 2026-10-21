@@ -153,6 +153,10 @@ class BatchRunner:
         self._stop_fn: Any = None
         self._evaluator_for: Any = None
         self._move_fn: Any = None
+        # Per-call search context, stashed so ``_resume`` can finish a root the
+        # moment its evaluation lands (see ``_resume`` for why it must).
+        self._search: Search | None = None
+        self._num_sims: int = 0
 
     # -- evaluation plumbing ---------------------------------------------
 
@@ -199,12 +203,27 @@ class BatchRunner:
             self._resume(games[req.game], (probs, promo, float(values[i])))
 
     def _resume(self, gs: _GameState, answer: tuple[np.ndarray, np.ndarray, float]) -> None:
+        """Hand one evaluation back to its suspended simulation.
+
+        A root that completes here is finished *here*, synchronously. It used to
+        be queued and finished at the top of the next ``while`` pass, which left
+        a window — ``gen is None`` and ``in_root`` still True — that the
+        per-game ``for`` loop could reach first whenever a flush fired at a
+        lower game index than the root's owner (only possible with
+        ``batch_leaves <= concurrent games``). The loop read that state as "root
+        not yet requested" and opened a **second** ``expand_root_gen`` on the
+        same tree: Gumbel noise drawn twice, ``root`` re-pointed to node 1 with
+        node 0 orphaned, or the second build counted as a simulation (review
+        A1). Finishing inline leaves no state in which a completed root is
+        ambiguous, so the scheduler cannot change a game's search — which is
+        the whole contract of this class.
+        """
         try:
             gs.gen.send(answer)
         except StopIteration as stop:
             gs.gen = None
             if gs.in_root:
-                self._pending_roots.append((gs, stop.value))
+                self._finish_root(gs, self._search, self._num_sims, stop.value)
             else:
                 gs.sims_run += 1
                 self.stats["sims"] += 1
@@ -346,20 +365,17 @@ class BatchRunner:
         self._stop_fn = stop_fn
         self._evaluator_for = evaluator_for
         self._move_fn = move_fn
+        self._search = search
+        self._num_sims = num_sims
         for gs in games:
             # _begin_move, not _start_move: a game whose opening has the opponent
             # to move must play that move before any tree is built for it.
             self._begin_move(gs, search, num_sims, game_reps(gs))
 
         pending: list[_LeafRequest] = []
-        self._pending_roots: list[tuple[_GameState, int]] = []
         batch_leaves = max(1, self.cfg.batch_leaves)
 
         while any(not gs.done for gs in games):
-            for gs_done, root_idx in self._pending_roots:
-                self._finish_root(gs_done, search, num_sims, root_idx)
-            self._pending_roots.clear()
-
             progressed = False
             for gi, gs in enumerate(games):
                 if gs.done or gs.gen is not None:
@@ -367,6 +383,9 @@ class BatchRunner:
 
                 if gs.in_root:
                     # The root is a leaf like any other; it goes through the buffer.
+                    # ``in_root`` with no generator means exactly one thing here —
+                    # "not yet requested" — because ``_resume`` clears it the
+                    # moment the root's evaluation lands (review A1).
                     gs.gen = search.expand_root_gen(gs.tree, gs.board, gs.path_reps, game_reps(gs))
                 else:
                     forced = self._next_forced_edge(gs, search)
@@ -414,7 +433,7 @@ class BatchRunner:
                 # wait for a full batch that can never arrive.
                 self._flush(pending, games)
                 continue  # the flush unblocked games -- that IS progress
-            if not progressed and not pending and not self._pending_roots:
+            if not progressed and not pending:
                 break
 
         self._flush(pending, games)
