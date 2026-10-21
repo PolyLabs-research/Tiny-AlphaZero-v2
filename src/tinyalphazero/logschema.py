@@ -29,16 +29,34 @@ a row may lack a measurement, but it may never be silent about why. The reader
 these logs are written for is someone months from now with no access to the
 conversation that produced them, and "ece: null" alone leaves them to decide for
 themselves whether the value head was uncalibrated or simply never asked.
+
+**Versions belong to row families, and a validator knows every version it has
+ever written.** Until 2026-10-21 one ``SCHEMA_VERSION`` served both the iteration
+row and the ladder rows, so a ladder-only change to 3 re-stamped byte-identical
+iteration rows as 3 and made the validator reject the 70 unchanged rows of p2_a
+and p2_b (REVIEW-2026-10-21 P10). Each family now has its own constant, and the
+validators accept any version in that family's history against the shape that
+version actually had — a committed row never becomes invalid because the code
+moved on.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 3
+# ---------------------------------------------------------------------------
+# The iteration row
+# ---------------------------------------------------------------------------
+
+#: The version new iteration rows are stamped with. The *shape* has never
+#: changed — versions 1, 2 and 3 are one shape (see the module docstring) — so
+#: this stays at 3 rather than restarting the count, and a reader never sees a
+#: version go backwards in a log.
+ITERATION_SCHEMA_VERSION = 3
 
 #: Fields whose value may legitimately be ``null`` in the JSONL.
 NULLABLE = frozenset({"false_resign_rate", "mean_plies_decisive"})
@@ -106,7 +124,7 @@ class IterationRow:
     other_s: float
     total_s: float
 
-    schema_version: int = SCHEMA_VERSION
+    schema_version: int = ITERATION_SCHEMA_VERSION
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -114,6 +132,10 @@ class IterationRow:
 
 #: Declared field order — the reader's contract.
 FIELDS: tuple[str, ...] = tuple(f.name for f in fields(IterationRow))
+
+#: Every version an iteration row has ever carried, and the shape it had. One
+#: shape, three numbers — the history the module docstring explains.
+_ITERATION_SHAPES: dict[int, tuple[str, ...]] = {1: FIELDS, 2: FIELDS, 3: FIELDS}
 
 
 def iteration_row(**kwargs: Any) -> dict[str, Any]:
@@ -134,18 +156,22 @@ def iteration_row(**kwargs: Any) -> dict[str, Any]:
 
 
 def validate(row: dict[str, Any]) -> None:
-    """Raise ``ValueError`` unless ``row`` is exactly one well-formed schema row."""
-    missing = [k for k in FIELDS if k not in row]
-    unknown = [k for k in row if k not in FIELDS]
+    """Raise ``ValueError`` unless ``row`` is a well-formed iteration row of a known version."""
+    version = row.get("schema_version")
+    if version not in _ITERATION_SHAPES:
+        raise ValueError(
+            f"log row schema_version {version!r} is not one this reader knows "
+            f"({sorted(_ITERATION_SHAPES)})"
+        )
+    declared = _ITERATION_SHAPES[version]
+    missing = [k for k in declared if k not in row]
+    unknown = [k for k in row if k not in declared]
     if missing or unknown:
         raise ValueError(f"log row schema mismatch: missing={missing} unknown={unknown}")
 
-    nulls = [k for k in FIELDS if row[k] is None and k not in NULLABLE]
+    nulls = [k for k in declared if row[k] is None and k not in NULLABLE]
     if nulls:
         raise ValueError(f"log row has null in non-nullable field(s): {nulls}")
-
-    if row["schema_version"] != SCHEMA_VERSION:
-        raise ValueError(f"log row schema_version {row['schema_version']} != {SCHEMA_VERSION}")
 
     split = sum(float(row[k]) for k in _SPLIT)
     if abs(split - float(row["total_s"])) > _SPLIT_TOLERANCE_S:
@@ -162,10 +188,40 @@ def append_row(path: str | Path, row: dict[str, Any]) -> None:
 
 
 def _append(path: str | Path, row: dict[str, Any]) -> None:
+    """Append one row as its own line — after making sure the previous line ended.
+
+    A process killed mid-write leaves a torn fragment with no newline. Appending
+    straight after it would glue the new row onto the fragment: the combined line
+    fails to parse, and because it is now the *last* line :func:`read_jsonl`
+    drops it silently — so the matchup just measured vanishes from the log, and
+    the next resume measures it again and makes the corrupt line non-final, at
+    which point the whole file stops reading (REVIEW-2026-10-21 D1). The torn
+    fragment carried no information a reader could use, so it is cut before the
+    append; everything before it is intact by construction.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _repair_torn_tail(path)
     with path.open("a") as fh:
         fh.write(json.dumps(row) + "\n")
+
+
+def _repair_torn_tail(path: Path) -> None:
+    """Truncate a trailing partial line (no newline) left by a kill mid-write."""
+    if not path.exists():
+        return
+    with path.open("r+b") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        if size == 0:
+            return
+        fh.seek(size - 1)
+        if fh.read(1) == b"\n":
+            return
+        fh.seek(0)
+        data = fh.read()
+        fh.seek(data.rfind(b"\n") + 1)
+        fh.truncate()
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +233,21 @@ def _append(path: str | Path, row: dict[str, Any]) -> None:
 # does not involve an opponent. Splitting them into two files would make "what
 # did this checkpoint score" a join.
 # ---------------------------------------------------------------------------
+
+#: The version new ladder rows are stamped with. History, so a reader can place
+#: any committed row (and :func:`validate_ladder` accepts each against its own
+#: shape):
+#:
+#: * 1 — chunk 10; p2_a and p2_b's protocol passes.
+#: * 2 — ``role`` and ``produced`` (2026-08-11); p2_b's Stockfish rows, p2_c.
+#: * 3 — ``pair_scores`` (2026-08-13); p2_d. ``nondeterministic`` was added to
+#:   this version after p2_d's rows were written, so for version 3 the field is
+#:   *optional* on read: the 17 committed rows that lacked it were backfilled on
+#:   2026-10-21 (RUNLOG-p2_d.md, errata), but a version number cannot be made to
+#:   mean two shapes retroactively, and this one does.
+#: * 4 — ``nondeterministic`` required; ``config_fingerprint`` on both row
+#:   types and ``anchor_digest`` on match rows (REVIEW-2026-10-21 P1, D3, D6).
+LADDER_SCHEMA_VERSION = 4
 
 MATCH_ROW = "match"
 EVAL_ROW = "eval"
@@ -204,9 +275,11 @@ PRODUCED = frozenset({PRODUCED_INLINE, PRODUCED_OFFLINE})
 #: where the answer actually lives for those files.
 
 #: Nullable in a match row: an anchor that could not be run leaves the CI absent
-#: rather than zero, and ``iteration`` is None for a standalone evaluation of a
-#: checkpoint that is not part of a campaign (the Phase 1 anchor, for instance).
-_MATCH_NULLABLE = frozenset({"elo_lo", "elo_hi", "iteration"})
+#: rather than zero, ``iteration`` is None for a standalone evaluation of a
+#: checkpoint that is not part of a campaign (the Phase 1 anchor, for instance),
+#: and ``anchor_digest`` is None for every opponent that is not a checkpoint —
+#: random, greedy and an engine have no file to hash.
+_MATCH_NULLABLE = frozenset({"elo_lo", "elo_hi", "iteration", "anchor_digest"})
 #: Nullable in an eval row: a suite or metric that is not present in this working
 #: tree reports None, which reads as "not measured" rather than "measured as 0".
 _EVAL_NULLABLE = frozenset(
@@ -237,7 +310,27 @@ class LadderMatchRow:
     max_plies: int
     seconds: float
     git_sha: str
-    schema_version: int = SCHEMA_VERSION
+    # The resolved config the pass ran under, as ``sha256`` of its saved YAML
+    # (see ``config.config_fingerprint``). An offline backfill and an inline pass
+    # that disagree on ``eval_m`` or the match sims are different measurements
+    # of the same checkpoint, and without this field nothing in the row could
+    # tell them apart afterwards (REVIEW-2026-10-21 D6).
+    config_fingerprint: str
+    # sha256 of the opponent checkpoint's bytes for a network anchor, None for
+    # every other family. The ladder's zero point is "the Phase 1 anchor", and
+    # the anchor is a 78 MB untracked file at a path two versions have lived at
+    # (runs/ANCHORS.sha256); the row records which one it actually played
+    # (REVIEW-2026-10-21 D3).
+    anchor_digest: str | None
+    # Does the opponent randomize its own play? A row that says so cannot be
+    # read as a reproducible measurement, and a single row of a nondeterministic
+    # rung cannot be compared to another single row -- it needs repetitions.
+    # Same lineage as `role` and `calibration_note`: the row announces what kind
+    # of fact it is, rather than leaving the reader to know. Required, with no
+    # default: "deterministic" must be something the opponent *declared*, never
+    # what a missing attribute fell back to (REVIEW-2026-10-21 P3).
+    nondeterministic: bool
+    schema_version: int = LADDER_SCHEMA_VERSION
     role: str = ROLE_PROTOCOL
     produced: str = PRODUCED_OFFLINE
     # The learner's mean score over each opening's two colour-swapped games —
@@ -247,12 +340,6 @@ class LadderMatchRow:
     # so "pass 15 beat pass 5" had to be demoted to descriptive after the fact
     # (RUNLOG-p2_c.md §2). ~100 floats per row.
     pair_scores: list = field(default_factory=list)
-    # Does the opponent randomize its own play? A row that says so cannot be
-    # read as a reproducible measurement, and a single row of a nondeterministic
-    # rung cannot be compared to another single row -- it needs repetitions.
-    # Same lineage as `role` and `calibration_note`: the row announces what kind
-    # of fact it is, rather than leaving the reader to know.
-    nondeterministic: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -289,7 +376,8 @@ class LadderEvalRow:
     book_move1_entropy: float
     seconds: float
     git_sha: str
-    schema_version: int = SCHEMA_VERSION
+    config_fingerprint: str  # as on LadderMatchRow
+    schema_version: int = LADDER_SCHEMA_VERSION
     role: str = ROLE_PROTOCOL
     produced: str = PRODUCED_OFFLINE
 
@@ -300,30 +388,73 @@ class LadderEvalRow:
 MATCH_FIELDS: tuple[str, ...] = tuple(f.name for f in fields(LadderMatchRow))
 EVAL_FIELDS: tuple[str, ...] = tuple(f.name for f in fields(LadderEvalRow))
 
+# -- the shape each ladder version actually had ---------------------------------
+# Built by subtraction from the current dataclasses so a field added to the
+# dataclass is a field added to version 4 and to nothing earlier.
+_V2_ADDED = frozenset({"role", "produced"})
+_V3_ADDED = frozenset({"pair_scores"})
+_V4_ADDED_MATCH = frozenset({"nondeterministic", "config_fingerprint", "anchor_digest"})
+_V4_ADDED_EVAL = frozenset({"config_fingerprint"})
 
-def _check(row: dict[str, Any], declared: tuple[str, ...], nullable: frozenset[str]) -> None:
-    missing = [k for k in declared if k not in row]
-    unknown = [k for k in row if k not in declared]
+_MATCH_V1 = tuple(k for k in MATCH_FIELDS if k not in _V2_ADDED | _V3_ADDED | _V4_ADDED_MATCH)
+_MATCH_V2 = tuple(k for k in MATCH_FIELDS if k not in _V3_ADDED | _V4_ADDED_MATCH)
+_MATCH_V3 = tuple(k for k in MATCH_FIELDS if k not in _V4_ADDED_MATCH)
+_EVAL_V1 = tuple(k for k in EVAL_FIELDS if k not in _V2_ADDED | _V4_ADDED_EVAL)
+_EVAL_V2 = tuple(k for k in EVAL_FIELDS if k not in _V4_ADDED_EVAL)
+
+#: version -> (required fields, optional fields). Optional exists for exactly one
+#: reason: version 3 was written both without and with ``nondeterministic``.
+_MATCH_SHAPES: dict[int, tuple[tuple[str, ...], frozenset[str]]] = {
+    1: (_MATCH_V1, frozenset()),
+    2: (_MATCH_V2, frozenset()),
+    3: (_MATCH_V3, frozenset({"nondeterministic"})),
+    4: (MATCH_FIELDS, frozenset()),
+}
+_EVAL_SHAPES: dict[int, tuple[tuple[str, ...], frozenset[str]]] = {
+    1: (_EVAL_V1, frozenset()),
+    2: (_EVAL_V2, frozenset()),
+    3: (_EVAL_V2, frozenset()),
+    4: (EVAL_FIELDS, frozenset()),
+}
+
+
+def _check(
+    row: dict[str, Any],
+    shapes: dict[int, tuple[tuple[str, ...], frozenset[str]]],
+    nullable: frozenset[str],
+) -> None:
+    version = row.get("schema_version")
+    if version not in shapes:
+        raise ValueError(
+            f"ladder row schema_version {version!r} is not one this reader knows ({sorted(shapes)})"
+        )
+    required, optional = shapes[version]
+    missing = [k for k in required if k not in row]
+    unknown = [k for k in row if k not in required and k not in optional]
     if missing or unknown:
-        raise ValueError(f"ladder row schema mismatch: missing={missing} unknown={unknown}")
-    nulls = [k for k in declared if row[k] is None and k not in nullable]
+        raise ValueError(
+            f"ladder row (schema {version}) mismatch: missing={missing} unknown={unknown}"
+        )
+    nulls = [k for k in row if row[k] is None and k not in nullable]
     if nulls:
         raise ValueError(f"ladder row has null in non-nullable field(s): {nulls}")
-    if row["schema_version"] != SCHEMA_VERSION:
-        raise ValueError(f"ladder row schema_version {row['schema_version']} != {SCHEMA_VERSION}")
-    if row["role"] not in ROLES:
+    if "role" in row and row["role"] not in ROLES:
         raise ValueError(f"ladder row role {row['role']!r} not in {sorted(ROLES)}")
-    if row["produced"] not in PRODUCED:
+    if "produced" in row and row["produced"] not in PRODUCED:
         raise ValueError(f"ladder row produced {row['produced']!r} not in {sorted(PRODUCED)}")
+    if "nondeterministic" in row and not isinstance(row["nondeterministic"], bool):
+        raise ValueError(
+            f"ladder row nondeterministic must be a bool, got {row['nondeterministic']!r}"
+        )
 
 
 def validate_ladder(row: dict[str, Any]) -> None:
-    """Raise unless ``row`` is a well-formed ladder row of either type."""
+    """Raise unless ``row`` is a well-formed ladder row of either type, of any known version."""
     kind = row.get("row_type")
     if kind == MATCH_ROW:
-        _check(row, MATCH_FIELDS, _MATCH_NULLABLE)
+        _check(row, _MATCH_SHAPES, _MATCH_NULLABLE)
     elif kind == EVAL_ROW:
-        _check(row, EVAL_FIELDS, _EVAL_NULLABLE)
+        _check(row, _EVAL_SHAPES, _EVAL_NULLABLE)
     else:
         raise ValueError(
             f"unknown ladder row_type {kind!r}; expected {MATCH_ROW!r} or {EVAL_ROW!r}"
@@ -369,11 +500,58 @@ def ladder_role(row: dict[str, Any]) -> str | None:
 
 
 def completed_matchups(path: str | Path) -> set[tuple[str, str]]:
-    """``(checkpoint, anchor)`` pairs already in the log — never recomputed."""
+    """``(checkpoint, anchor)`` pairs already in the log — the coarse view.
+
+    Resumption does *not* skip on this (see :func:`ladder_key`): a 20-game smoke
+    row and a 200-game protocol row are the same pair and different measurements.
+    """
     p = Path(path)
     if not p.exists():
         return set()
     return {(r["checkpoint"], r["anchor"]) for r in read_jsonl(p) if r.get("row_type") == MATCH_ROW}
+
+
+def match_key(
+    checkpoint: str, anchor: str, games: int, match_sims: int, max_plies: int, role: str
+) -> tuple:
+    """The identity a resume skips a matchup on: the pair *and* its protocol.
+
+    ``(checkpoint, anchor)`` alone let a 20-game smoke row, a different-sims
+    diagnostic, or a pass at a different ply cap block the protocol row for the
+    same pair — and ``scripts/eval_ladder.py`` writes beside the checkpoint by
+    default, i.e. into the campaign's own log (REVIEW-2026-10-21 D5). A row that
+    predates ``role`` (schema < 2) is a protocol row: every such row lives in a
+    campaign's ``ladder.jsonl`` (see :func:`ladder_role`).
+    """
+    return (MATCH_ROW, checkpoint, anchor, int(games), int(match_sims), int(max_plies), role)
+
+
+def eval_key(checkpoint: str, suite_sims: int, role: str) -> tuple:
+    """The identity a resume skips the opponent-free row on (REVIEW-2026-10-21 D4)."""
+    return (EVAL_ROW, checkpoint, int(suite_sims), role)
+
+
+def ladder_key(row: dict[str, Any]) -> tuple:
+    """The resume key of an existing row, of any version."""
+    role = row.get("role") or ROLE_PROTOCOL
+    if row.get("row_type") == MATCH_ROW:
+        return match_key(
+            row["checkpoint"],
+            row["anchor"],
+            row["games"],
+            row["match_sims"],
+            row["max_plies"],
+            role,
+        )
+    return eval_key(row["checkpoint"], row["suite_sims"], role)
+
+
+def completed_keys(path: str | Path) -> set[tuple]:
+    """Every :func:`ladder_key` already in the log — what a pass skips on."""
+    p = Path(path)
+    if not p.exists():
+        return set()
+    return {ladder_key(r) for r in read_jsonl(p) if r.get("row_type") in (MATCH_ROW, EVAL_ROW)}
 
 
 def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
@@ -381,6 +559,8 @@ def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
 
     A killed process can leave a partial last line, and refusing to read the whole
     file because of it would make the dashboard the second casualty of the crash.
+    (The writer also cuts that fragment before its next append, so the torn line
+    can never end up in the middle of the file — see :func:`_append`.)
     """
     rows: list[dict[str, Any]] = []
     lines = Path(path).read_text().splitlines()

@@ -55,8 +55,12 @@ class RandomMover:
 
     name: str = "random"
     kind: str = "move"
+    #: Declared, not defaulted: every opponent family states whether it randomizes
+    #: its own play *between runs at the same seed* (REVIEW-2026-10-21 P3). This
+    #: one draws from the caller's generator, so it is reproducible from the seed.
+    nondeterministic = False
 
-    def choose(self, board: chess.Board, rng: np.random.Generator) -> chess.Move:
+    def choose(self, board: chess.Board, rng: np.random.Generator, game: Any = None) -> chess.Move:
         moves = list(board.legal_moves)
         return moves[int(rng.integers(len(moves)))]
 
@@ -88,6 +92,7 @@ class GreedyMaterial:
 
     name: str = "greedy"
     kind: str = "move"
+    nondeterministic = False  # the tie-break comes from the caller's seeded generator
 
     def score(self, board: chess.Board, mv: chess.Move) -> float:
         board.push(mv)
@@ -108,7 +113,7 @@ class GreedyMaterial:
             gain += PIECE_VALUE[mv.promotion] - PIECE_VALUE[chess.PAWN]
         return gain
 
-    def choose(self, board: chess.Board, rng: np.random.Generator) -> chess.Move:
+    def choose(self, board: chess.Board, rng: np.random.Generator, game: Any = None) -> chess.Move:
         moves = list(board.legal_moves)
         scores = np.array([self.score(board, mv) for mv in moves])
         best = np.flatnonzero(scores == scores.max())
@@ -120,8 +125,12 @@ class NetSearchOpponent:
     """A frozen checkpoint playing under the evaluation profile (spec §8).
 
     The M3 criterion is Elo against *this*: the Phase 1 anchor at a comparable
-    node count. It is pinned by digest in TRAINING_STRATEGY.md so that promoting
-    `phase1_anchor.pt` later cannot silently move the ladder's zero point.
+    node count. It is pinned by digest — ``runs/ANCHORS.sha256`` and
+    ``eval.anchor_digest`` — so that promoting `phase1_anchor.pt` later cannot
+    silently move the ladder's zero point. ``digest`` is the sha256 of the file
+    actually loaded; :func:`build_opponent` fills it in and refuses a file whose
+    digest is not the pinned one (REVIEW-2026-10-21 D3: the field existed, was
+    never set, and nothing hashed the file).
     """
 
     ckpt: Path
@@ -130,6 +139,7 @@ class NetSearchOpponent:
     name: str = "phase1"
     kind: str = "network"
     digest: str = ""
+    nondeterministic = False  # a fixed network under the eval profile is a function of position
     _evaluate: Any = field(default=None, repr=False)
 
     def evaluate_batch(self) -> Any:
@@ -178,6 +188,12 @@ class StockfishOpponent:
     nodes: int
     name: str = ""
     kind: str = "move"
+    # A wall-clock ceiling that never binds: 10,000 nodes is milliseconds, and
+    # the limit exists only so python-chess arms its watchdog -- with a
+    # nodes-only Limit it waits forever on an engine that has hung
+    # (REVIEW-2026-10-21 D12). It is not a time control and does not make the
+    # anchor a function of machine load; if it ever fires, the rung fails loudly.
+    time_ceiling_s: float = 60.0
     _engine: Any = field(default=None, repr=False)
 
     @property
@@ -215,18 +231,45 @@ class StockfishOpponent:
             self._engine.configure({"Skill Level": self.skill, "Threads": 1, "Hash": 16})
         return self._engine
 
-    def choose(self, board: chess.Board, rng: np.random.Generator) -> chess.Move:
+    def choose(self, board: chess.Board, rng: np.random.Generator, game: Any = None) -> chess.Move:
+        """One move at fixed nodes, from a transposition table this game owns.
+
+        ``game`` identifies the game the position belongs to; python-chess sends
+        ``ucinewgame`` whenever it changes, clearing the hash. Without it one
+        engine process carried its table across the ~200 games of a matchup, so
+        a move in game k depended on the search history of games 1..k-1 and on
+        the order the scheduler interleaved them — a second source of
+        non-reproducibility hiding under the skill limiter's (REVIEW-2026-10-21
+        P9). With concurrent games the table is in effect cleared every move,
+        which is the cleanest definition of a fixed opponent there is.
+        """
         import chess.engine
 
-        result = self._open().play(board, chess.engine.Limit(nodes=self.nodes))
+        key = id(board) if game is None else game
+        limit = chess.engine.Limit(nodes=self.nodes, time=self.time_ceiling_s)
+        result = self._open().play(board, limit, game=key)
         if result.move is None:  # engine resigned or returned nothing playable
             moves = list(board.legal_moves)
             return moves[int(rng.integers(len(moves)))]
         return result.move
 
     def close(self) -> None:
-        if self._engine is not None:
+        """Release the engine; never raise while doing so.
+
+        ``quit()`` on an engine that has already died raises
+        ``EngineTerminatedError`` — and ``close()`` runs in the ladder's
+        ``finally``, so that second error used to replace the traceback of
+        whatever killed the engine in the first place (REVIEW-2026-10-21 D12).
+        """
+        if self._engine is None:
+            return
+        import chess.engine
+
+        try:
             self._engine.quit()
+        except (chess.engine.EngineError, OSError):
+            pass
+        finally:
             self._engine = None
 
     # Context-manager protocol so releasing the subprocess is an idiom rather
@@ -256,16 +299,28 @@ def anchor_identity(opponent: Any) -> str:
     return str(opponent.name)
 
 
+#: Every family :func:`build_opponent` can return, by the spec that names it. A
+#: test iterates this so a property proven for the set is re-proven when the set
+#: grows (the law RUNLOG-p2_d.md §2 carved out of the skill-0 finding).
+OPPONENT_SPECS: tuple[str, ...] = ("random", "greedy", "phase1", "stockfish:0", "stockfish:20")
+
+
 def build_opponent(
     spec: str,
     anchor_ckpt: Path | None = None,
     sims: int = 48,
     device: str = "cpu",
     stockfish: str = "",
+    anchor_digest: str = "",
 ) -> RandomMover | GreedyMaterial | NetSearchOpponent | StockfishOpponent | None:
     """Resolve an opponent name from the CLI. Returns None if it is unavailable.
 
     ``None`` means "skip this rung", which only Stockfish can produce.
+
+    ``anchor_digest`` is the sha256 the ``phase1`` rung's file must have. Empty
+    skips the check (a test fixture, a deliberately different anchor under a
+    different name); non-empty and wrong raises, because the alternative is a
+    ladder whose zero point moved and whose rows cannot say so.
     """
     if spec == "random":
         return RandomMover()
@@ -274,7 +329,17 @@ def build_opponent(
     if spec == "phase1":
         if anchor_ckpt is None:
             raise ValueError("the phase1 rung needs --anchor-ckpt")
-        return NetSearchOpponent(ckpt=Path(anchor_ckpt), sims=sims, device=device)
+        from tinyalphazero.provenance import sha256_file
+
+        digest = sha256_file(anchor_ckpt)
+        if anchor_digest and digest != anchor_digest:
+            raise ValueError(
+                f"{anchor_ckpt} hashes to {digest[:16]}…, not the pinned anchor "
+                f"{anchor_digest[:16]}… (eval.anchor_digest; see runs/ANCHORS.sha256). "
+                "A ladder against a different anchor is a different ladder — pass the "
+                "right file, or change the pin deliberately and record why."
+            )
+        return NetSearchOpponent(ckpt=Path(anchor_ckpt), sims=sims, device=device, digest=digest)
     if spec.startswith("stockfish"):
         path = stockfish_path(stockfish)
         if path is None:

@@ -387,6 +387,9 @@ def _match_row(**over) -> dict:
         "max_plies": 300,
         "seconds": 1200.0,
         "git_sha": "abc1234",
+        "config_fingerprint": "f" * 64,
+        "anchor_digest": None,
+        "nondeterministic": False,
     }
     base.update(over)
     return logschema.ladder_match_row(**base)
@@ -505,12 +508,106 @@ def test_completed_matchups_makes_a_pass_resumable(tmp_path: Path) -> None:
     """A killed pass costs the matchup in flight and nothing already measured."""
     log = tmp_path / "ladder.jsonl"
     assert logschema.completed_matchups(log) == set()
+    assert logschema.completed_keys(log) == set()
     logschema.append_ladder_row(log, _match_row(anchor="random"))
     logschema.append_ladder_row(log, _match_row(anchor="greedy"))
     assert logschema.completed_matchups(log) == {
         ("runs/x.pt", "random"),
         ("runs/x.pt", "greedy"),
     }
+    assert logschema.match_key("runs/x.pt", "random", 200, 48, 300, "protocol") in (
+        logschema.completed_keys(log)
+    )
+
+
+def test_resume_key_is_the_matchup_and_its_protocol(tmp_path: Path) -> None:
+    """A 20-game smoke row must not stand in for the 200-game protocol row.
+
+    `(checkpoint, anchor)` alone let a smoke pass, a different-sims diagnostic or a
+    different ply cap block the real measurement for the same pair — and
+    `scripts/eval_ladder.py` writes beside the checkpoint by default, i.e. into
+    the campaign's own log (REVIEW-2026-10-21 D5). The eval row is keyed too,
+    because a re-run of a completed pass used to append a second one (D4).
+    """
+    log = tmp_path / "ladder.jsonl"
+    logschema.append_ladder_row(log, _match_row(anchor="random", games=20))
+    logschema.append_ladder_row(log, _match_row(anchor="greedy", role="diagnostic"))
+    done = logschema.completed_keys(log)
+    protocol = logschema.match_key("runs/x.pt", "random", 200, 48, 300, "protocol")
+    smoke = logschema.match_key("runs/x.pt", "random", 20, 48, 300, "protocol")
+    assert smoke in done and protocol not in done
+    assert logschema.match_key("runs/x.pt", "greedy", 200, 48, 300, "protocol") not in done
+    assert logschema.match_key("runs/x.pt", "greedy", 200, 48, 300, "diagnostic") in done
+    # Every protocol parameter is part of the identity.
+    base = ("runs/x.pt", "random", 200, 48, 300, "protocol")
+    for i, alt in ((2, 100), (3, 128), (4, 160), (5, "diagnostic")):
+        changed = list(base)
+        changed[i] = alt
+        assert logschema.match_key(*changed) != logschema.match_key(*base)
+    # A pre-v2 row has no role field; it lives in a campaign log, so it is protocol.
+    v1 = {
+        "row_type": "match",
+        "checkpoint": "c",
+        "anchor": "a",
+        "games": 200,
+        "match_sims": 48,
+        "max_plies": 300,
+        "schema_version": 1,
+    }
+    assert logschema.ladder_key(v1) == logschema.match_key("c", "a", 200, 48, 300, "protocol")
+    assert logschema.eval_key("c", 128, "protocol") != logschema.eval_key("c", 16, "protocol")
+
+
+def test_appending_after_a_torn_tail_keeps_every_row_readable(tmp_path: Path) -> None:
+    """The kill-then-resume sequence that used to poison a log (REVIEW-2026-10-21 D1).
+
+    A torn fragment with no newline, then an append: the new row must be its own
+    line, visible to the resume key set, and the file must still read after a
+    *second* append — which is where the old behaviour raised for the whole file.
+    """
+    log = tmp_path / "ladder.jsonl"
+    first = _match_row(anchor="random")
+    logschema.append_ladder_row(log, first)
+    with log.open("a") as fh:
+        fh.write('{"row_type": "match", "checkpoint": "run')  # killed mid-write
+    second = _match_row(anchor="greedy")
+    logschema.append_ladder_row(log, second)
+    assert logschema.read_jsonl(log) == [first, second]
+    assert logschema.ladder_key(second) in logschema.completed_keys(log)
+    third = _match_row(anchor="phase1", anchor_digest="d" * 64)
+    logschema.append_ladder_row(log, third)
+    assert [r["anchor"] for r in logschema.read_jsonl(log)] == ["random", "greedy", "phase1"]
+    # Nothing but the fragment was cut: the first row is byte-identical.
+    assert log.read_text().splitlines()[0] == log.read_text().splitlines()[0].strip()
+
+
+_RECORD_LOGS = sorted(
+    p
+    for pattern in ("runs/*/ladder*.jsonl", "runs/*/iterations.jsonl", "runs/*/reps_*.jsonl")
+    for p in REPO.glob(pattern)
+)
+
+
+@pytest.mark.parametrize("log", _RECORD_LOGS, ids=lambda p: str(p.relative_to(REPO)))
+def test_every_committed_row_validates_under_its_own_version(log: Path) -> None:
+    """A committed row never becomes invalid because the code moved on.
+
+    Until 2026-10-21 one SCHEMA_VERSION served both row families, so the ladder's
+    bump to 3 made the validator reject the 70 unchanged iteration rows of p2_a and
+    p2_b, and `nondeterministic` added to version 3 after p2_d's rows were written
+    rejected 17 more (REVIEW-2026-10-21 P10, P1). These files are tracked, so this
+    runs on every clone.
+    """
+    rows = logschema.read_jsonl(log)
+    assert rows, f"{log} is empty"
+    keys: list[tuple] = []
+    for row in rows:
+        if "row_type" in row:
+            logschema.validate_ladder(row)
+            keys.append(logschema.ladder_key(row))
+        else:
+            logschema.validate(row)
+    assert len(keys) == len(set(keys)), f"{log} holds two rows for one resume key"
 
 
 def test_an_eval_row_says_why_calibration_is_missing() -> None:
@@ -542,6 +639,7 @@ def test_an_eval_row_says_why_calibration_is_missing() -> None:
         "book_move1_entropy": 3.1623,
         "seconds": 90.0,
         "git_sha": "abc1234",
+        "config_fingerprint": "f" * 64,
     }
     row = logschema.ladder_eval_row(**base)
     logschema.validate_ladder(row)
@@ -578,9 +676,19 @@ def test_book_entropy_is_finite_and_bounded() -> None:
 
 def test_generator_scripts_are_runnable() -> None:
     """Provenance is only provenance if the script still runs."""
-    for script in ("generate_openings.py", "generate_mate3.py"):
+    import sys
+
+    for script in (
+        "generate_openings.py",
+        "generate_mate3.py",
+        "eval_ladder.py",
+        "eval_reps.py",
+        "eval_track1.py",
+    ):
+        # The interpreter running the tests, not whatever `python` is on PATH: on
+        # this box there is none outside an activated venv (REVIEW-2026-10-21 D13).
         r = subprocess.run(
-            ["python", str(REPO / "scripts" / script), "--help"],
+            [sys.executable, str(REPO / "scripts" / script), "--help"],
             capture_output=True,
             text=True,
             cwd=REPO,
@@ -623,6 +731,9 @@ def test_ladder_rows_carry_role_and_provenance() -> None:
         "max_plies": 300,
         "seconds": 1.0,
         "git_sha": "abc",
+        "config_fingerprint": "f" * 64,
+        "anchor_digest": None,
+        "nondeterministic": True,
     }
     default = logschema.ladder_match_row(**base)
     assert default["role"] == logschema.ROLE_PROTOCOL
@@ -762,6 +873,9 @@ def test_stockfish_rung_is_resumable_by_name_not_spec() -> None:
                 max_plies=300,
                 seconds=294.0,
                 git_sha="abc",
+                config_fingerprint="f" * 64,
+                anchor_digest=None,
+                nondeterministic=True,
                 role=logschema.ROLE_DIAGNOSTIC,
             ),
         )
@@ -785,6 +899,9 @@ def test_stockfish_rung_is_resumable_by_name_not_spec() -> None:
                 out=out,
                 anchors="stockfish:0",  # the spec, which is NOT the logged name
                 suites=False,
+                # The logged row is diagnostic; a protocol pass would (rightly)
+                # not treat it as done -- the resume key carries the role.
+                role=logschema.ROLE_DIAGNOSTIC,
             )
     assert played == [], "the already-logged stockfish matchup was replayed"
     assert rows == []
@@ -838,10 +955,31 @@ def test_opponent_families_declare_whether_they_randomize() -> None:
     polarities. Skill 0 returned two distinct moves on quiet positions; skill 20
     returned one every time.
     """
-    from tinyalphazero.opponents import StockfishOpponent
+    from dataclasses import MISSING, fields
+
+    from tinyalphazero.opponents import OPPONENT_SPECS, StockfishOpponent, build_opponent
+    from tinyalphazero.provenance import sha256_file
 
     assert StockfishOpponent(path="/nonexistent", skill=0, nodes=10).nondeterministic is True
     assert StockfishOpponent(path="/nonexistent", skill=20, nodes=10).nondeterministic is False
+
+    # The gate gates the *set*, not one member of it (REVIEW-2026-10-21 P3): every
+    # family build_opponent can return declares the property as a bool. Stockfish
+    # may be absent from the box, so that family is constructed directly.
+    with tempfile.TemporaryDirectory() as tmp:
+        fake_anchor = Path(tmp) / "anchor.pt"
+        fake_anchor.write_bytes(b"not a real checkpoint")
+        for spec in OPPONENT_SPECS:
+            if spec.startswith("stockfish"):
+                opp = StockfishOpponent(path="/nonexistent", skill=int(spec.split(":")[1]), nodes=1)
+            else:
+                opp = build_opponent(spec, anchor_ckpt=fake_anchor, anchor_digest="")
+            assert isinstance(opp.nondeterministic, bool), spec
+            if spec == "phase1":
+                assert opp.digest == sha256_file(fake_anchor)
+    # And the row cannot fall back to "deterministic": the field has no default.
+    (nd,) = [f for f in fields(logschema.LadderMatchRow) if f.name == "nondeterministic"]
+    assert nd.default is MISSING and nd.default_factory is MISSING
 
 
 def test_ladder_row_carries_the_nondeterminism_flag() -> None:
@@ -867,6 +1005,180 @@ def test_ladder_row_carries_the_nondeterminism_flag() -> None:
         "max_plies": 300,
         "seconds": 427.0,
         "git_sha": "abc",
+        "config_fingerprint": "f" * 64,
+        "anchor_digest": None,
     }
-    assert logschema.ladder_match_row(**base)["nondeterministic"] is False
+    assert logschema.ladder_match_row(**base, nondeterministic=False)["nondeterministic"] is False
     assert logschema.ladder_match_row(**base, nondeterministic=True)["nondeterministic"] is True
+    with pytest.raises(TypeError):  # no default to fall back to (REVIEW-2026-10-21 P3)
+        logschema.ladder_match_row(**base)
+    good = logschema.ladder_match_row(**base, nondeterministic=True)
+    with pytest.raises(ValueError, match="bool"):
+        logschema.validate_ladder({**good, "nondeterministic": "no"})
+
+
+def test_rep_verdict_reproduces_the_committed_p2_d_statistic() -> None:
+    """`paired_rep_verdict` on the committed rep rows gives `p2_verdict_reps.json`.
+
+    The verdict P2 was closed on was computed by a script that was never committed
+    (REVIEW-2026-10-21 P5). It is a library function now, and this pins it to the
+    artefact: same rep scores, means, paired difference, bootstrap CI and SE.
+    """
+    import json
+
+    from tinyalphazero.evaluate import paired_rep_verdict
+
+    def rows(run: str) -> list[dict]:
+        return [
+            logschema.read_jsonl(REPO / "runs" / run / f"reps_iter0020_r{k}.jsonl")[0]
+            for k in (1, 2, 3)
+        ]
+
+    recorded = json.loads((REPO / "runs" / "p2_d" / "p2_verdict_reps.json").read_text())
+    got = paired_rep_verdict(rows("p2_c"), rows("p2_d"), "p2_c", "p2_d")
+    assert got.keys() == recorded.keys()
+    for key in ("p2_c_reps", "p2_d_reps", "openings", "excludes_zero"):
+        assert got[key] == recorded[key], key
+    for key in ("p2_c_mean", "p2_d_mean", "paired_difference", "se"):
+        assert got[key] == pytest.approx(recorded[key], abs=1e-12), key
+    assert got["ci95"] == pytest.approx(recorded["ci95"], abs=1e-12)
+    assert got["paired_difference"] == pytest.approx(0.1033, abs=5e-5)
+    assert got["excludes_zero"] is True
+
+
+def test_phase1_rung_refuses_a_checkpoint_with_the_wrong_digest() -> None:
+    """The anchor is pinned by digest in the code, not only in a document.
+
+    `runs/phase1_anchor.pt` is a 78 MB untracked file at a path two anchor versions
+    have lived at; a restored v1 would have moved the ladder's zero point with no
+    trace in any row (REVIEW-2026-10-21 D3).
+    """
+    from tinyalphazero.opponents import build_opponent
+    from tinyalphazero.provenance import sha256_file
+
+    with tempfile.TemporaryDirectory() as tmp:
+        ckpt = Path(tmp) / "anchor.pt"
+        ckpt.write_bytes(b"weights")
+        digest = sha256_file(ckpt)
+        with pytest.raises(ValueError, match="pinned anchor"):
+            build_opponent("phase1", anchor_ckpt=ckpt, anchor_digest="0" * 64)
+        ok = build_opponent("phase1", anchor_ckpt=ckpt, anchor_digest=digest)
+        assert ok.digest == digest
+        unchecked = build_opponent("phase1", anchor_ckpt=ckpt, anchor_digest="")
+        assert unchecked.digest == digest  # recorded even when not enforced
+
+
+def test_one_opening_match_reports_no_interval_and_still_serialises() -> None:
+    """`±inf` is not JSON; the bounds are None, "not measured" (REVIEW-2026-10-21 D14)."""
+    import json
+
+    from tinyalphazero.evaluate import paired_bootstrap_elo
+
+    elo, lo, hi, _clamped = paired_bootstrap_elo(np.array([0.5]), n_games=2)
+    assert elo == 0.0 and lo is None and hi is None
+    row = _match_row(games=2, elo_lo=None, elo_hi=None)
+    text = json.dumps(row)
+    assert "Infinity" not in text
+    assert json.loads(text)["elo_lo"] is None
+
+
+def test_stockfish_searches_each_game_from_its_own_table() -> None:
+    """`play()` carries a game key and a watchdog ceiling (REVIEW-2026-10-21 P9, D12).
+
+    Without the key one engine process kept its transposition table across the
+    ~200 games of a matchup, so a move in game k depended on games 1..k-1 and on
+    the scheduler's interleaving. Without the ceiling python-chess arms no timeout
+    for a nodes-only limit and a hung engine blocks forever.
+    """
+    import chess.engine
+
+    from tinyalphazero.opponents import StockfishOpponent
+
+    calls: list[dict] = []
+
+    class _Engine:
+        def play(self, board, limit, game=None):  # noqa: ANN001
+            calls.append({"limit": limit, "game": game})
+            return chess.engine.PlayResult(next(iter(board.legal_moves)), None)
+
+        def quit(self) -> None:
+            raise chess.engine.EngineTerminatedError("engine event loop dead")
+
+    opp = StockfishOpponent(path="/nonexistent", skill=0, nodes=777)
+    opp._engine = _Engine()
+    rng = np.random.default_rng(0)
+    a, b = chess.Board(), chess.Board()
+    opp.choose(a, rng)
+    opp.choose(b, rng)
+    opp.choose(a, rng, game="g1")
+    assert [c["limit"].nodes for c in calls] == [777, 777, 777]
+    assert all(c["limit"].time == opp.time_ceiling_s for c in calls)
+    assert calls[0]["game"] == id(a) != calls[1]["game"] == id(b)
+    assert calls[2]["game"] == "g1"
+    opp.close()  # the dead engine's own error must not replace the caller's
+    assert opp._engine is None
+
+
+def test_ladder_rows_stamp_the_launch_sha_and_the_config_fingerprint() -> None:
+    """Rows name the code that produced them and the config they ran under.
+
+    `git_sha` used to be HEAD at *write time* — p2_b's rows carry four SHAs from
+    one process (REVIEW-2026-10-21 C2/D2) — and nothing in a row said which config
+    a backfill used (D6). The pass takes the SHA from its caller and stamps it, and
+    both row types carry `config_fingerprint`.
+    """
+    from tinyalphazero import evaluate as ev
+    from tinyalphazero import logschema
+    from tinyalphazero.config import config_fingerprint
+    from tinyalphazero.evaluate import MatchResult
+
+    def _fake_match(_evaluate, opponent, cfg, **kw):
+        return MatchResult(
+            anchor=opponent.name,
+            games=2,
+            wins=1,
+            draws=0,
+            losses=1,
+            score=0.5,
+            elo=0.0,
+            elo_lo=None,
+            elo_hi=None,
+            elo_clamped=False,
+            draw_rate=0.0,
+            mean_plies=40.0,
+            seconds=0.1,
+            pair_scores=[0.5],
+            traces=[],
+        )
+
+    cfg = load_config(None)
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "ladder.jsonl"
+        with (
+            mock.patch.object(ev, "play_match", _fake_match),
+            mock.patch(
+                "tinyalphazero.train.load_checkpoint", lambda *a, **k: (mock.MagicMock(), {})
+            ),
+            mock.patch(
+                "tinyalphazero.mcts.batch_runner.torch_evaluate_batch", lambda *a, **k: None
+            ),
+            mock.patch(
+                "tinyalphazero.mcts.search.network_evaluator_from_net", lambda *a, **k: None
+            ),
+        ):
+            rows = ev.run_ladder_pass(
+                Path(tmp) / "ckpt.pt",
+                cfg,
+                "cpu",
+                out=out,
+                anchors="random,greedy",
+                suites=False,
+                git_sha="launch00",
+            )
+    assert [r["anchor"] for r in rows] == ["random", "greedy"]
+    for r in rows:
+        logschema.validate_ladder(r)
+        assert r["git_sha"] == "launch00"
+        assert r["config_fingerprint"] == config_fingerprint(cfg)
+        assert r["nondeterministic"] is False and r["anchor_digest"] is None
+        assert r["schema_version"] == logschema.LADDER_SCHEMA_VERSION

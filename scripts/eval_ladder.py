@@ -29,14 +29,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import torch
 
-from tinyalphazero.config import load_config
+from tinyalphazero.config import config_fingerprint, load_config
 from tinyalphazero.evaluate import format_ladder_event, run_ladder_pass
-
-REPO = Path(__file__).resolve().parents[1]
 
 
 def report(kind: str, payload: dict) -> None:
@@ -52,18 +51,23 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--ckpt", required=True, type=Path, help="Checkpoint under evaluation")
+    # Protocol parameters default to the config — and the config defaults to the
+    # run's own config.yaml beside the checkpoint — so an offline pass of a
+    # campaign checkpoint is the same measurement as the campaign's inline pass
+    # (REVIEW-2026-10-21 D6). Every flag below overrides one field for this pass.
     ap.add_argument(
         "--anchors",
-        default="random,greedy,phase1",
+        default=None,
         help="Comma-separated: random, greedy, phase1, stockfish[:skill]. A "
-        "stockfish rung with no binary present is skipped, not an error.",
+        "stockfish rung with no binary present is skipped, not an error. "
+        "Default: eval.ladder_anchors.",
     )
     ap.add_argument(
         "--anchor-ckpt",
         type=Path,
-        default=REPO / "runs" / "phase1_anchor.pt",
-        help="Frozen Phase 1 opponent for the `phase1` rung (anchor v2 by digest; "
-        "see TRAINING_STRATEGY.md).",
+        default=None,
+        help="Frozen Phase 1 opponent for the `phase1` rung (default: eval.anchor_ckpt; "
+        "its sha256 must equal eval.anchor_digest — see runs/ANCHORS.sha256).",
     )
     ap.add_argument("--out", type=Path, default=None, help="ladder.jsonl (default: beside --ckpt)")
     ap.add_argument(
@@ -76,10 +80,32 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--sims", type=int, default=None, help="Match sims (default: eval_match_sims)")
     ap.add_argument("--device", default=None, help="cuda | cpu")
-    ap.add_argument("--config", default=None)
-    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--config",
+        default=None,
+        help="YAML config. Default: the config.yaml beside --ckpt when there is one "
+        "(a campaign checkpoint), else the dataclass defaults.",
+    )
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Default: eval.eval_seed, else the config's run seed — what the inline "
+        "pass used, so the opponents' move streams and the bootstrap match.",
+    )
     ap.add_argument("--iteration", type=int, default=None, help="Campaign iteration, for the row")
-    ap.add_argument("--stockfish", default="", help="Explicit Stockfish binary path")
+    ap.add_argument(
+        "--stockfish",
+        default="",
+        help="Explicit Stockfish binary path (default: eval.stockfish_path)",
+    )
+    ap.add_argument(
+        "--proof-directed",
+        action="store_true",
+        help="Run the pass with proof-directed reply expansion ON (p2_d Track 1), via "
+        "mcts.eval_proof_directed_expansion — the measurement-side switch; self-play "
+        "is untouched. Rows record the resulting config fingerprint.",
+    )
     ap.add_argument(
         "--no-suites", action="store_true", help="Matches only; skip the eval row entirely"
     )
@@ -95,7 +121,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    cfg = load_config(args.config)
+    config_path = args.config
+    if config_path is None and (args.ckpt.parent / "config.yaml").exists():
+        config_path = str(args.ckpt.parent / "config.yaml")
+    cfg = load_config(config_path)
+    if args.proof_directed:
+        cfg = replace(cfg, mcts=replace(cfg.mcts, eval_proof_directed_expansion=True))
+    print(
+        f"config: {config_path or 'dataclass defaults'} | fingerprint {config_fingerprint(cfg)[:12]}"
+    )
     device = torch.device(
         args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu")
     )

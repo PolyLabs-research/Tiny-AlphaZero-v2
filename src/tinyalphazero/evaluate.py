@@ -74,7 +74,7 @@ def paired_bootstrap_elo(
     resamples: int = 10_000,
     rng: np.random.Generator | None = None,
     alpha: float = 0.05,
-) -> tuple[float, float, float, bool]:
+) -> tuple[float, float | None, float | None, bool]:
     """Point Elo and a percentile CI, resampling **opening pairs** with replacement.
 
     ``pair_scores[i]`` is the learner's mean score over the two colour-swapped
@@ -84,20 +84,79 @@ def paired_bootstrap_elo(
     interval below what the evidence supports.
 
     Returns ``(elo, lo, hi, clamped)`` where ``clamped`` refers to the point
-    estimate.
+    estimate. With fewer than two openings there is nothing to resample and the
+    bounds are ``None`` — "not measured", the same word the row schema uses —
+    rather than ``±inf``, which ``json.dumps`` writes as the non-JSON literals
+    ``-Infinity``/``Infinity`` (REVIEW-2026-10-21 D14).
     """
     rng = rng or np.random.default_rng(0)
     pair_scores = np.asarray(pair_scores, dtype=np.float64)
     n_pairs = len(pair_scores)
     elo, clamped = elo_from_score(float(pair_scores.mean()), n_games)
     if n_pairs < 2:
-        return elo, float("-inf"), float("inf"), clamped
+        return elo, None, None, clamped
 
     idx = rng.integers(0, n_pairs, size=(resamples, n_pairs))
     means = pair_scores[idx].mean(axis=1)
     elos = np.array([elo_from_score(float(m), n_games)[0] for m in means])
     lo, hi = np.percentile(elos, [100 * alpha / 2, 100 * (1 - alpha / 2)])
     return elo, float(lo), float(hi), clamped
+
+
+def paired_rep_verdict(
+    a_rows: list[dict],
+    b_rows: list[dict],
+    a_name: str,
+    b_name: str,
+    resamples: int = 10_000,
+    seed: int = 0,
+) -> dict[str, Any]:
+    """p2_d's registered statistic (PREREG-p2_d.md Addendum 2; RUNLOG-p2_d.md §1).
+
+    Each row is one offline replay of a nondeterministic rung (``pair_scores``
+    per opening). Per opening, the *rep-mean* removes the engine's own
+    randomisation; the paired difference of rep-means ``b - a`` over openings is
+    then bootstrapped over openings — the unit the design randomises over, as in
+    :func:`paired_bootstrap_elo`. ``ci95`` is the 2.5/97.5 percentile of the
+    bootstrap means and ``se`` their standard deviation (ddof=1). The defaults —
+    10,000 resamples, ``default_rng(0)`` — are the ones that reproduce
+    ``runs/p2_d/p2_verdict_reps.json`` from the committed rep rows to the digit;
+    a test pins that.
+
+    Lives here so that the verdict is a library function with a test, not a
+    script that was never committed (REVIEW-2026-10-21 P5).
+    """
+
+    def _stack(rows: list[dict], name: str) -> np.ndarray:
+        if not rows:
+            raise ValueError(f"{name}: no repetition rows")
+        ps = np.array([r["pair_scores"] for r in rows], dtype=np.float64)
+        if ps.ndim != 2 or ps.shape[1] == 0:
+            raise ValueError(f"{name}: rows must carry equal-length pair_scores (schema >= 3)")
+        return ps
+
+    pa, pb = _stack(a_rows, a_name), _stack(b_rows, b_name)
+    if pa.shape[1] != pb.shape[1]:
+        raise ValueError(f"openings differ: {a_name} {pa.shape[1]} vs {b_name} {pb.shape[1]}")
+    n = pa.shape[1]
+    diff = pb.mean(axis=0) - pa.mean(axis=0)  # per-opening difference of rep-means
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, n, size=(resamples, n))
+    boot = diff[idx].mean(axis=1)
+    lo, hi = np.percentile(boot, [2.5, 97.5])
+    a_scores = [float(r["score"]) for r in a_rows]
+    b_scores = [float(r["score"]) for r in b_rows]
+    return {
+        f"{a_name}_reps": a_scores,
+        f"{b_name}_reps": b_scores,
+        f"{a_name}_mean": sum(a_scores) / len(a_scores),
+        f"{b_name}_mean": sum(b_scores) / len(b_scores),
+        "paired_difference": float(diff.mean()),
+        "ci95": [float(lo), float(hi)],
+        "se": float(boot.std(ddof=1)),
+        "openings": int(n),
+        "excludes_zero": bool(lo > 0.0 or hi < 0.0),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -123,8 +182,8 @@ class MatchResult:
     losses: int
     score: float
     elo: float
-    elo_lo: float
-    elo_hi: float
+    elo_lo: float | None  # None: fewer than two openings, no interval to report
+    elo_hi: float | None
     elo_clamped: bool
     draw_rate: float
     mean_plies: float
@@ -199,6 +258,8 @@ def play_match(
         def move_fn(gi: int, board: chess.Board):  # noqa: F811
             if board.turn == learner_side(gi):
                 return None
+            # Each game owns one Board object for its whole life, so an engine
+            # opponent keys its transposition table on it (StockfishOpponent.choose).
             return opponent.choose(board, rngs[gi])
 
     t0 = time.perf_counter()
@@ -552,10 +613,10 @@ def run_ladder_pass(
     cfg: Config,
     device: Any,
     out: str | Path,
-    anchors: str = "random,greedy,phase1",
+    anchors: str | None = None,
     anchor_ckpt: str | Path | None = None,
     iteration: int | None = None,
-    seed: int = 0,
+    seed: int | None = None,
     games: int | None = None,
     sims: int | None = None,
     stockfish: str = "",
@@ -563,6 +624,8 @@ def run_ladder_pass(
     role: str = "protocol",
     produced: str = "offline",
     on_event: Any = None,
+    git_sha: str | None = None,
+    anchor_digest: str | None = None,
 ) -> list[dict]:
     """One complete ladder pass over ``ckpt``; returns the rows it appended.
 
@@ -572,34 +635,54 @@ def run_ladder_pass(
     is how the CLI gets its printing without this function acquiring a ``print``
     (AGENTS.md §4: library code raises, only scripts print).
 
-    Resumable: a matchup already logged for this checkpoint is skipped, and rows
-    are appended as each finishes.
+    Every protocol parameter defaults to ``cfg.eval`` — anchors, anchor checkpoint
+    and digest, openings, Stockfish path, seed, games, sims — so that the inline
+    pass and an offline backfill of the same checkpoint under the same config are
+    the same measurement (REVIEW-2026-10-21 C3/D6/D7). The rows record the
+    config's fingerprint so a reader can check that they were.
+
+    Resumable: a matchup already logged for this checkpoint *at these protocol
+    parameters* is skipped (``logschema.match_key``), the opponent-free eval row
+    likewise, and rows are appended as each finishes.
+
+    ``git_sha`` is the SHA of the running code; a campaign passes the one it
+    captured at launch. Left None it is read once here, for this pass — never
+    once per row.
     """
     from tinyalphazero import logschema
+    from tinyalphazero.config import config_fingerprint
     from tinyalphazero.mcts.batch_runner import torch_evaluate_batch
     from tinyalphazero.mcts.search import network_evaluator_from_net
     from tinyalphazero.opponents import anchor_identity, build_opponent
-    from tinyalphazero.train import _git_sha, load_checkpoint
+    from tinyalphazero.provenance import git_sha as read_git_sha
+    from tinyalphazero.train import load_checkpoint
 
     ckpt = Path(ckpt)
     out = Path(out)
-    sims = sims if sims is not None else cfg.eval.eval_match_sims
-    anchor_ckpt = Path(anchor_ckpt) if anchor_ckpt else REPO / "runs" / "phase1_anchor.pt"
+    ev = cfg.eval
+    sims = sims if sims is not None else ev.eval_match_sims
+    seed = ev.seed_or(cfg.seed) if seed is None else seed
+    anchors = ev.ladder_anchors if anchors is None else anchors
+    anchor_ckpt = Path(anchor_ckpt) if anchor_ckpt else REPO / ev.anchor_ckpt
+    anchor_digest = ev.anchor_digest if anchor_digest is None else anchor_digest
+    stockfish = stockfish or ev.stockfish_path
+    sha = read_git_sha() if git_sha is None else git_sha
+    fingerprint = config_fingerprint(cfg)
 
     net, _meta = load_checkpoint(ckpt, device=device)
     net.eval()
     batched = torch_evaluate_batch(net, device)
     single = network_evaluator_from_net(net, device)
 
-    book = load_openings()
+    book = load_openings(REPO / ev.openings_path)
     # §8 fixes the matchup size at ``eval.anchor_games`` (200 = the whole book,
     # twice each). Taking it from config rather than defaulting to the full book is
     # what lets configs/mini.yaml run a real ladder pass in seconds instead of a
     # scaled-down imitation of one.
-    n_games = games if games is not None else cfg.eval.anchor_games
+    n_games = games if games is not None else ev.anchor_games
     max_openings = max(1, min(len(book), n_games // 2))
     ckpt_key = str(ckpt)
-    done = logschema.completed_matchups(out)
+    done = logschema.completed_keys(out)
 
     def emit(kind: str, payload: Any) -> None:
         if on_event is not None:
@@ -633,13 +716,21 @@ def run_ladder_pass(
         # Construction is cheap for every opponent (checkpoints and engines both
         # load lazily), so building before the check costs nothing.
         opponent = build_opponent(
-            spec, anchor_ckpt=anchor_ckpt, sims=sims, device=str(device), stockfish=stockfish
+            spec,
+            anchor_ckpt=anchor_ckpt,
+            sims=sims,
+            device=str(device),
+            stockfish=stockfish,
+            anchor_digest=anchor_digest,
         )
         if opponent is None:
             emit("skip", {"anchor": spec, "reason": "no Stockfish binary"})
             continue
         identity = anchor_identity(opponent)
-        if (ckpt_key, identity) in done:
+        key = logschema.match_key(
+            ckpt_key, identity, 2 * max_openings, sims, ev.eval_match_max_plies, role
+        )
+        if key in done:
             emit("skip", {"anchor": identity, "reason": "already in the log"})
             closer = getattr(opponent, "close", None)
             if callable(closer):
@@ -689,25 +780,35 @@ def run_ladder_pass(
             losses=result.losses,
             score=round(result.score, 4),
             elo=round(result.elo, 2),
-            elo_lo=round(result.elo_lo, 2),
-            elo_hi=round(result.elo_hi, 2),
+            elo_lo=None if result.elo_lo is None else round(result.elo_lo, 2),
+            elo_hi=None if result.elo_hi is None else round(result.elo_hi, 2),
             elo_clamped=result.elo_clamped,
             draw_rate=round(result.draw_rate, 4),
             mean_plies=round(result.mean_plies, 2),
             match_sims=sims,
-            max_plies=cfg.eval.eval_match_max_plies,
+            max_plies=ev.eval_match_max_plies,
             seconds=round(result.seconds, 2),
-            git_sha=_git_sha(),
+            git_sha=sha,
+            config_fingerprint=fingerprint,
+            anchor_digest=getattr(opponent, "digest", None) or None,
+            # Read directly: every family declares it (P3). An opponent that did
+            # not would raise here, which is the point — "deterministic" is never
+            # the answer a missing attribute falls back to.
+            nondeterministic=bool(opponent.nondeterministic),
             role=role,
             produced=produced,
             pair_scores=[round(float(x), 4) for x in result.pair_scores],
-            nondeterministic=bool(getattr(opponent, "nondeterministic", False)),
         )
         logschema.append_ladder_row(out, row)
         rows.append(row)
         emit("match", row)
 
     if not suites:
+        return rows
+    if logschema.eval_key(ckpt_key, ev.suite_sims, role) in done:
+        # A re-run of a completed pass used to re-measure the suites and append a
+        # second eval row for the same checkpoint (REVIEW-2026-10-21 D4).
+        emit("skip", {"anchor": logschema.EVAL_ROW, "reason": "already in the log"})
         return rows
 
     t0 = time.perf_counter()
@@ -744,7 +845,7 @@ def run_ladder_pass(
     row = logschema.ladder_eval_row(
         checkpoint=ckpt_key,
         iteration=iteration,
-        suite_sims=cfg.eval.suite_sims,
+        suite_sims=ev.suite_sims,
         mate2_solved=m2_solved,
         mate2_total=m2_total,
         mate2_rate=round(m2_rate, 4),
@@ -762,7 +863,8 @@ def run_ladder_pass(
         calibration_note=calib_note,
         book_move1_entropy=round(entropy, 4),
         seconds=round(time.perf_counter() - t0, 2),
-        git_sha=_git_sha(),
+        git_sha=sha,
+        config_fingerprint=fingerprint,
         role=role,
         produced=produced,
     )
