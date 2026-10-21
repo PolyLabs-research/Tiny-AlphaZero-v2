@@ -1,5 +1,10 @@
 """Isolate compute from the dataloader: time train_step on a synthetic on-device batch."""
-import argparse, time, torch
+
+import argparse
+import time
+
+import torch
+
 from tinyalphazero.config import load_config
 from tinyalphazero.model import ChessNet
 from tinyalphazero.train import train_step
@@ -17,6 +22,8 @@ if args.compile:
 opt = torch.optim.AdamW(net.parameters(), lr=3e-4)
 B = args.batch
 g = torch.Generator().manual_seed(0)
+
+
 def make_batch():
     return {
         "tokens": torch.randint(0, 43, (B, 72), generator=g),
@@ -37,4 +44,4 @@ for _ in range(30):
     train_step(make_batch(), net, opt, dev, cfg.train, use_bf16=True)
 torch.cuda.synchronize()
 ms = (time.perf_counter() - t0) / 30 * 1000
-print(f"batch={B} compile={args.compile}  {ms:.0f} ms/step  ({B/ms*1000:.0f} samples/s)")
+print(f"batch={B} compile={args.compile}  {ms:.0f} ms/step  ({B / ms * 1000:.0f} samples/s)")
