@@ -321,6 +321,46 @@ def test_split_must_agree_with_total(tmp_path: Path) -> None:
         load_config(str(cfg_path))
 
 
+def _flat(d: dict, prefix: str = "") -> dict:
+    out: dict = {}
+    for k, v in d.items():
+        out.update(_flat(v, f"{prefix}{k}.") if isinstance(v, dict) else {f"{prefix}{k}": v})
+    return out
+
+
+def _config_deltas(a_path: Path, b_path: Path, a: str, b: str, allowed: set[str]) -> list[str]:
+    """Every field that differs between two configs, *including* top-level scalars.
+
+    The previous comparison iterated the dict-valued sections only, so `seed`
+    sat outside the "zero deltas" assertion: a p2_d with `seed: 43` against
+    p2_c's 42 would have read as the null lever while re-seeding self-play, the
+    opening draw and the bootstrap (REVIEW-2026-10-21 P11).
+    """
+    import dataclasses
+
+    fa = _flat(dataclasses.asdict(load_config(str(a_path))))
+    fb = _flat(dataclasses.asdict(load_config(str(b_path))))
+    assert fa.keys() == fb.keys()
+    return [
+        f"{key}: {a}={fa[key]} {b}={fb[key]}"
+        for key in fa
+        if fa[key] != fb[key] and key.rsplit(".", 1)[-1] not in allowed
+    ]
+
+
+def test_config_deltas_see_the_top_level_seed(tmp_path: Path) -> None:
+    """The guard the three brief tests share must notice a changed `seed`."""
+    from tinyalphazero.config import Config, save_config
+
+    base = Config()
+    save_config(base, str(tmp_path / "a.yaml"))
+    base.seed = 43
+    save_config(base, str(tmp_path / "b.yaml"))
+    assert _config_deltas(tmp_path / "a.yaml", tmp_path / "b.yaml", "a", "b", set()) == [
+        "seed: a=42 b=43"
+    ]
+
+
 def test_p2d_config_is_the_brief() -> None:
     """configs/p2_d.yaml differs from p2_c's resolved config in NOTHING.
 
@@ -337,15 +377,8 @@ def test_p2d_config_is_the_brief() -> None:
     if not (p2d.exists() and p2c.exists()):
         pytest.skip("p2_d config or p2_c run config not present")
 
-    a = dataclasses.asdict(load_config(str(p2c)))
     b = dataclasses.asdict(load_config(str(p2d)))
-    differences = [
-        f"{section}.{key}: p2_c={a[section][key]} p2_d={b[section][key]}"
-        for section in a
-        if isinstance(a[section], dict)
-        for key in a[section]
-        if a[section][key] != b[section][key]
-    ]
+    differences = _config_deltas(p2c, p2d, "p2_c", "p2_d", allowed=set())
     assert not differences, "the null lever is not null:\n  " + "\n  ".join(differences)
     # The two standing settings and the flag Track 1 adds, asserted by name so a
     # future default change cannot silently redefine "identical".
@@ -368,16 +401,8 @@ def test_p2c_config_is_the_brief() -> None:
     if not (p2c.exists() and p2b.exists()):
         pytest.skip("p2_c config or p2_b run config not present")
 
-    a = dataclasses.asdict(load_config(str(p2b)))
     b = dataclasses.asdict(load_config(str(p2c)))
-    allowed = {"value_q_mse_weight"}
-    differences = [
-        f"{section}.{key}: p2_b={a[section][key]} p2_c={b[section][key]}"
-        for section in a
-        if isinstance(a[section], dict)
-        for key in a[section]
-        if a[section][key] != b[section][key] and key not in allowed
-    ]
+    differences = _config_deltas(p2b, p2c, "p2_b", "p2_c", allowed={"value_q_mse_weight"})
     assert not differences, "p2_c changes more than the lever:\n  " + "\n  ".join(differences)
     assert b["train"]["value_q_mse_weight"] == 0.5
     assert b["train"]["rehearsal_frac"] == 0.05, "rehearsal must stay at p2_b's setting"
@@ -397,18 +422,8 @@ def test_p2b_config_is_the_brief(tmp_path: Path) -> None:
     if not p2a_path.exists():
         pytest.skip("runs/p2_a/config.yaml not present")
 
-    import dataclasses
-
-    a = dataclasses.asdict(load_config(str(p2a_path)))
-    b = dataclasses.asdict(load_config(str(p2b_path)))
     allowed = {"rehearsal_frac", "rehearsal_mate1_frac", "rehearsal_mate2_frac"}
-    differences = []
-    for section in a:
-        for key in a[section] if isinstance(a[section], dict) else []:
-            if a[section][key] != b[section][key] and key not in allowed:
-                differences.append(
-                    f"{section}.{key}: p2_a={a[section][key]} p2_b={b[section][key]}"
-                )
+    differences = _config_deltas(p2a_path, p2b_path, "p2_a", "p2_b", allowed=allowed)
     assert not differences, "p2_b changes more than the lever:\n  " + "\n  ".join(differences)
 
 
