@@ -33,11 +33,12 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
+from dataclasses import replace
 from pathlib import Path
 
 import chess
 
-from tinyalphazero.config import MCTSConfig
+from tinyalphazero.config import load_config
 from tinyalphazero.mcts import gumbel
 from tinyalphazero.mcts.search import (
     Search,
@@ -136,9 +137,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sims", type=int, default=128)
     ap.add_argument("--out", type=Path, default=None, help="JSON sink for the watchlist")
     ap.add_argument("--validate", action=argparse.BooleanOptionalAction, default=True)
+    ap.add_argument(
+        "--config",
+        default=None,
+        help="Campaign YAML whose mcts section the search runs under (eval profile: "
+        "root_noise forced off). Default: the dataclass defaults, i.e. what the "
+        "diagnostic measured before --config existed (REVIEW-2026-10-21 E13).",
+    )
     args = ap.parse_args(argv)
 
-    cfg = MCTSConfig(root_noise=False)
+    cfg = replace(load_config(args.config).mcts, root_noise=False)
     evaluate_fn = network_evaluator(args.ckpt)
     search = Search(evaluate_fn, cfg)
 

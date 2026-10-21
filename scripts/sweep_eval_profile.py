@@ -20,7 +20,7 @@ tuning suite's ``meta.json`` records what it is for.
 Usage:
 
     VIRTUAL_ENV=.venv .venv/bin/python scripts/sweep_eval_profile.py \\
-        --suite runs/data/mate2_tune_500/mate_in_2.epd --sims 128 \\
+        --suite runs/data/mate2_tune_500/mate_in_2.epd --mate-in 2 --sims 128 \\
         --ckpt runs/phase1_d/final.pt --workers 4
 """
 
@@ -28,13 +28,12 @@ from __future__ import annotations
 
 import argparse
 import itertools
-import json
 import multiprocessing as mp
-import subprocess
 import time
 from pathlib import Path
 
 from tinyalphazero.config import MCTSConfig
+from tinyalphazero.envinfo import append_benchmark_row, benchmark_row
 from tinyalphazero.mcts.search import load_epd, network_evaluator, solve_positions
 
 # The grid, pre-registered in BLOCKED-2026-08-08. Not widened after seeing
@@ -48,16 +47,6 @@ EVAL_M = (16, 32)
 DEFAULTS = {"eval_c_visit": 50.0, "eval_c_scale": 1.0, "eval_m": 16}
 
 _WORKER: dict = {}
-
-
-def git_sha() -> str:
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
-        )
-        return out.stdout.strip()
-    except Exception:  # pragma: no cover - provenance is best-effort
-        return "unknown"
 
 
 def _init_worker(ckpt: str, device: str | None) -> None:
@@ -123,6 +112,14 @@ def main(argv: list[str] | None = None) -> int:
         help="EPD tuning suite. MUST NOT be a gate suite — see the module docstring.",
     )
     ap.add_argument("--ckpt", required=True, type=Path, help="Checkpoint to evaluate")
+    ap.add_argument(
+        "--mate-in",
+        type=int,
+        required=True,
+        choices=(1, 2, 3),
+        help="What 'solved' means for this suite: mate in N. Stated, not inferred "
+        "from the file name, and recorded in every row.",
+    )
     ap.add_argument("--sims", type=int, default=128, help="Simulations per move")
     ap.add_argument(
         "--positions",
@@ -158,11 +155,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
+    import torch
+
     positions = load_epd(args.suite)
     if args.positions:
         positions = positions[: args.positions]
-    mate_in = 2 if "mate_in_2" in args.suite.name else 1
-    sha = git_sha()
+    mate_in = args.mate_in
+    # network_evaluator(ckpt, None) picks cuda when available; record the same choice.
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     grid = [
         {"eval_c_visit": cv, "eval_c_scale": cs, "eval_m": m}
@@ -178,8 +178,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         print(
-            f"sweep: {len(grid)} configs x {len(positions)} positions @ {args.sims} sims "
-            f"| ckpt={args.ckpt} workers={args.workers} sha={sha[:8]}"
+            f"sweep: {len(grid)} configs x {len(positions)} positions (mate in {mate_in}) "
+            f"@ {args.sims} sims | ckpt={args.ckpt} workers={args.workers} device={device}"
         )
         if args.time_one_first:
             _rate, _s, _t, _f, secs = evaluate_config(
@@ -200,19 +200,20 @@ def main(argv: list[str] | None = None) -> int:
             rate, solved, total, failed, secs = evaluate_config(
                 positions, args.sims, cfg_kw, mate_in, pool, args.workers
             )
-            row = {
-                "benchmark": args.tag,
-                "git_sha": sha,
-                "ckpt": str(args.ckpt),
-                "suite": str(args.suite),
-                "positions": total,
-                "sims": args.sims,
-                "profile": "eval",
+            row = benchmark_row(
+                args.tag,
+                device=device,
+                ckpt=str(args.ckpt),
+                suite=str(args.suite),
+                mate_in=mate_in,
+                positions=total,
+                sims=args.sims,
+                profile="eval",
                 **cfg_kw,
-                "solved": solved,
-                "solve_rate": rate,
-                "seconds": round(secs, 2),
-            }
+                solved=solved,
+                solve_rate=rate,
+                seconds=round(secs, 2),
+            )
             rows.append(row)
             print(
                 f"  [{i:2d}/{len(grid)}] m={cfg_kw['eval_m']:<3} "
@@ -224,10 +225,8 @@ def main(argv: list[str] | None = None) -> int:
             pool.close()
             pool.join()
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    with args.out.open("a") as fh:
-        for row in rows:
-            fh.write(json.dumps(row) + "\n")
+    for row in rows:
+        append_benchmark_row(args.out, row)
 
     best = select(rows)
     print(f"\nwrote {len(rows)} rows to {args.out}")

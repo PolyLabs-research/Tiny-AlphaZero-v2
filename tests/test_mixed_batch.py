@@ -33,6 +33,7 @@ from tinyalphazero.data import (
     write_dataset,
 )
 from tinyalphazero.model import ChessNet
+from tinyalphazero.phase1 import build_phase1_loader
 from tinyalphazero.train import WeightedPhaseDataset, train_step
 
 _CPU = torch.device("cpu")
@@ -118,34 +119,24 @@ def test_mixed_batch_collates_and_trains(three_datasets: list[Path]) -> None:
 
 
 def test_full_mixture_through_the_real_loader_builder(three_datasets: list[Path]) -> None:
-    """Exercise `_build_loader` itself, so the shipped path is what is covered."""
-    import sys
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-    from train_phase1 import _build_loader
-
+    """Exercise `build_phase1_loader` itself, so the shipped path is what is covered."""
     rand_dir, m1_dir, m2_dir = three_datasets
     cfg = TrainConfig(batch_size=4)
     cfg.phase1_mate1_mix = 0.3
     cfg.phase1_mate2_mix = 0.3
-    loader, n = _build_loader(rand_dir, m1_dir, cfg, seed=0, num_workers=0, mate2_dir=m2_dir)
-    assert n == len(Phase1Dataset(rand_dir)) + len(Phase1Dataset(m1_dir)) + len(
+    p1 = build_phase1_loader(rand_dir, m1_dir, cfg, seed=0, num_workers=0, mate2_dir=m2_dir)
+    assert p1.n_samples == len(Phase1Dataset(rand_dir)) + len(Phase1Dataset(m1_dir)) + len(
         Phase1Dataset(m2_dir)
     )
-    batch = next(iter(loader))
+    batch = next(iter(p1.loader))
     assert batch["tokens"].shape[0] == 4
 
 
 def test_anchor_mixes_must_sum_below_one(three_datasets: list[Path]) -> None:
     """Random play takes the remainder, so a >=1 total is a config error, not a clamp."""
-    import sys
-
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-    from train_phase1 import _build_loader
-
     rand_dir, m1_dir, m2_dir = three_datasets
     cfg = TrainConfig(batch_size=4)
     cfg.phase1_mate1_mix = 0.6
     cfg.phase1_mate2_mix = 0.5
     with pytest.raises(ValueError, match="must sum to <1"):
-        _build_loader(rand_dir, m1_dir, cfg, seed=0, num_workers=0, mate2_dir=m2_dir)
+        build_phase1_loader(rand_dir, m1_dir, cfg, seed=0, num_workers=0, mate2_dir=m2_dir)

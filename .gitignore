@@ -39,6 +39,12 @@ runs/**
 !runs/**/p2_verdict_reps.json
 !runs/**/reps_iter*.jsonl
 !runs/**/ladder_pairscores.jsonl
+# The mate-in-2 *tuning* suite (BLOCKED-2026-08-08 stage 2): the disjoint set the
+# eval-profile sweep was selected on, cited by 18 results.jsonl rows and by the
+# sweep firewall, and the one file that lets anyone re-check the disjointness
+# claim. 36 KB. Its meta.json was tracked; the suite itself was not
+# (REVIEW-2026-10-21 E10).
+!runs/data/*/mate_in_*.epd
 
 # Root-scoped: a bare `data/` would also swallow runs/data/ as a directory ignore,
 # and git cannot descend into an ignored directory to reach the negations above.

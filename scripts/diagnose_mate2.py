@@ -21,12 +21,13 @@ Diagnosis only. It selects nothing and gates nothing.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 
 import chess
 import numpy as np
 
-from tinyalphazero.config import MCTSConfig
+from tinyalphazero.config import load_config
 from tinyalphazero.mcts.search import (
     Search,
     _forces_mate_in_2,
@@ -48,14 +49,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--eval-m", type=int, default=None)
     ap.add_argument("--eval-c-visit", type=float, default=None)
     ap.add_argument("--eval-c-scale", type=float, default=None)
+    ap.add_argument(
+        "--config",
+        default=None,
+        help="Campaign YAML whose mcts section the search runs under (eval profile: "
+        "root_noise forced off; --eval-* flags override its eval_* fields when given). "
+        "Default: the dataclass defaults (REVIEW-2026-10-21 E13).",
+    )
     args = ap.parse_args(argv)
 
-    cfg = MCTSConfig(
-        root_noise=False,
-        eval_m=args.eval_m,
-        eval_c_visit=args.eval_c_visit,
-        eval_c_scale=args.eval_c_scale,
-    )
+    overrides = {
+        k: v
+        for k, v in (
+            ("eval_m", args.eval_m),
+            ("eval_c_visit", args.eval_c_visit),
+            ("eval_c_scale", args.eval_c_scale),
+        )
+        if v is not None
+    }
+    cfg = replace(load_config(args.config).mcts, root_noise=False, **overrides)
     active = cfg.resolved()
     m = active.gumbel_m
     evaluate_fn = network_evaluator(args.ckpt)

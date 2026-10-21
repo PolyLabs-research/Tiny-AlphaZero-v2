@@ -23,40 +23,18 @@ script exists to say where the time goes when that number disappoints.
 from __future__ import annotations
 
 import argparse
-import json
 import statistics
-import subprocess
 import time
 from pathlib import Path
 
 import numpy as np
 import torch
 
+from tinyalphazero.envinfo import append_benchmark_row, benchmark_row
 from tinyalphazero.train import load_checkpoint
 
 BATCHES = (64, 256, 512)
 TARGET_MS_AT_512 = 8.0
-
-
-def _git_sha() -> str:
-    try:
-        return (
-            subprocess.check_output(
-                [
-                    "git",
-                    "-C",
-                    str(Path(__file__).resolve().parents[1]),
-                    "rev-parse",
-                    "--short",
-                    "HEAD",
-                ],
-                stderr=subprocess.DEVNULL,
-            )
-            .decode()
-            .strip()
-        )
-    except (OSError, subprocess.SubprocessError):
-        return "no-git"
 
 
 def _sync(device: torch.device) -> None:
@@ -118,21 +96,17 @@ def main(argv: list[str] | None = None) -> int:
     net, meta = load_checkpoint(args.ckpt, device=device)
     net.eval()
     seq_len = meta["config_obj"].model.seq_len
-    sha = _git_sha()
 
     rows = []
     for batch in BATCHES:
-        row = time_batch(net, device, batch, args.iters, args.warmup, seq_len)
-        row.update(
-            {
-                "benchmark": "inference_latency",
-                "git_sha": sha,
-                "ckpt": str(args.ckpt),
-                "device": args.device,
-                "dtype": "bf16",
-                "torch": torch.__version__,
-                "hip": getattr(torch.version, "hip", None),
-            }
+        row = benchmark_row(
+            "inference_latency",
+            device=args.device,
+            ckpt=str(args.ckpt),
+            dtype="bf16",
+            torch=torch.__version__,
+            hip=getattr(torch.version, "hip", None),
+            **time_batch(net, device, batch, args.iters, args.warmup, seq_len),
         )
         rows.append(row)
         print(
@@ -148,10 +122,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if not args.no_record:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        with args.out.open("a") as fh:
-            for row in rows:
-                fh.write(json.dumps(row) + "\n")
+        for row in rows:
+            append_benchmark_row(args.out, row)
         print(f"appended {len(rows)} rows to {args.out}")
     return 0
 

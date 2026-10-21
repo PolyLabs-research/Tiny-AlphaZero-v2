@@ -8,25 +8,36 @@ Usage:
         --eval-data runs/data/eval_rand \\
         --eval-mate1 runs/data/eval_mate1 \\
         --out runs/phase1_a \\
-        [--epochs 3] [--batch 1024] [--seed 42] [--ckpt <resume>] [--config configs/default.yaml]
+        [--config configs/phase1_d.yaml] [--epochs 3] [--batch 1024] [--seed 42]
+
+    # resume: config, epochs, batch, mixes and seed come from the checkpoint
+    python scripts/train_phase1.py --data ... --mate1 ... --out runs/phase1_a \\
+        --ckpt runs/phase1_a/epoch_02.pt
+
+Without --config the dataclass defaults apply (Phase 1 values: dropout 0.1,
+legality auxiliary on). configs/default.yaml is the *Phase 2* campaign config
+and is not a Phase 1 config.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import ConcatDataset, DataLoader, WeightedRandomSampler
 
-from tinyalphazero.config import load_config
-from tinyalphazero.data import Phase1Dataset, assert_dataset_mode
+from tinyalphazero.config import Config, config_fingerprint, load_config, save_config
+from tinyalphazero.data import assert_dataset_mode
+from tinyalphazero.envinfo import environment_report
 from tinyalphazero.model import ChessNet
+from tinyalphazero.phase1 import build_phase1_loader
 from tinyalphazero.train import (
-    WeightedPhaseDataset,
+    _git_sha,
     compute_metrics,
     load_checkpoint,
     save_checkpoint,
@@ -34,74 +45,57 @@ from tinyalphazero.train import (
 )
 
 
-def _build_loader(
-    data_dir: Path,
-    mate1_dir: Path | None,
-    cfg_train,
-    seed: int,
-    num_workers: int = 8,
-    mate2_dir: Path | None = None,
-) -> tuple[DataLoader, int]:
-    """Mix random play with mate-in-1 and mate-in-2 anchors at their configured fractions.
+def _config_diff(a: dict, b: dict, prefix: str = "") -> list[str]:
+    """Dotted keys whose values differ, with both values, so the refusal names them."""
+    out = []
+    for key in sorted(set(a) | set(b)):
+        va, vb = a.get(key), b.get(key)
+        if isinstance(va, dict) and isinstance(vb, dict):
+            out.extend(_config_diff(va, vb, f"{prefix}{key}."))
+        elif va != vb:
+            out.append(f"{prefix}{key}: {va!r} vs {vb!r}")
+    return out
 
-    Each anchor sample is up-weighted so its dataset contributes exactly its
-    configured fraction of the batch, regardless of how many positions it holds.
-    Random play takes the remainder, so the mixes must sum below 1.
+
+def _write_run_artifacts(
+    out: Path, cfg: Config, device: torch.device, resume: dict | None
+) -> list[str]:
+    """The AGENTS §4 run-dir artifacts: resolved config.yaml and provenance.json.
+
+    provenance.json carries the git SHA of the running code, the config
+    fingerprint, torch/device and the check_env report (the matmul probe only on
+    GPU, where it costs well under a second). A resume appends to a ``resumes``
+    list rather than overwriting the record of the run's start; a run dir whose
+    config.yaml disagrees with the checkpoint being resumed is refused.
+    Returns the conflicts found (empty on success) so the caller can report them.
     """
-    anchor_mix = cfg_train.phase1_mate1_mix + getattr(cfg_train, "phase1_mate2_mix", 0.0)
-    if not 0.0 <= anchor_mix < 1.0:
-        raise ValueError(
-            f"anchor mixes must sum to <1, got mate1={cfg_train.phase1_mate1_mix} + "
-            f"mate2={getattr(cfg_train, 'phase1_mate2_mix', 0.0)} = {anchor_mix}"
-        )
+    config_path = out / "config.yaml"
+    if resume is not None and config_path.exists():
+        diff = _config_diff(asdict(load_config(str(config_path))), asdict(cfg))
+        if diff:
+            return [f"{config_path} does not describe the checkpoint being resumed: {diff}"]
+    else:
+        save_config(cfg, str(config_path))
 
-    rand_ds = WeightedPhaseDataset(
-        Phase1Dataset(data_dir),
-        value_weight=cfg_train.phase1_value_weight_random,
-    )
-
-    n_rand = len(rand_ds)
-    datasets = [rand_ds]
-    weights = np.full(n_rand, 1.0 - anchor_mix)
-
-    for anchor_dir, mix in (
-        (mate1_dir, cfg_train.phase1_mate1_mix),
-        (mate2_dir, getattr(cfg_train, "phase1_mate2_mix", 0.0)),
-    ):
-        if anchor_dir is None or not anchor_dir.exists() or mix <= 0:
-            continue
-        anchor_ds = WeightedPhaseDataset(
-            Phase1Dataset(anchor_dir),
-            value_weight=cfg_train.phase1_value_weight_anchor,
-        )
-        n_a = len(anchor_ds)
-        datasets.append(anchor_ds)
-        weights = np.concatenate(
-            [weights, np.full(n_a, (mix / (1.0 - anchor_mix)) * (n_rand / n_a))]
-        )
-
-    combined = ConcatDataset(datasets)
-    sampler = WeightedRandomSampler(
-        weights=weights.tolist(),
-        num_samples=len(combined),
-        replacement=True,
-        generator=torch.Generator().manual_seed(seed),
-    )
-
-    # persistent_workers/prefetch_factor are only valid with worker processes, and
-    # num_workers=0 is what tests and CPU debugging use -- so the shipped builder
-    # has to accept it rather than being reachable only in its production shape.
-    worker_opts = {"persistent_workers": True, "prefetch_factor": 4} if num_workers > 0 else {}
-    loader = DataLoader(
-        combined,
-        batch_size=cfg_train.batch_size,
-        sampler=sampler,
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=True,
-        **worker_opts,
-    )
-    return loader, len(combined)
+    report = environment_report(matmul=device.type == "cuda")
+    entry = {
+        "git_sha": _git_sha(),
+        "config_fingerprint": config_fingerprint(cfg),
+        "torch": torch.__version__,
+        "device": str(device),
+        "device_name": report.get("device_name", "cpu"),
+        "seed": cfg.seed,
+        "argv": sys.argv,
+        "environment": report,
+    }
+    prov_path = out / "provenance.json"
+    if resume is None:
+        record = entry
+    else:
+        record = json.loads(prov_path.read_text()) if prov_path.exists() else dict(entry)
+        record.setdefault("resumes", []).append({**entry, **resume})
+    prov_path.write_text(json.dumps(record, indent=2) + "\n")
+    return []
 
 
 def main() -> None:
@@ -135,8 +129,15 @@ def main() -> None:
     parser.add_argument("--out", required=True, type=Path, help="Output run directory")
     parser.add_argument("--epochs", type=int, default=None, help="Override phase1_epochs")
     parser.add_argument("--batch", type=int, default=None, help="Override batch_size")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--ckpt", type=Path, default=None, help="Resume from checkpoint")
+    parser.add_argument("--seed", type=int, default=None, help="Run seed (default: config seed)")
+    parser.add_argument(
+        "--ckpt",
+        type=Path,
+        default=None,
+        help="Resume a run from its checkpoint: weights, optimizer, step AND config "
+        "(epochs, batch, schedule, mixes, seed) come from the checkpoint; --config, "
+        "--epochs, --batch and --seed are refused if they disagree with it.",
+    )
     parser.add_argument(
         "--init-weights",
         type=Path,
@@ -149,19 +150,58 @@ def main() -> None:
     parser.add_argument("--config", type=str, default=None, help="YAML config file")
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
-    if args.epochs is not None:
-        cfg.train.phase1_epochs = args.epochs
-    if args.batch is not None:
-        cfg.train.batch_size = args.batch
-
-    # ---- Fail fast on mis-generated datasets (see runs/phase1_a post-mortem) ----
-    assert_dataset_mode(args.data, "random_games")
     if args.ckpt is not None and args.init_weights is not None:
         parser.error(
             "--ckpt and --init-weights are mutually exclusive: --ckpt resumes a run "
             "(optimizer + step), --init-weights starts a new one from borrowed weights."
         )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_bf16 = device.type == "cuda"
+
+    # ---- Config: the command line for a fresh run, the checkpoint for a resume ----
+    meta: dict = {}
+    if args.ckpt is not None:
+        # A resumed run cannot silently change what it is (REVIEW-2026-10-21 E2):
+        # epochs set the cosine T_max, the mixes set the data, the seed sets the
+        # draw. All of it comes from the checkpoint, and a command line that says
+        # otherwise is refused rather than overridden either way.
+        net, meta = load_checkpoint(args.ckpt, device=device)
+        cfg = meta["config_obj"]
+        conflicts = []
+        if args.config is not None:
+            diff = _config_diff(asdict(load_config(args.config)), asdict(cfg))
+            if diff:
+                conflicts.append(
+                    f"--config {args.config} differs from the checkpoint config: {diff}"
+                )
+        for flag, value, have in (
+            ("--epochs", args.epochs, cfg.train.phase1_epochs),
+            ("--batch", args.batch, cfg.train.batch_size),
+            ("--seed", args.seed, cfg.seed),
+        ):
+            if value is not None and value != have:
+                conflicts.append(f"{flag} {value} vs checkpoint {have}")
+        if conflicts:
+            parser.error(
+                f"--ckpt {args.ckpt} resumes the run its config describes; drop the "
+                "conflicting flags or start a new run with --init-weights.\n  "
+                + "\n  ".join(conflicts)
+            )
+    else:
+        cfg = load_config(args.config)
+        if args.epochs is not None:
+            cfg.train.phase1_epochs = args.epochs
+        if args.batch is not None:
+            cfg.train.batch_size = args.batch
+        if args.seed is not None:
+            # Into the config, so the checkpoint and config.yaml record the seed
+            # the run actually used (E9: cfg.seed was dead for Phase 1).
+            cfg.seed = args.seed
+    seed = cfg.seed
+
+    # ---- Fail fast on mis-generated datasets (see runs/phase1_a post-mortem) ----
+    assert_dataset_mode(args.data, "random_games")
     if args.mate1 is not None:
         assert_dataset_mode(args.mate1, "mate_in_1")
     if args.mate2 is not None:
@@ -178,13 +218,29 @@ def main() -> None:
     if args.mate2 is not None and args.eval_mate2 is None:
         print("WARNING: --mate2 given without --eval-mate2; the round d gate cannot be read.")
     if args.eval_data is None:
-        print("WARNING: --eval-data not set; metrics computed on the TRAINING set.")
+        print("WARNING: --eval-data not set; random-play metrics computed on the TRAINING set.")
+    if args.eval_mate1 is None and args.mate1 is not None:
+        print(
+            "WARNING: --eval-mate1 not set; the gated mate-in-1 metrics (mate1_top8_masked, "
+            "wdl_anchor_mass) are computed on the TRAINING anchors."
+        )
+    if args.eval_mate1 is None and args.mate1 is None:
+        print(
+            "WARNING: no mate-in-1 dir at all; compute_metrics will score mate-in-1 "
+            "metrics on 200 positions it generates itself. They gate nothing here."
+        )
+    for name, mix, given in (
+        ("mate1", cfg.train.phase1_mate1_mix, args.mate1),
+        ("mate2", cfg.train.phase1_mate2_mix, args.mate2),
+    ):
+        if mix > 0 and given is None:
+            print(
+                f"WARNING: train.phase1_{name}_mix={mix} but no --{name} dir given; "
+                f"no {name} anchors will be sampled."
+            )
 
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    use_bf16 = device.type == "cuda"
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
     args.out.mkdir(parents=True, exist_ok=True)
     log_path = args.out / "metrics.jsonl"
@@ -196,9 +252,12 @@ def main() -> None:
     # ---- Model & optimiser ----
     start_step = 0
     if args.ckpt is not None:
-        net, meta = load_checkpoint(args.ckpt, device=device, reference_model_cfg=cfg.model)
         start_step = meta.get("step", 0)
-        print(f"Resumed from {args.ckpt} at step {start_step}")
+        print(
+            f"Resumed from {args.ckpt} at step {start_step} "
+            f"(config from the checkpoint: epochs={cfg.train.phase1_epochs} "
+            f"batch={cfg.train.batch_size} seed={seed})"
+        )
     elif args.init_weights is not None:
         # Warm restart: borrow the weights, discard everything else. start_step
         # stays 0 so the schedule, epoch numbering and metrics.jsonl all describe
@@ -214,6 +273,16 @@ def main() -> None:
     else:
         net = ChessNet(cfg.model).to(device)
 
+    # ---- Run artifacts (AGENTS §4): resolved config, git SHA, check_env report ----
+    conflicts = _write_run_artifacts(
+        args.out,
+        cfg,
+        device,
+        resume=None if args.ckpt is None else {"from": str(args.ckpt), "step": start_step},
+    )
+    if conflicts:
+        parser.error("\n  ".join(["refusing to resume into this run dir:", *conflicts]))
+
     # Keep the uncompiled module: torch.compile wraps it, and the wrapper's
     # state_dict() carries `_orig_mod.` prefixes that would break checkpoint I/O.
     # The two share parameters, so training through `net` updates `raw_net`.
@@ -221,14 +290,15 @@ def main() -> None:
     if args.compile:
         net = torch.compile(net)
 
-    loader, n_samples = _build_loader(
+    p1 = build_phase1_loader(
         args.data,
         args.mate1,
         cfg.train,
-        args.seed,
+        seed,
         num_workers=args.workers,
         mate2_dir=args.mate2,
     )
+    loader = p1.loader
     # len(loader) accounts for drop_last; ceil(n/batch) does not, which left the old
     # run with a 3-step orphan "epoch 4".
     steps_per_epoch = len(loader)
@@ -243,16 +313,21 @@ def main() -> None:
         lr=cfg.train.phase1_lr_start,
         weight_decay=cfg.train.weight_decay,
     )
+    if args.ckpt is not None and "optimizer" in meta:
+        optimizer.load_state_dict(meta["optimizer"])
+        # The saved param groups carry the LR *at the checkpoint*. CosineAnnealingLR
+        # steps recursively from whatever lr the group holds, so fast-forwarding
+        # from lr_k lands at lr_2k, not lr_k (measured: 9.75e-5 where 1.65e-4 was
+        # due). Rewind to the start value and replay the schedule from step 0,
+        # which reproduces the uninterrupted trajectory operation for operation.
+        for group in optimizer.param_groups:
+            group["lr"] = cfg.train.phase1_lr_start
+            group["initial_lr"] = cfg.train.phase1_lr_start
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=total_steps,
         eta_min=cfg.train.phase1_lr_end,
     )
-
-    if args.ckpt is not None:
-        meta = meta  # already loaded above
-        if "optimizer" in meta:
-            optimizer.load_state_dict(meta["optimizer"])
 
     # Fast-forward scheduler to start_step
     for _ in range(start_step):
@@ -271,12 +346,26 @@ def main() -> None:
         f"workers={args.workers} | masked_policy={cfg.train.phase1_policy_masked} | "
         f"compile={args.compile}"
     )
+    # The realised batch fraction, not the configured mix: under the legacy
+    # weighting the two differ (REVIEW-2026-10-21 E1), and the log should say
+    # which one this run is actually drawing.
+    print(
+        f"  anchor weighting={cfg.train.phase1_anchor_weighting} | realised fractions: "
+        + (
+            ", ".join(f"{k}={v:.4f}" for k, v in p1.anchor_fractions.items())
+            if p1.anchor_fractions
+            else "none (no anchor dirs given)"
+        )
+    )
 
     loss_keys = ("loss", "policy_loss", "promo_loss", "value_loss", "legality_loss")
     total_skipped = 0
 
     while step < stop_at:
         epoch += 1
+        # Epoch k's multiset is a function of (seed, k): a resumed run draws what
+        # the uninterrupted one would have, instead of replaying epoch 1 (E2).
+        p1.sampler.set_epoch(epoch)
         epoch_losses: dict[str, list[float]] = {k: [] for k in loss_keys}
         epoch_skipped = 0
         t0 = time.perf_counter()

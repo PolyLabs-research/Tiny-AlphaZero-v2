@@ -37,6 +37,15 @@ MUST_TRACK: list[str] = [
     "tests/suites/*.epd",
     "TRAINING_STRATEGY.md",
     "PROGRESS.md",
+    # The mate-in-2 tuning suite the eval-profile sweep was selected on (E10).
+    "runs/data/*/mate_in_*.epd",
+    # p2_c/p2_d record kinds (REVIEW-2026-10-21 P7): the Track 1 convertibility
+    # scores, the registered-statistic replications and their verdict, and the
+    # pair-score replay that found the skill-0 nondeterminism.
+    "runs/p2_*/track1_ckpt_iter*.json",
+    "runs/p2_d/p2_verdict_reps.json",
+    "runs/p2_*/reps_iter*.jsonl",
+    "runs/p2_c/ladder_pairscores.jsonl",
 ]
 
 # Records that do not exist yet but must be reachable when they do. MUST_TRACK
@@ -52,6 +61,13 @@ MUST_REACH: list[str] = [
     "runs/p2_a/ladder_diagnostic.jsonl",  # diagnostic passes, excluded from a verdict
     "runs/p2_a/triage_mate2_iter0050.json",  # the decomposition RUNLOG-p2_a cites
     "runs/p2_a/s4_flip_iter0050.json",
+    # The next campaign's copies of the p2_c/p2_d record kinds, and a fresh
+    # tuning suite harvested under a new name.
+    "runs/p2_e/track1_ckpt_iter0020.json",
+    "runs/p2_e/p2_verdict_reps.json",
+    "runs/p2_e/reps_iter0020_r1.jsonl",
+    "runs/p2_e/ladder_pairscores.jsonl",
+    "runs/data/mate2_tune_fresh/mate_in_2.epd",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that
@@ -59,6 +75,7 @@ MUST_REACH: list[str] = [
 MUST_IGNORE: list[str] = [
     "runs/phase1_anchor.pt",
     "runs/phase1_c/final.pt",
+    "runs/data/mate2_tune_500/keymoves.dat",  # the .epd negation must not widen to data
     ".venv/bin/python",
 ]
 
