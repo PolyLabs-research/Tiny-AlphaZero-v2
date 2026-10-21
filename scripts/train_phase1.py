@@ -36,8 +36,8 @@ from tinyalphazero.data import assert_dataset_mode
 from tinyalphazero.envinfo import environment_report
 from tinyalphazero.model import ChessNet
 from tinyalphazero.phase1 import build_phase1_loader
+from tinyalphazero.provenance import git_dirty, git_sha
 from tinyalphazero.train import (
-    _git_sha,
     compute_metrics,
     load_checkpoint,
     save_checkpoint,
@@ -79,7 +79,8 @@ def _write_run_artifacts(
 
     report = environment_report(matmul=device.type == "cuda")
     entry = {
-        "git_sha": _git_sha(),
+        "git_sha": git_sha(),
+        "git_dirty": git_dirty(),
         "config_fingerprint": config_fingerprint(cfg),
         "torch": torch.__version__,
         "device": str(device),

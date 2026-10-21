@@ -106,7 +106,7 @@ def benchmark_row(benchmark: str, device: Any = None, **fields: Any) -> dict[str
     own spelling (``bench`` vs ``benchmark``, 7- vs 40-char SHAs, ``date: None``
     "stamped by the caller" with no caller) — REVIEW-2026-10-21 E6.
     """
-    from tinyalphazero.train import _git_sha
+    from tinyalphazero.provenance import git_sha
 
     clash = sorted(set(fields) & set(BENCHMARK_ROW_STAMPS))
     if clash:
@@ -115,7 +115,7 @@ def benchmark_row(benchmark: str, device: Any = None, **fields: Any) -> dict[str
         )
     row: dict[str, Any] = {
         "benchmark": benchmark,
-        "git_sha": _git_sha(),
+        "git_sha": git_sha(),
         "date": datetime.now(UTC).isoformat(timespec="seconds"),
         "device": None if device is None else str(device),
     }

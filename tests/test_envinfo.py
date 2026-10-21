@@ -17,7 +17,7 @@ from tinyalphazero.envinfo import (
     environment_report,
     matmul_tflops,
 )
-from tinyalphazero.train import _git_sha
+from tinyalphazero.provenance import git_sha
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -82,7 +82,7 @@ def test_benchmark_row_stamps_kind_sha_date_device_then_fields() -> None:
     row = benchmark_row("selfplay", device="cpu", games=3, sims_per_s=1.5)
     assert list(row)[:4] == list(BENCHMARK_ROW_STAMPS)
     assert row["benchmark"] == "selfplay"
-    assert row["git_sha"] == _git_sha()
+    assert row["git_sha"] == git_sha()
     assert row["device"] == "cpu"
     assert row["games"] == 3 and row["sims_per_s"] == 1.5
     # ISO-8601 UTC, to the second: parseable and timezone-aware.

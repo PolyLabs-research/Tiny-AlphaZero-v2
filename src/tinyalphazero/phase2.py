@@ -47,6 +47,7 @@ import torch
 
 from tinyalphazero import logschema
 from tinyalphazero.config import Config, config_fingerprint, load_config, save_config
+from tinyalphazero.envinfo import environment_report
 from tinyalphazero.mcts.batch_runner import torch_evaluate_batch
 from tinyalphazero.model import ChessNet
 from tinyalphazero.provenance import git_dirty, git_sha
@@ -264,6 +265,9 @@ class Phase2Run:
                     ),
                     "init_from": state.init_from,
                     "seed_pool_from": str(seed_pool or ""),
+                    # The check_env report AGENTS §4 asks every run dir to carry;
+                    # the matmul probe only where it is cheap (REVIEW-2026-10-21 E3).
+                    "environment": environment_report(matmul=device.type == "cuda"),
                 },
                 indent=2,
             )
