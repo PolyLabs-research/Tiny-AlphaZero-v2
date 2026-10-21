@@ -20,88 +20,17 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import ConcatDataset, DataLoader, WeightedRandomSampler
 
 from tinyalphazero.config import load_config
-from tinyalphazero.data import Phase1Dataset, assert_dataset_mode
+from tinyalphazero.data import assert_dataset_mode
 from tinyalphazero.model import ChessNet
+from tinyalphazero.phase1 import build_phase1_loader
 from tinyalphazero.train import (
-    WeightedPhaseDataset,
     compute_metrics,
     load_checkpoint,
     save_checkpoint,
     train_step,
 )
-
-
-def _build_loader(
-    data_dir: Path,
-    mate1_dir: Path | None,
-    cfg_train,
-    seed: int,
-    num_workers: int = 8,
-    mate2_dir: Path | None = None,
-) -> tuple[DataLoader, int]:
-    """Mix random play with mate-in-1 and mate-in-2 anchors at their configured fractions.
-
-    Each anchor sample is up-weighted so its dataset contributes exactly its
-    configured fraction of the batch, regardless of how many positions it holds.
-    Random play takes the remainder, so the mixes must sum below 1.
-    """
-    anchor_mix = cfg_train.phase1_mate1_mix + getattr(cfg_train, "phase1_mate2_mix", 0.0)
-    if not 0.0 <= anchor_mix < 1.0:
-        raise ValueError(
-            f"anchor mixes must sum to <1, got mate1={cfg_train.phase1_mate1_mix} + "
-            f"mate2={getattr(cfg_train, 'phase1_mate2_mix', 0.0)} = {anchor_mix}"
-        )
-
-    rand_ds = WeightedPhaseDataset(
-        Phase1Dataset(data_dir),
-        value_weight=cfg_train.phase1_value_weight_random,
-    )
-
-    n_rand = len(rand_ds)
-    datasets = [rand_ds]
-    weights = np.full(n_rand, 1.0 - anchor_mix)
-
-    for anchor_dir, mix in (
-        (mate1_dir, cfg_train.phase1_mate1_mix),
-        (mate2_dir, getattr(cfg_train, "phase1_mate2_mix", 0.0)),
-    ):
-        if anchor_dir is None or not anchor_dir.exists() or mix <= 0:
-            continue
-        anchor_ds = WeightedPhaseDataset(
-            Phase1Dataset(anchor_dir),
-            value_weight=cfg_train.phase1_value_weight_anchor,
-        )
-        n_a = len(anchor_ds)
-        datasets.append(anchor_ds)
-        weights = np.concatenate(
-            [weights, np.full(n_a, (mix / (1.0 - anchor_mix)) * (n_rand / n_a))]
-        )
-
-    combined = ConcatDataset(datasets)
-    sampler = WeightedRandomSampler(
-        weights=weights.tolist(),
-        num_samples=len(combined),
-        replacement=True,
-        generator=torch.Generator().manual_seed(seed),
-    )
-
-    # persistent_workers/prefetch_factor are only valid with worker processes, and
-    # num_workers=0 is what tests and CPU debugging use -- so the shipped builder
-    # has to accept it rather than being reachable only in its production shape.
-    worker_opts = {"persistent_workers": True, "prefetch_factor": 4} if num_workers > 0 else {}
-    loader = DataLoader(
-        combined,
-        batch_size=cfg_train.batch_size,
-        sampler=sampler,
-        num_workers=num_workers,
-        pin_memory=True,
-        drop_last=True,
-        **worker_opts,
-    )
-    return loader, len(combined)
 
 
 def main() -> None:
@@ -221,7 +150,7 @@ def main() -> None:
     if args.compile:
         net = torch.compile(net)
 
-    loader, n_samples = _build_loader(
+    p1 = build_phase1_loader(
         args.data,
         args.mate1,
         cfg.train,
@@ -229,6 +158,7 @@ def main() -> None:
         num_workers=args.workers,
         mate2_dir=args.mate2,
     )
+    loader = p1.loader
     # len(loader) accounts for drop_last; ceil(n/batch) does not, which left the old
     # run with a 3-step orphan "epoch 4".
     steps_per_epoch = len(loader)
@@ -270,6 +200,17 @@ def main() -> None:
         f"steps={stop_at}/{total_steps} | batch={cfg.train.batch_size} | "
         f"workers={args.workers} | masked_policy={cfg.train.phase1_policy_masked} | "
         f"compile={args.compile}"
+    )
+    # The realised batch fraction, not the configured mix: under the legacy
+    # weighting the two differ (REVIEW-2026-10-21 E1), and the log should say
+    # which one this run is actually drawing.
+    print(
+        f"  anchor weighting={cfg.train.phase1_anchor_weighting} | realised fractions: "
+        + (
+            ", ".join(f"{k}={v:.4f}" for k, v in p1.anchor_fractions.items())
+            if p1.anchor_fractions
+            else "none (no anchor dirs given)"
+        )
     )
 
     loss_keys = ("loss", "policy_loss", "promo_loss", "value_loss", "legality_loss")
