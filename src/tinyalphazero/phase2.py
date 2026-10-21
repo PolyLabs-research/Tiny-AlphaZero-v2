@@ -38,7 +38,7 @@ import json
 import os
 import shutil
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +49,7 @@ from tinyalphazero import logschema
 from tinyalphazero.config import Config, config_fingerprint, load_config, save_config
 from tinyalphazero.mcts.batch_runner import torch_evaluate_batch
 from tinyalphazero.model import ChessNet
+from tinyalphazero.provenance import git_dirty, git_sha
 from tinyalphazero.rehearsal import RehearsalSampler
 from tinyalphazero.replay import ReplayBuffer
 from tinyalphazero.selfplay import (
@@ -59,17 +60,20 @@ from tinyalphazero.selfplay import (
     assign_league,
     play_games,
 )
-from tinyalphazero.train import _git_sha, load_checkpoint, save_checkpoint, train_step_phase2
+from tinyalphazero.train import load_checkpoint, save_checkpoint, train_step_phase2
 
 STATE_FILE = "state.json"
 LOG_FILE = "iterations.jsonl"
 CONFIG_FILE = "config.yaml"
-REPO_RUNS = Path(__file__).resolve().parents[2] / "runs"
+PROVENANCE_FILE = "provenance.json"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_RUNS = REPO_ROOT / "runs"
 
 # Independent RNG streams within one (run seed, iteration). Named so a future
 # stream cannot silently collide with an existing one.
 _STREAM_LEAGUE = 1
 _STREAM_TRAIN = 2
+_STREAM_INIT = 3  # fresh-weight initialisation at iteration 0 (REVIEW-2026-10-21 C5)
 _STREAM_WAVE = 100  # + wave index
 
 
@@ -129,6 +133,17 @@ class RunState:
     replay_total_written: int = 0
     init_from: str = ""
     seed: int = 42
+    # The SHA of the code this run was *launched* from, read once in ``create``
+    # and stamped onto every row and checkpoint after that. Reading HEAD at write
+    # time stamped whatever was checked out at the moment (REVIEW-2026-10-21 C2).
+    # Empty on a state.json written before the field existed; ``resume`` fills it
+    # from provenance.json.
+    git_sha: str = ""
+    # SHAs of the code that *resumed* this run, in order, when they differed from
+    # the launch SHA. The rows still carry the launch SHA — the record of what
+    # produced them is the one the reader needs — and this is where the fact
+    # that something else continued the run lives.
+    resumed_with: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -169,11 +184,13 @@ class Phase2Run:
         # draw exactly the batches they drew before.
         self.rehearsal = RehearsalSampler(buffer, cfg.train, state.seed)
         self.on_stage: Any = None  # set by the CLI; see _stage()
-        # Ladder cadence (spec §8). 0 disables it — the golden mini-run and every
-        # test run with it off, because a ladder pass is minutes and they are not.
-        self.ladder_every: int = 0
-        self.ladder_anchors: str = "random,greedy,phase1"
-        self.ladder_anchor_ckpt: Path = REPO_RUNS / "phase1_anchor.pt"
+        # Ladder cadence and rungs (spec §8), from the run's own config so that a
+        # resumed run knows them — p2_a lost three protocol passes because they
+        # lived only in a CLI flag (REVIEW-2026-10-21 C3). 0 disables the ladder;
+        # configs/mini.yaml sets 0, and a test that wants a pass asks for one.
+        self.ladder_every: int = cfg.eval.eval_every_n_iters
+        self.ladder_anchors: str = cfg.eval.ladder_anchors
+        self.ladder_anchor_ckpt: Path = REPO_ROOT / cfg.eval.anchor_ckpt
         self.on_ladder_event: Any = None  # the CLI's printer, same as on_stage
 
     # -- lifecycle -------------------------------------------------------
@@ -198,8 +215,18 @@ class Phase2Run:
         """
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
+        # The effective seed goes *into* the config before anything is saved, so
+        # config.yaml, provenance.json and every checkpoint's embedded config say
+        # the seed the run actually used — not the YAML's value with the override
+        # living only in a gitignored state.json (REVIEW-2026-10-21 C5/E3).
         seed = cfg.seed if seed is None else seed
+        cfg = replace(cfg, seed=seed)
+        sha = git_sha()
 
+        # Fresh weights are drawn from a stream of the run seed, so a run without
+        # --init (the golden mini-run) is reproducible from its config alone
+        # (spec §9.2). An --init checkpoint overwrites them below.
+        torch.manual_seed(iteration_seed(seed, 0, _STREAM_INIT))
         net = ChessNet(cfg.model).to(device)
         if init_ckpt is not None:
             # Validate shape against *our* config for the readable error, then load
@@ -219,14 +246,17 @@ class Phase2Run:
             replay_total_written=buffer.total_written,
             init_from=str(init_ckpt or ""),
             seed=seed,
+            git_sha=sha,
         )
 
         save_config(cfg, str(path / CONFIG_FILE))
-        (path / "provenance.json").write_text(
+        (path / PROVENANCE_FILE).write_text(
             json.dumps(
                 {
-                    "git_sha": _git_sha(),
+                    "git_sha": sha,
+                    "git_dirty": git_dirty(),
                     "config_fingerprint": config_fingerprint(cfg),
+                    "seed": seed,
                     "torch": torch.__version__,
                     "device": str(device),
                     "device_name": (
@@ -267,6 +297,15 @@ class Phase2Run:
         path = Path(path)
         state = RunState(**json.loads((path / STATE_FILE).read_text()))
         cfg = load_config(str(path / CONFIG_FILE))
+        if not state.git_sha:
+            # A run created before the field existed: the launch SHA was written
+            # to provenance.json and nowhere else.
+            prov_path = path / PROVENANCE_FILE
+            if prov_path.exists():
+                state.git_sha = str(json.loads(prov_path.read_text()).get("git_sha", ""))
+        now = git_sha()
+        if now != state.git_sha and (not state.resumed_with or state.resumed_with[-1] != now):
+            state.resumed_with.append(now)
 
         ckpt = path / f"ckpt_iter{state.iteration:04d}.pt"
         net, meta = load_checkpoint(ckpt, device=device, reference_model_cfg=cfg.model)
@@ -302,7 +341,12 @@ class Phase2Run:
         if not log.exists():
             return
         rows = [r for r in logschema.read_jsonl(log) if r["iteration"] <= iteration]
-        log.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        # Rewritten whole, so written to a temp file and renamed: a kill inside a
+        # plain write_text leaves a half-written log and the next resume cannot
+        # read it (REVIEW-2026-10-21 C9) — the same contract as _commit_state.
+        tmp = log.with_suffix(".jsonl.tmp")
+        tmp.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        os.replace(tmp, log)
 
     @classmethod
     def open_or_create(
@@ -387,6 +431,7 @@ class Phase2Run:
             role=logschema.ROLE_PROTOCOL,
             produced=logschema.PRODUCED_INLINE,
             on_event=self.on_ladder_event,
+            git_sha=self.state.git_sha,
         )
 
     # -- stages ----------------------------------------------------------
@@ -497,7 +542,15 @@ class Phase2Run:
 
     def _snapshot(self, iteration: int, phase: str = "2") -> Path:
         path = self.path / f"ckpt_iter{iteration:04d}.pt"
-        save_checkpoint(path, self.net, self.optimizer, self.cfg, step=self.state.step, phase=phase)
+        save_checkpoint(
+            path,
+            self.net,
+            self.optimizer,
+            self.cfg,
+            step=self.state.step,
+            phase=phase,
+            git_sha=self.state.git_sha,
+        )
         return path
 
     # -- bookkeeping -----------------------------------------------------
@@ -518,7 +571,7 @@ class Phase2Run:
         decisive = res.get("checkmate", 0) + res.get("resign", 0)
         return logschema.iteration_row(
             iteration=iteration,
-            git_sha=_git_sha(),
+            git_sha=self.state.git_sha,
             games=stats.games,
             positions=stats.positions,
             mean_plies=round(stats.mean_plies, 2),
@@ -612,12 +665,29 @@ def run_phase2(
     seed_pool: str | Path | None = None,
     resume: bool = False,
     on_stage: Any = None,
-    ladder_every: int = 0,
-    ladder_anchors: str = "random,greedy,phase1",
+    ladder_every: int | None = None,
+    ladder_anchors: str | None = None,
     ladder_anchor_ckpt: str | Path | None = None,
     on_ladder_event: Any = None,
 ) -> list[IterationOutcome]:
-    """Run (or continue) ``iterations`` iterations and return their outcomes."""
+    """Run (or continue) ``iterations`` iterations and return their outcomes.
+
+    The ladder protocol lives in ``cfg.eval``. For a *new* run the three
+    ``ladder_*`` arguments, when given, are written into the config before it is
+    saved, so the run directory records the cadence and rungs it actually used
+    and ``--resume`` rebuilds them (REVIEW-2026-10-21 C3). For a resumed run they
+    apply to this invocation only and the saved config is left as the record of
+    the launch; the CLI says so when it passes them.
+    """
+    if not resume:
+        ev = cfg.eval
+        if ladder_every is not None:
+            ev = replace(ev, eval_every_n_iters=ladder_every)
+        if ladder_anchors is not None:
+            ev = replace(ev, ladder_anchors=ladder_anchors)
+        if ladder_anchor_ckpt is not None:
+            ev = replace(ev, anchor_ckpt=_repo_relative(ladder_anchor_ckpt))
+        cfg = replace(cfg, eval=ev)
     run = (
         Phase2Run.resume(out, device)
         if resume
@@ -626,9 +696,28 @@ def run_phase2(
         )
     )
     run.on_stage = on_stage
-    run.ladder_every = ladder_every
-    run.ladder_anchors = ladder_anchors
     run.on_ladder_event = on_ladder_event
+    if ladder_every is not None:
+        run.ladder_every = ladder_every
+    if ladder_anchors is not None:
+        run.ladder_anchors = ladder_anchors
     if ladder_anchor_ckpt is not None:
         run.ladder_anchor_ckpt = Path(ladder_anchor_ckpt)
+    # A pass killed mid-way left state.iteration at a ladder iteration with the
+    # pass incomplete, and the next iterate() moved on without it (REVIEW-2026-10-21
+    # C9). The pass skips every matchup already in its log, so re-running it here
+    # costs only what the kill lost.
+    s = run.state.iteration
+    if resume and run.ladder_every and s > 0 and s % run.ladder_every == 0:
+        run._stage("ladder", s)
+        run._run_ladder(s)
     return [run.iterate() for _ in range(iterations)]
+
+
+def _repo_relative(path: str | Path) -> str:
+    """``eval.anchor_ckpt`` is stored relative to the repo when the path is inside it."""
+    p = Path(path).resolve()
+    try:
+        return str(p.relative_to(REPO_ROOT))
+    except ValueError:
+        return str(p)

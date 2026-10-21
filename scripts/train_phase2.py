@@ -82,27 +82,34 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--device", default=None, help="cuda | cpu (default: cuda if available)")
     ap.add_argument("--seed", type=int, default=None, help="Run seed (default: config seed)")
+    # The ladder protocol lives in the config (eval.eval_every_n_iters,
+    # eval.ladder_anchors, eval.anchor_ckpt). These flags *override* it for a new
+    # run and are written into the saved config.yaml, so the run directory records
+    # the cadence it actually ran and --resume rebuilds it; they used to live only
+    # here, and p2_a lost three protocol passes to a resume that could not know
+    # them (REVIEW-2026-10-21 C3).
     ap.add_argument(
         "--ladder-every",
         type=int,
-        default=0,
+        default=None,
         help="Run an anchor-ladder pass (spec §8) every N iterations, inline and "
         "sequentially — the GPU is never shared. Measured 2026-08-10: a full pass "
         "is ~19 min (the 200-game anchor rung alone is 8.4 min) against a ~27 min "
-        "iteration, so --ladder-every 10 costs about 7%% of campaign wall clock. "
-        "0 (default) disables it.",
+        "iteration, so every 10 costs about 7%% of campaign wall clock. 0 disables "
+        "it. Default: eval.eval_every_n_iters from the config.",
     )
     ap.add_argument(
         "--ladder-anchors",
-        default="random,greedy,phase1",
-        help="Anchor rungs for --ladder-every. Stockfish rungs skip cleanly when "
-        "the binary is absent.",
+        default=None,
+        help="Anchor rungs for the ladder (default: eval.ladder_anchors). Stockfish "
+        "rungs skip cleanly when the binary is absent.",
     )
     ap.add_argument(
         "--ladder-anchor-ckpt",
         type=Path,
         default=None,
-        help="Frozen Phase 1 opponent (default: runs/phase1_anchor.pt, anchor v2).",
+        help="Frozen Phase 1 opponent (default: eval.anchor_ckpt — anchor v2, checked "
+        "against eval.anchor_digest).",
     )
     args = ap.parse_args(argv)
 
@@ -125,16 +132,33 @@ def main(argv: list[str] | None = None) -> int:
     if args.resume is not None:
         cfg = load_config(str(args.resume / "config.yaml"))
         out = args.resume
+        overridden = [
+            name
+            for name, value in (
+                ("--ladder-every", args.ladder_every),
+                ("--ladder-anchors", args.ladder_anchors),
+                ("--ladder-anchor-ckpt", args.ladder_anchor_ckpt),
+            )
+            if value is not None
+        ]
+        if overridden:
+            print(
+                f"  note: {', '.join(overridden)} apply to this invocation only; the run's "
+                f"config.yaml keeps the protocol it was launched with"
+            )
     else:
         cfg = load_config(args.config)
         out = args.out
 
     iterations = args.iterations if args.iterations is not None else cfg.phase2.iterations
+    ladder_every = (
+        args.ladder_every if args.ladder_every is not None else cfg.eval.eval_every_n_iters
+    )
     print(
         f"Phase 2 | device={device} | iterations={iterations} | "
         f"games/iter={cfg.selfplay.games_per_iteration} @ {cfg.selfplay.concurrent_games} concurrent "
         f"| sims={cfg.selfplay.sims_per_move} | steps/iter={cfg.train.train_steps_per_iter} "
-        f"| batch={cfg.train.batch_size} | out={out}"
+        f"| batch={cfg.train.batch_size} | ladder every {ladder_every or 'never'} | out={out}"
     )
     if cfg.train.rehearsal_frac > 0:
         print(

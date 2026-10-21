@@ -486,6 +486,109 @@ def test_iteration_zero_pool_is_the_initial_weights(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Provenance and protocol persistence (REVIEW-2026-10-21 C2, C3, C5, C9)
+# ---------------------------------------------------------------------------
+
+
+def test_rows_and_checkpoints_carry_the_launch_sha_not_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SHA is read once at launch and stamped from the run state after that.
+
+    p2_b's rows carry four SHAs from one process and p2_d's name a commit made 24
+    minutes after launch, because every writer re-read HEAD (REVIEW-2026-10-21 C2).
+    A resume by different code is recorded separately, not re-stamped onto history.
+    """
+    from tinyalphazero import phase2 as p2
+
+    monkeypatch.setattr(p2, "git_sha", lambda *a, **k: "launch00")
+    monkeypatch.setattr(p2, "git_dirty", lambda *a, **k: False)
+    cfg = load_config(str(MINI))
+    run = Phase2Run.create(tmp_path / "run", cfg, torch.device("cpu"))
+    monkeypatch.setattr(p2, "git_sha", lambda *a, **k: "later000")  # a commit lands mid-run
+    run.iterate()
+
+    prov = json.loads((tmp_path / "run" / "provenance.json").read_text())
+    assert prov["git_sha"] == "launch00" and prov["git_dirty"] is False
+    assert prov["seed"] == cfg.seed
+    assert run.state.git_sha == "launch00"
+    (row,) = logschema.read_jsonl(tmp_path / "run" / "iterations.jsonl")
+    assert row["git_sha"] == "launch00"
+    for name in ("ckpt_iter0000.pt", "ckpt_iter0001.pt"):
+        _net, meta = load_checkpoint(tmp_path / "run" / name)
+        assert meta["git_sha"] == "launch00", name
+
+    resumed = Phase2Run.resume(tmp_path / "run", torch.device("cpu"))
+    assert resumed.state.git_sha == "launch00"
+    assert resumed.state.resumed_with == ["later000"]
+    resumed.iterate()
+    assert [r["git_sha"] for r in logschema.read_jsonl(tmp_path / "run" / "iterations.jsonl")] == [
+        "launch00",
+        "launch00",
+    ]
+
+
+def test_fresh_init_is_seeded_and_the_effective_seed_is_saved(tmp_path: Path) -> None:
+    """A run without --init reproduces from its config, and --seed reaches the record.
+
+    Model init drew from torch's unseeded global RNG, and a `--seed` override lived
+    only in the gitignored state.json while config.yaml and every checkpoint said
+    the YAML's value (REVIEW-2026-10-21 C5/E3).
+    """
+    cfg = load_config(str(MINI))
+    a = Phase2Run.create(tmp_path / "a", cfg, torch.device("cpu"))
+    b = Phase2Run.create(tmp_path / "b", cfg, torch.device("cpu"))
+    for (ka, va), (kb, vb) in zip(
+        a.net.state_dict().items(), b.net.state_dict().items(), strict=True
+    ):
+        assert ka == kb and torch.equal(va, vb), ka
+
+    c = Phase2Run.create(tmp_path / "c", cfg, torch.device("cpu"), seed=7)
+    assert c.state.seed == 7
+    assert load_config(str(tmp_path / "c" / "config.yaml")).seed == 7
+    assert json.loads((tmp_path / "c" / "provenance.json").read_text())["seed"] == 7
+    _net, meta = load_checkpoint(tmp_path / "c" / "ckpt_iter0000.pt")
+    assert meta["config_obj"].seed == 7
+    assert not all(
+        torch.equal(va, vc)
+        for va, vc in zip(a.net.state_dict().values(), c.net.state_dict().values(), strict=True)
+    ), "a different seed must give different initial weights"
+
+
+def test_ladder_protocol_is_saved_with_the_run_and_rebuilt_on_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The cadence and rungs live in the run's config, so --resume knows them.
+
+    p2_a was resumed without `--ladder-every` and lost passes 30/40/50, while its
+    config.yaml carried an `eval_every_n_iters` nothing read (REVIEW-2026-10-21 C3).
+    A pass interrupted mid-way is re-run on resume (C9); the pass itself skips
+    whatever it already logged.
+    """
+    passes: list[int] = []
+    monkeypatch.setattr(Phase2Run, "_run_ladder", lambda self, it: passes.append(it))
+    cfg = load_config(str(MINI))
+    assert cfg.eval.eval_every_n_iters == 0, "the mini config keeps the ladder off"
+
+    run_phase2(
+        tmp_path / "run",
+        cfg,
+        torch.device("cpu"),
+        iterations=1,
+        ladder_every=1,
+        ladder_anchors="random",
+    )
+    saved = load_config(str(tmp_path / "run" / "config.yaml"))
+    assert saved.eval.eval_every_n_iters == 1 and saved.eval.ladder_anchors == "random"
+    assert passes == [1]
+
+    # Resume with no flags: the protocol comes back from the saved config, and the
+    # pass at the committed iteration is re-run (it was possibly cut short).
+    run_phase2(tmp_path / "run", cfg, torch.device("cpu"), iterations=1, resume=True)
+    assert passes == [1, 1, 2]
+
+
+# ---------------------------------------------------------------------------
 # The golden mini-run (spec §9.4)
 # ---------------------------------------------------------------------------
 
