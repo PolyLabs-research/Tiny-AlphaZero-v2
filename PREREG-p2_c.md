@@ -96,3 +96,39 @@ through roughly iteration 8, as in p2_b.
   `tests/test_train.py::test_value_blend_masks_rows_without_a_search`.
 - Any config field other than `value_q_mse_weight` differing from p2_b's resolved
   config.
+
+---
+
+## Addendum (2026-10-21, post-hoc — a review note, not a registration)
+
+Written after the round closed, from `REVIEW-2026-10-21-full-codebase.md`. Nothing
+above is edited; this records what the review found about how the registration
+above was implemented and guarded.
+
+1. **The lever was two changes, not one (finding C1).** The blend computed
+   `(1−w)·CE + w·MSE` with `CE` the *full-batch* mean, so the rehearsal rows
+   (~51 of every 1,024, `root_q_mask` False) also had their outcome CE scaled by
+   `1−w = 0.5`. The run therefore trained "blend toward q on ring rows" **and**
+   "halve the anchor rows' value weight", and the second was not registered here
+   or anywhere. The guard named in "What would make this run uninterpretable"
+   (`test_value_blend_masks_rows_without_a_search`) checks that hidden `root_q`
+   values do not move the loss, which is true under both weightings, so it could
+   not see this. The results document carries the erratum
+   (`RUNLOG-p2_c.md`, "Erratum 2026-10-21"). The weighting is now a named config
+   field, `train.value_q_blend`: `batch_mean` is what p2_c and p2_d ran and what
+   their committed configs mean; `per_row` is what the paragraph above describes.
+2. **`root_q` on pool-mover rows (finding C8).** With `train_on_pool_moves: true`
+   the ~10% of rows whose mover was a league snapshot carry that snapshot's
+   `completed_q.max()`, not the learner's, and were blended at `w = 0.5` like
+   every other ring row. Staleness was documented for the policy target
+   (`Phase2Config.train_on_pool_moves`) and not for the value target. Recorded
+   here as an unregistered property of the round; whether to mask those rows
+   (`root_q_mask &= mover_is_latest`) is a decision for a future PREREG, not a
+   silent change to this one.
+3. **The perspective guard was vacuous (findings B8/C6).**
+   `test_root_q_shares_the_perspective_of_the_outcome_it_blends_with` round-tripped
+   values the test itself chose through the replay ring and never ran a search, so
+   a sign error in the producer would have passed it. The property *does* hold
+   (verified end-to-end from mate-in-1 starts for both colours, `root_q = +1.0`,
+   `outcome = +1` for the mover); the test has been rewritten to check it where
+   it is produced.

@@ -306,3 +306,28 @@ carries its provenance, `verdict_asof: 2026-08-09`.
 | `diagnose_mate2_iter{0010,0020}.txt` | coverage decompositions |
 | `triage_mate2_iter0020.json` | 14 failures, per-position verdicts and q̂ |
 | `watchlist_coverage_ckpt_iter{0010,0020}.json` | the three by name, live prior ranks |
+
+---
+
+## Erratum (2026-10-21) — row provenance
+
+From `REVIEW-2026-10-21-full-codebase.md`, finding C2/D2. Nothing above is edited.
+
+The header's `git 8a19cbf` is correct: it is the launch SHA in `provenance.json`
+and the code this run executed. The rows disagree with it because `git_sha` was
+read from `git rev-parse HEAD` *at write time* and commits landed in the working
+tree while the campaign ran (15:15 → 23:42):
+
+| rows | stamped | committed | note |
+|---|---|---|---|
+| `iterations.jsonl` 1–5, ladder pass 5 `random` | `8a19cbf` | 13:03 | the launch code |
+| `iterations.jsonl` 6–10, pass 5 `greedy`/`phase1`/eval, pass 10 | `cb6f634` | 15:33 | a PREREG addendum; no code change |
+| `iterations.jsonl` 11–12 | `9837809` | 18:40 | **introduces ladder schema 2** |
+| `iterations.jsonl` 13–20, passes 15 and 20 | `62d661b` | 19:29 | |
+| `stockfish_s0` rows (backfilled offline) | `62d661b`, `5bb9216` | later | genuinely produced by that code |
+
+The iteration rows stamped `9837809` and `62d661b` carry `schema_version: 1`
+although those commits write version 2 — the stamped code could not have produced
+them, which is the proof that the stamp is a clock reading and not provenance.
+**Read `provenance.json` as this run's code.** The writers now capture the SHA
+once at launch and stamp every row and checkpoint from it.

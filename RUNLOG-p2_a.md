@@ -250,3 +250,19 @@ The backfill is the reason this log has five passes instead of two. The campaign
 was relaunched after a crash without `--ladder-every`, which would have left
 passes 30/40/50 permanently unmeasured had the snapshots been rotated. Keep-all
 plus a deterministic ladder turned a protocol deviation into a footnote.
+
+---
+
+## Erratum (2026-10-21) — why the resume lost the ladder
+
+From `REVIEW-2026-10-21-full-codebase.md`, finding C3/D7. The paragraph above
+records the deviation as an operator omission. It was a design defect: the ladder
+cadence lived only in the `--ladder-every` CLI flag, was written to none of
+`config.yaml`, `provenance.json` or `state.json`, and so could not be rebuilt by
+`--resume` — while the saved `config.yaml` carried an `eval.eval_every_n_iters: 10`
+that nothing read. The committed config therefore states a cadence the code never
+consulted, for this run and for p2_b/c/d (whose configs say 10 while the runs
+used 5). The field is now the source of truth, `--ladder-every` overrides it into
+the saved config, and a resumed run reads it back. The three backfilled rows carry
+`produced: null` because the field postdates them; they are the protocol passes,
+as §2 states.

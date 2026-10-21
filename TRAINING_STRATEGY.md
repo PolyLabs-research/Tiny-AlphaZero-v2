@@ -32,6 +32,16 @@ This is the **campaign document**: which runs exist, why each was launched, the 
 
 **Provenance.** Runs a–c predate the repository — provenance for those rounds is the campaign rows + dataset `meta.json` `argv`, not checkpoint SHA (all three read `git_sha='unknown'`; see PROGRESS.md "Readiness 2026-08-06"). SHA embedding is live from `phase1-closed` onward.
 
+**Erratum (2026-10-21, REVIEW-2026-10-21 E1) — the realised anchor mixtures.** The Phase 1 sampler weighted random-play rows by `1−a` *and* anchor rows by `mix/(1−a)` (a = total anchor mix), applying the normalisation twice, so a configured mix `m` was realised as `m / ((1−a)² + a)`. Every round below trained at a higher anchor fraction than its config and these entries state:
+
+| Round | configured | realised |
+|---|---|---|
+| `phase1_a`, `phase1_b` | mate-1 0.05 | **0.0525** |
+| `phase1_c` | mate-1 0.10 | **0.1099** |
+| `phase1_d` (anchor v2) | mate-1 0.08 / mate-2 0.07 (15%) | **0.0917 / 0.0802 (17.2%)** |
+
+The sampler was deterministic under the seed, so every round reproduces from its checkpoint config — provided the config is read with `train.phase1_anchor_weighting: legacy`, which is what the field defaults to and what every committed config and checkpoint therefore means. `exact` (set in `configs/default.yaml`) makes a mix the batch fraction. No gate number changes: the gates measure the checkpoints, not the mixture; only the description of what the mixture was does. Where this file says "5% anchor mixture", "mixture 0.05 → 0.10", or "mix 0.07", read the realised column.
+
 **Gates as of 2026-08-06** (`BLOCKED-2026-08-06-phase1-gates.md`): gated = `legality_auc` ≥0.995, `wdl_anchor_mass` ≥0.80, **`mate1_top8_masked` ≥0.97** (new). `top1_legal_rate` (was ≥0.99) and `mate1_solve_rate` (was ≥0.90, = masked top-1) are retired to informational, marked ᵢ. The new gate is not a rubber stamp: `b` scores 0.820 on it, `c` 0.980.
 
 ### Round `phase1_a` — invalid (all gates missed)

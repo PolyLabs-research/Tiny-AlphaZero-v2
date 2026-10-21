@@ -271,3 +271,43 @@ reason, are demoted again for this one.
 
 See `RUNLOG-p2_d.md` §2 for the finding, the four permanent fixes, and M4's
 restated clause.
+
+---
+
+## Erratum (2026-10-21) — what the lever actually weighted
+
+From `REVIEW-2026-10-21-full-codebase.md`, finding C1. Nothing above is edited.
+
+**The round ran two changes, not one.** `_blend_value_toward_search_q` computed
+`(1−w)·CE + w·MSE` with `CE` the mean over the *whole* batch. The rows without a
+search — the ~51 rehearsal anchors in every 1,024-row batch, `root_q_mask` False —
+were excluded from the MSE term as registered, but their CE was still multiplied
+by `1−w = 0.5`. So relative to p2_b the anchor rows received **half** their value
+supervision, while the header above, `PREREG-p2_c.md`, the config comment and the
+function's own docstring all say they "keep pure CE at full weight". Measured on
+the training code: per-row value-gradient norm on masked-off rows at `w = 0.5` is
+exactly 0.5× its `w = 0` value; a batch with no masked-on row keeps full weight,
+so the weighting also switched discontinuously with batch composition.
+
+**Consequences for this document.**
+
+- §1–§2: P1's verdict stands — the strength gain is real and measured on the
+  checkpoints. Its *attribution* to the blend alone does not: "blend toward q on
+  ring rows" and "halve the rehearsal rows' value weight" are confounded in this
+  round, and the latter is a plausible contributor to the mate-suite and
+  conviction readings in §3–§5 (the anchors are the suite's training signal).
+- §7: the `value_loss` column changed meaning at the p2_b/p2_c boundary — pure
+  outcome CE before, `0.5·CE + 0.5·MSE` after — with no schema change. "Value
+  loss drifted up 0.292 → 0.326" is a within-round statement about the blended
+  quantity; it is not comparable to p2_b's 0.40 → 0.56, and the second-half
+  sharpness-tax comparison across rounds is void.
+- `p2_d` ran the identical config and therefore the identical weighting; its
+  P2 verdict (same weighting on both endpoints) is unaffected.
+
+**What changed in the code.** The weighting is now a named field,
+`train.value_q_blend`: `batch_mean` is what this round and p2_d ran, and is the
+default, so `runs/p2_c/config.yaml` and `runs/p2_d/config.yaml` still describe
+exactly what they trained; `per_row` keeps masked-off rows at CE weight 1 and is
+set in `configs/default.yaml` for the next round. A test now asserts that the
+masked-off rows' gradient is independent of `w` under `per_row`. Which weighting
+the next round runs is that round's PREREG decision.

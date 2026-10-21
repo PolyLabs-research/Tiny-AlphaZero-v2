@@ -213,3 +213,44 @@ Open for `p2_e`, in priority order:
 | `runs/p2_d/p2_verdict_reps.json` | the paired bootstrap and its verdict |
 | `runs/p2_{c,d}/track1_ckpt_iter00*.json` | flag-on vs flag-off, per-position solve sets |
 | `runs/p2_c/ladder_pairscores.jsonl` | the replay that found the nondeterminism |
+
+---
+
+## Errata (2026-10-21)
+
+From `REVIEW-2026-10-21-full-codebase.md`. Nothing above is edited.
+
+1. **Row provenance (finding C2/D2).** Every row in `runs/p2_d/iterations.jsonl`
+   and `runs/p2_d/ladder.jsonl` is stamped `git_sha: 4710690`. The process was
+   launched at 06:15 from `72e7f1a` (`provenance.json`); `4710690` was committed at
+   06:39, after launch, and differs from the running code in `config.py` and
+   `mcts/search.py` (it adds the Track 1 flag). The stamp was `git rev-parse HEAD`
+   *at write time*, not the code that produced the row. **Read `provenance.json`'s
+   SHA as the run's code**, for this and every campaign. The writers now capture
+   the SHA once at launch.
+2. **`nondeterministic` was not "on every ladder row" (finding P1).** §2 says the
+   field landed; it landed in `91293f7` at 19:30, after this run's last row was
+   written at 18:08. The 16 match rows of `runs/p2_d/ladder.jsonl` and the row in
+   `runs/p2_c/ladder_pairscores.jsonl` were therefore written as schema 3 without
+   it and failed the schema-3 validator. On 2026-10-21 the field was **backfilled**
+   onto those 17 rows — `true` for `stockfish_s0`, `false` for `random`, `greedy`
+   and `phase1`, the same rule the writer applies — with every other byte of each
+   row unchanged. The rep rows (`reps_iter0020_r*.jsonl`) were written after
+   `91293f7` and carry it natively.
+3. **The harness was not in the repository (finding P5).** The repetition
+   measurement in §1, the verdict in `p2_verdict_reps.json`, and the flag-on /
+   flag-off solve sets in §3 were produced by code that was never committed. They
+   are now `scripts/eval_reps.py` (replays a checkpoint's rung over N seeds and
+   computes the paired bootstrap over per-opening rep-means) and
+   `scripts/eval_track1.py` (flag-off vs flag-on solve sets per checkpoint). The
+   `verdict` subcommand reproduces `p2_verdict_reps.json` from the committed rep
+   rows to the digit; the generation side cannot be re-run bit-identically because
+   the rung is nondeterministic, which is §2's point.
+4. **The lever fires for either mover (finding P6).** Track 1's description —
+   "at an opponent node whose parent edge is already believed" — understates the
+   mechanism: the breadth sweep triggers beneath *any* believed edge, including
+   beneath an opponent reply believed from the opponent's side, where it sweeps the
+   root mover's own replies in a line the root mover is losing. The 13/13 result in
+   §3 was measured with that symmetric behaviour and stands as measured; the code
+   is unchanged and its documentation now says what it does. Whether to restrict
+   the trigger to opponent nodes, and re-measure, is a `p2_e` decision.
