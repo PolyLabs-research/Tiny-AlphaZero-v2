@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +14,8 @@ from torch.utils.data import Dataset
 from tinyalphazero.config import Config, ModelConfig, _dataclass_to_dict, _resolve_field_types
 from tinyalphazero.data import Phase1Dataset
 from tinyalphazero.model import ChessNet
+from tinyalphazero.provenance import NO_GIT_SENTINEL as NO_GIT_SENTINEL  # re-exported
+from tinyalphazero.provenance import git_sha
 
 # ---------------------------------------------------------------------------
 # Bitset helpers
@@ -75,12 +76,13 @@ def _promo_loss(
 
 
 def _blend_value_toward_search_q(
-    ce: torch.Tensor,
+    ce_rows: torch.Tensor,  # (B,) per-row outcome CE
     value_wdl: torch.Tensor,  # (B, 3) logits [loss, draw, win]
     batch: dict[str, torch.Tensor],
     device: torch.device,
     q_weight: float,
     outcome: torch.Tensor,
+    mode: str = "batch_mean",
 ) -> torch.Tensor:
     """(1-w)*CE(z) + w*MSE(P(win)-P(loss), root_q), on rows that have a root_q.
 
@@ -88,12 +90,22 @@ def _blend_value_toward_search_q(
     to produce; between weak players that is largely noise, and noise in the value
     target is the standing suspect for a flat absolute-strength slope.
 
-    **Rows without a search keep pure CE at full weight.** Rehearsal rows never
-    had a tree, and rows from a replay ring predating version 3 never stored one.
-    Both arrive with ``root_q_mask`` False, and blending them against a fabricated
-    0.0 would teach "every position with no search behind it was a draw" — a
-    legal-looking value and a wrong one. Absence has one meaning here and one code
-    path, which is why it is a mask rather than a sentinel.
+    Rehearsal rows never had a tree, and rows from a replay ring predating
+    version 3 never stored one. Both arrive with ``root_q_mask`` False, and
+    blending them against a fabricated 0.0 would teach "every position with no
+    search behind it was a draw" — a legal-looking value and a wrong one. Absence
+    has one meaning here and one code path, which is why it is a mask rather than
+    a sentinel. Masked-off rows are excluded from the MSE term under both modes;
+    the modes differ in what happens to their CE:
+
+    * ``"batch_mean"`` — what p2_c and p2_d ran: ``(1-w)·mean(ce_rows) + w·MSE``,
+      so the masked-off rows' CE is scaled by ``1-w`` too. That halved the
+      rehearsal anchors' value supervision relative to p2_b while every document
+      said they kept full weight (REVIEW-2026-10-21 C1; RUNLOG-p2_c erratum).
+      Kept, to the bit, so committed configs describe what they trained.
+    * ``"per_row"`` — masked-off rows keep CE at weight 1, masked-on rows get
+      ``(1-w)·ce``; the MSE term is unchanged (mean over masked-on rows at
+      weight ``w``). The lever then touches only the rows that have a search.
 
     The scalar blend is the cheap version on purpose. The principled successor is
     a *distributional* search-Q — visit-weighted child WDL with a per-ply W<->L
@@ -101,15 +113,21 @@ def _blend_value_toward_search_q(
     is a search change, p2_d-grade, and deliberately not this round's lever.
     """
     mask = batch["root_q_mask"].to(device)
+    ce = ce_rows.mean()
     if not bool(mask.any()):
         return ce
     probs = F.softmax(value_wdl, dim=-1)
     scalar = probs[:, 2] - probs[:, 0]  # P(win) - P(loss), same range as root_q
     target = batch["root_q"].to(device).float()
     mse = F.mse_loss(scalar[mask], target[mask])
-    # CE stays a full-batch mean: the unmasked rows are supervised by z alone, and
-    # re-weighting them here would make the lever a batch-composition change too.
-    return (1.0 - q_weight) * ce + q_weight * mse
+    if mode == "batch_mean":
+        return (1.0 - q_weight) * ce + q_weight * mse
+    if mode == "per_row":
+        ce_weight = torch.where(
+            mask, torch.full_like(ce_rows, 1.0 - q_weight), torch.ones_like(ce_rows)
+        )
+        return (ce_rows * ce_weight).mean() + q_weight * mse
+    raise ValueError(f"train.value_q_blend must be 'batch_mean' or 'per_row', got {mode!r}")
 
 
 def _value_loss(
@@ -314,11 +332,18 @@ def train_step_phase2(
         out = net(tokens)
         p_loss = _soft_policy_loss(out.policy_ft, policy_target, legal_mask, masked=masked_policy)
         pr_loss = _soft_promo_loss(out.promo, from_sq, to_sq, promo_target, promo_mask)
-        v_loss = F.cross_entropy(out.value_wdl, outcome + 1)
+        ce_rows = F.cross_entropy(out.value_wdl, outcome + 1, reduction="none")
+        v_loss = ce_rows.mean()
         q_w = getattr(cfg_train, "value_q_mse_weight", 0.0)
         if q_w > 0 and batch.get("root_q_mask") is not None:
             v_loss = _blend_value_toward_search_q(
-                v_loss, out.value_wdl, batch, device, q_w, outcome
+                ce_rows,
+                out.value_wdl,
+                batch,
+                device,
+                q_w,
+                outcome,
+                mode=getattr(cfg_train, "value_q_blend", "batch_mean"),
             )
         leg_loss = (
             _legality_loss(out.legality, legal_mask)
@@ -395,8 +420,18 @@ def save_checkpoint(
     cfg: Config,
     step: int,
     phase: str = "1",
+    git_sha: str | None = None,
 ) -> None:
-    """Save a training checkpoint in the standard format."""
+    """Save a training checkpoint in the standard format.
+
+    ``git_sha`` is the SHA of the code *running*, which a long-lived process
+    knows only if it captured it at launch; a caller that has it passes it.
+    Reading HEAD here instead stamps whatever is checked out at save time
+    (REVIEW-2026-10-21 C2: p2_b's checkpoints name commits that write a schema
+    version the run never used). The fallback reads HEAD once per save for
+    callers that have no run state, which is right for a process that saves
+    once and wrong for one that saves every 35 minutes for a day.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -404,7 +439,7 @@ def save_checkpoint(
             "model": net.state_dict(),
             "optimizer": optimizer.state_dict(),
             "config": _dataclass_to_dict(cfg),
-            "git_sha": _git_sha(),
+            "git_sha": _git_sha() if git_sha is None else git_sha,
             "step": step,
             "phase": phase,
         },
@@ -683,27 +718,7 @@ def _mate2_metrics(
 # ---------------------------------------------------------------------------
 
 
-NO_GIT_SENTINEL = "no-git"
-
-
-def _git_sha() -> str:
-    """Short HEAD SHA of the repository this package lives in, or ``"no-git"``.
-
-    Anchored to the source tree (``git -C <repo_root>``), not the process cwd.
-    The cwd-relative version silently stamped whatever repo the run happened to
-    be launched from — and a *wrong* provenance record is worse than an absent
-    one, because nothing downstream can tell the two apart. Absence is explicit.
-    """
-    repo_root = Path(__file__).resolve().parents[2]
-    try:
-        return (
-            subprocess.check_output(
-                ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
-                stderr=subprocess.DEVNULL,
-            )
-            .decode()
-            .strip()
-        )
-    except (OSError, subprocess.SubprocessError):
-        # git absent, not a repository, or no commits yet — all mean "no provenance".
-        return NO_GIT_SENTINEL
+# The one implementation lives in ``tinyalphazero.provenance`` (it used to be
+# here and, separately and wrongly, in data.py — REVIEW-2026-10-21 B4). The
+# names are kept so existing importers keep working.
+_git_sha = git_sha

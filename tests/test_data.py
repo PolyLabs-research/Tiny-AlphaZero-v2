@@ -19,10 +19,10 @@ from tinyalphazero.data import (
     write_dataset,
 )
 from tinyalphazero.encoding import (
+    TURN_B,
     TURN_W,
     decode_board,
     decode_move,
-    encode_move,
     legal_moves_packed,
 )
 
@@ -68,40 +68,54 @@ def test_random_games_min_plies_respected() -> None:
         assert len(game.positions) >= 20, f"Game too short: {len(game.positions)}"
 
 
+def _replay_to_end(game) -> chess.Board:
+    """Rebuild the final board from a GameRecord's stored moves."""
+    from tinyalphazero.encoding import decode_board, decode_move
+
+    board = decode_board(game.positions[0].tokens)
+    for pos in game.positions:
+        board.push(decode_move(pos.from_sq, pos.to_sq, pos.promo))
+    return board
+
+
 def test_random_games_outcome_perspective() -> None:
-    """Side-to-move perspective: consecutive positions flip +1 ↔ -1 in a decisive game."""
-    # Run many games until we find a decisive one
+    """Side-to-move perspective, checked against the *actual* winner (spec §5).
+
+    The previous version asserted only that adjacent decisive positions alternate
+    — which an inverted sign satisfies just as well — and the "known win" tests
+    asserted a literal they had themselves constructed. A global sign flip in
+    ``generate_random_games`` passed all three (REVIEW-2026-10-21 B2). Here the
+    stored moves are replayed to the terminal board, the winner is read off it,
+    and every position's outcome must be +1 exactly when its mover is the winner.
+    """
     rng = _rng(42)
-    for game in generate_random_games(500, rng):
-        outcomes = [p.outcome for p in game.positions]
-        if 1 in outcomes or -1 in outcomes:
-            # In a decisive game, outcomes should NOT be all-zero
-            # and consecutive positions should flip perspective
-            for i in range(len(outcomes) - 1):
-                if outcomes[i] != 0 and outcomes[i + 1] != 0:
-                    assert outcomes[i] != outcomes[i + 1], (
-                        f"Adjacent decisive positions have same outcome: {outcomes[i]}"
-                    )
-            return
-    pytest.skip("No decisive game found in 500 random games")
+    decisive = drawn = 0
+    for game in generate_random_games(600, rng):
+        final = _replay_to_end(game)
+        if final.is_checkmate():
+            decisive += 1
+            winner_is_white = not final.turn  # the side to move at a checkmate is mated
+            for pos in game.positions:
+                mover_is_white = int(pos.tokens[64]) == TURN_W
+                expected = 1 if mover_is_white == winner_is_white else -1
+                assert pos.outcome == expected, (pos.outcome, expected, final.fen())
+            # The mover of the last stored position delivered the mate.
+            assert game.positions[-1].outcome == 1
+        else:
+            drawn += 1
+            assert all(p.outcome == 0 for p in game.positions), final.fen()
+    assert decisive >= 5 and drawn >= 5, (decisive, drawn)
 
 
 def test_random_games_draw_outcome_all_zero() -> None:
-    """In a drawn game all outcomes must be 0."""
-    board = chess.Board("8/8/8/8/8/k7/8/K7 w - - 0 1")
-    # Generate at least one draw-by-50 game indirectly: just check the perspective logic
-    # by constructing a synthetic GameRecord and verifying
-    from tinyalphazero.encoding import encode_board, legal_moves_packed
-
-    pos = PositionRecord(
-        tokens=encode_board(board, 0),
-        from_sq=0,
-        to_sq=1,
-        promo=0,
-        legals=legal_moves_packed(board),
-        outcome=0,
-    )
-    assert pos.outcome == 0
+    """In a drawn game all outcomes must be 0 — checked on generated games, not a literal."""
+    rng = _rng(7)
+    seen = 0
+    for game in generate_random_games(300, rng):
+        if not _replay_to_end(game).is_checkmate():
+            seen += 1
+            assert all(p.outcome == 0 for p in game.positions)
+    assert seen > 0, "no drawn game in 300 random games"
 
 
 def test_random_games_tokens_in_vocab_range() -> None:
@@ -255,40 +269,20 @@ def test_stored_legal_bitset_matches_board_reconstruction() -> None:
 
 
 def test_outcome_perspective_known_win() -> None:
-    """Construct a position where white has a forced mate-in-1 and verify outcomes."""
-    # White king a6, rook h4, black king a8 — Rh8# is checkmate
-    from tinyalphazero.encoding import encode_board, legal_moves_packed
+    """The mate anchors label the mover +1 — read from the generator, for both colours."""
+    from tinyalphazero.data import generate_mate_in_1
+    from tinyalphazero.encoding import decode_board, decode_move
 
-    board = chess.Board("k7/8/K7/8/7R/8/8/8 w - - 0 1")
-    legal = list(board.legal_moves)
-    # Find a move that leads to checkmate
-    mating_move = None
-    for m in legal:
-        board.push(m)
-        if board.is_checkmate():
-            board.pop()
-            mating_move = m
-            break
-        board.pop()
-
-    if mating_move is None:
-        pytest.skip("No mate in 1 found in test position — adjust FEN")
-
-    rep = 0
-    tokens = encode_board(board, rep)
-    legals_packed = legal_moves_packed(board)
-    from_sq, to_sq, promo = encode_move(mating_move)
-
-    pos = PositionRecord(
-        tokens=tokens,
-        from_sq=from_sq,
-        to_sq=to_sq,
-        promo=promo,
-        legals=legals_packed,
-        outcome=1,  # white to move, white mates → +1
-    )
-    assert pos.outcome == 1
-    assert int(pos.tokens[64]) == TURN_W
+    rng = _rng(3)
+    colours = set()
+    for rec in generate_mate_in_1(12, rng):
+        board = decode_board(rec.tokens)
+        colours.add(board.turn)
+        board.push(decode_move(rec.from_sq, rec.to_sq, rec.promo))
+        assert board.is_checkmate(), "the stored move is the mate"
+        assert rec.outcome == 1, "the mover delivers the mate and is labelled +1"
+        assert int(rec.tokens[64]) == (TURN_W if not board.turn else TURN_B)
+    assert colours == {chess.WHITE, chess.BLACK}, "both colours must be exercised"
 
 
 def test_write_dataset_empty_raises() -> None:

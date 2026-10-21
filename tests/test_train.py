@@ -398,8 +398,26 @@ def test_checkpoint_meta_fields() -> None:
 
 def test_git_sha_returns_short_sha(monkeypatch: pytest.MonkeyPatch) -> None:
     """Success branch: decode and strip whatever git prints."""
-    monkeypatch.setattr(train_mod.subprocess, "check_output", lambda *a, **k: b"abc1234\n")
+    from tinyalphazero import provenance
+
+    monkeypatch.setattr(provenance.subprocess, "check_output", lambda *a, **k: b"abc1234\n")
     assert train_mod._git_sha() == "abc1234"
+
+
+def test_git_sha_has_one_implementation() -> None:
+    """train, data and the ladder all stamp from ``provenance.git_sha``.
+
+    data.py carried its own cwd-relative copy that returned ``"unknown"`` —
+    exactly the variant the tests below forbid — and it was the one that stamped
+    every Phase 1 dataset sidecar (REVIEW-2026-10-21 B4).
+    """
+    from tinyalphazero import data as data_mod
+    from tinyalphazero import provenance
+
+    assert train_mod._git_sha is provenance.git_sha
+    assert data_mod.git_sha is provenance.git_sha
+    assert not hasattr(data_mod, "_git_sha")
+    assert train_mod.NO_GIT_SENTINEL == provenance.NO_GIT_SENTINEL == "no-git"
 
 
 @pytest.mark.parametrize(
@@ -413,10 +431,12 @@ def test_git_sha_returns_short_sha(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_git_sha_sentinel_when_unavailable(monkeypatch: pytest.MonkeyPatch, exc: Exception) -> None:
     """Absence must be an explicit sentinel — never an exception, never silence."""
 
+    from tinyalphazero import provenance
+
     def _raise(*_a: object, **_k: object) -> bytes:
         raise exc
 
-    monkeypatch.setattr(train_mod.subprocess, "check_output", _raise)
+    monkeypatch.setattr(provenance.subprocess, "check_output", _raise)
     assert train_mod._git_sha() == train_mod.NO_GIT_SENTINEL == "no-git"
 
 
@@ -445,6 +465,24 @@ def test_checkpoint_records_resolved_sha() -> None:
 
     sha = meta["git_sha"]
     assert sha == train_mod.NO_GIT_SENTINEL or re.fullmatch(r"[0-9a-f]{7,40}", sha), sha
+
+
+def test_checkpoint_stamps_the_sha_its_caller_captured() -> None:
+    """A long-lived process passes the SHA it launched from; HEAD is not re-read.
+
+    p2_b's `ckpt_iter0012.pt` names a commit that writes a schema version the run
+    never produced, because save_checkpoint read HEAD at save time
+    (REVIEW-2026-10-21 C2).
+    """
+    model_cfg = _mini_cfg()
+    cfg = _make_full_config(model_cfg)
+    net = ChessNet(model_cfg)
+    optimizer = torch.optim.AdamW(net.parameters())
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "ckpt.pt"
+        save_checkpoint(path, net, optimizer, cfg, step=1, phase="2", git_sha="launch00")
+        _, meta = load_checkpoint(path)
+    assert meta["git_sha"] == "launch00"
 
 
 def test_checkpoint_shape_mismatch_raises() -> None:
@@ -637,3 +675,60 @@ def test_value_blend_is_off_by_default() -> None:
     from tinyalphazero.config import Config
 
     assert Config().train.value_q_mse_weight == 0.0
+
+
+def test_value_blend_modes_weight_the_rows_without_a_search_as_documented() -> None:
+    """`per_row` leaves masked-off rows at full CE weight; `batch_mean` halves them.
+
+    The guard above checks only that hidden `root_q` *values* do not move the loss,
+    which both weightings satisfy — so p2_c trained with the rehearsal rows' value
+    gradient at 0.5x while every document said "full weight" (REVIEW-2026-10-21
+    C1). This test reads the gradient itself, per row, and pins both modes:
+    `batch_mean` must stay exactly the formula p2_c/p2_d ran.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    from tinyalphazero.train import _blend_value_toward_search_q
+
+    torch.manual_seed(0)
+    b = 8
+    mask = torch.tensor([True] * 4 + [False] * 4)
+    batch = {"root_q": torch.full((b,), 0.9), "root_q_mask": mask}
+    outcome = torch.ones(b, dtype=torch.long)
+    device = torch.device("cpu")
+
+    def grads(mode: str, q_w: float) -> torch.Tensor:
+        torch.manual_seed(0)
+        wdl = torch.randn(b, 3, requires_grad=True)
+        ce_rows = F.cross_entropy(wdl, outcome + 1, reduction="none")
+        loss = _blend_value_toward_search_q(ce_rows, wdl, batch, device, q_w, outcome, mode=mode)
+        (g,) = torch.autograd.grad(loss, wdl)
+        return g.norm(dim=-1)
+
+    off_rows = ~mask
+    assert torch.allclose(grads("per_row", 0.5)[off_rows], grads("per_row", 0.0)[off_rows]), (
+        "per_row: rows without a search must not feel the blend weight"
+    )
+    assert torch.allclose(
+        grads("batch_mean", 0.5)[off_rows], 0.5 * grads("batch_mean", 0.0)[off_rows]
+    ), "batch_mean is the legacy formula: masked-off rows at (1-w)"
+    # Masked-on rows: both modes blend; with no masked-on row, both are plain CE.
+    assert not torch.allclose(grads("per_row", 0.5)[mask], grads("per_row", 0.0)[mask])
+    none = {"root_q": torch.zeros(b), "root_q_mask": torch.zeros(b, dtype=torch.bool)}
+    wdl = torch.randn(b, 3)
+    ce_rows = F.cross_entropy(wdl, outcome + 1, reduction="none")
+    for mode in ("batch_mean", "per_row"):
+        assert _blend_value_toward_search_q(
+            ce_rows, wdl, none, device, 0.5, outcome, mode=mode
+        ) == (pytest.approx(ce_rows.mean().item()))
+    # batch_mean reproduces the p2_c formula to the bit.
+    wdl = torch.randn(b, 3)
+    ce_rows = F.cross_entropy(wdl, outcome + 1, reduction="none")
+    probs = torch.softmax(wdl, dim=-1)
+    scalar = probs[:, 2] - probs[:, 0]
+    legacy = 0.5 * ce_rows.mean() + 0.5 * F.mse_loss(scalar[mask], batch["root_q"][mask])
+    got = _blend_value_toward_search_q(ce_rows, wdl, batch, device, 0.5, outcome, mode="batch_mean")
+    assert torch.equal(got, legacy)
+    with pytest.raises(ValueError, match="value_q_blend"):
+        _blend_value_toward_search_q(ce_rows, wdl, batch, device, 0.5, outcome, mode="halfway")

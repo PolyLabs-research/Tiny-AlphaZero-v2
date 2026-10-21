@@ -6,7 +6,6 @@ Records are written straight to memmap with a small JSON sidecar (meta.json).
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -24,6 +23,7 @@ from tinyalphazero.encoding import (
     encode_move,
     legal_moves_packed,
 )
+from tinyalphazero.provenance import NO_GIT_SENTINEL, git_sha
 
 # ---------------------------------------------------------------------------
 # Record types
@@ -83,7 +83,7 @@ class DatasetMeta:
         return cls(
             n=d["n"],
             version=d["version"],
-            git_sha=d.get("git_sha", "unknown"),
+            git_sha=d.get("git_sha", NO_GIT_SENTINEL),
             dtype_map=d["dtype_map"],
             generation_config=d.get("generation_config", {}),
         )
@@ -365,6 +365,12 @@ def write_dataset(
         _write_memmap(out_dir / "keymoves.dat", np.stack(keymoves_list).astype(np.uint8))
     elif keymoves_list:
         raise ValueError(f"key_moves present on {len(keymoves_list)} of {n} records -- all or none")
+    else:
+        # A directory re-written in a mode without key moves must not keep the
+        # previous mode's file: the reader memmaps a prefix of it against the new
+        # positions and mate2_coverage scores against another dataset's bitsets
+        # (REVIEW-2026-10-21 B5).
+        (out_dir / "keymoves.dat").unlink(missing_ok=True)
 
     # Record the exact invocation: runs/data/mate1 was once generated with --games
     # instead of --mate1, and nothing downstream could tell.
@@ -374,7 +380,7 @@ def write_dataset(
     meta = DatasetMeta(
         n=n,
         version=_VERSION,
-        git_sha=_git_sha(),
+        git_sha=git_sha(),
         dtype_map=_DTYPE_MAP,
         generation_config={**gen_cfg, "has_key_moves": has_key_moves},
     )
@@ -430,6 +436,28 @@ class Phase1Dataset(Dataset):
         with open(data_dir / "meta.json") as fh:
             self.meta = DatasetMeta.from_dict(json.load(fh))
         n = self.meta.n
+        # The sidecar describes the files; check it against this build before
+        # interpreting a byte (REVIEW-2026-10-21 B6): a dtype that drifted, or a
+        # file whose size does not match `n`, is a wrong dataset read silently.
+        shapes = {
+            "boards": (n, 72),
+            "moves": (n, 2),
+            "promos": (n,),
+            "legals": (n, 512),
+            "outcomes": (n,),
+        }
+        for name, dtype in _DTYPE_MAP.items():
+            recorded = self.meta.dtype_map.get(name, dtype)
+            if recorded != dtype:
+                raise ValueError(
+                    f"{data_dir}: {name} is {recorded} in meta.json, {dtype} in this build"
+                )
+            expected = int(np.prod(shapes[name])) * np.dtype(dtype).itemsize
+            actual = (data_dir / f"{name}.dat").stat().st_size
+            if actual != expected:
+                raise ValueError(
+                    f"{data_dir}: {name}.dat is {actual} bytes; n={n} of {dtype} needs {expected}"
+                )
 
         self._boards = np.memmap(data_dir / "boards.dat", dtype=np.int8, mode="r", shape=(n, 72))
         self._moves = np.memmap(data_dir / "moves.dat", dtype=np.int16, mode="r", shape=(n, 2))
@@ -438,12 +466,18 @@ class Phase1Dataset(Dataset):
         self._outcomes = np.memmap(data_dir / "outcomes.dat", dtype=np.int8, mode="r", shape=(n,))
         # Optional: present only for modes with several equally-correct answers
         # (mate_in_2). Absent for every dataset generated before 2026-08-08, so
-        # this must stay optional or every existing data dir stops loading.
+        # this must stay optional or every existing data dir stops loading. The
+        # sidecar's `has_key_moves` decides when it is recorded; a dataset written
+        # before that key existed falls back to the file's presence
+        # (REVIEW-2026-10-21 B5: a stale file from a previous mode was being read).
         km_path = data_dir / "keymoves.dat"
+        has_key_moves = self.meta.generation_config.get("has_key_moves", km_path.exists())
+        if has_key_moves and not km_path.exists():
+            raise FileNotFoundError(
+                f"{data_dir}: meta.json says has_key_moves but keymoves.dat is absent"
+            )
         self._keymoves = (
-            np.memmap(km_path, dtype=np.uint8, mode="r", shape=(n, 512))
-            if km_path.exists()
-            else None
+            np.memmap(km_path, dtype=np.uint8, mode="r", shape=(n, 512)) if has_key_moves else None
         )
 
     def __len__(self) -> int:
@@ -476,16 +510,3 @@ def _board_outcome_white(board: chess.Board) -> int:
     if result == "0-1":
         return -1
     return 0  # draw or unfinished (hit ply cap → draw adjudication)
-
-
-def _git_sha() -> str:
-    try:
-        return (
-            subprocess.check_output(
-                ["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL
-            )
-            .decode()
-            .strip()
-        )
-    except Exception:  # noqa: BLE001
-        return "unknown"
