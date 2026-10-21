@@ -26,6 +26,15 @@ class ModelConfig:
     dropout: float = 0.1  # 0.1 Phase 1, 0.0 Phase 2 — set via config, not code
     seq_len: int = 72
     aux_legality: bool = True  # legality auxiliary head; off in Phase 2
+    # How the attention in-projections are initialised (REVIEW-2026-10-21 B3).
+    # "torch_default": nn.TransformerEncoder deep-copies one layer, so every layer
+    #   starts from the *same* xavier draw of in_proj_weight (std ~0.044) — the
+    #   init every network up to and including p2_d actually trained from.
+    # "trunc_normal": per-layer trunc_normal(std=0.02), zero bias — the init the
+    #   rest of _init_weights applies and the code always claimed to apply.
+    # The default is the legacy value so that every committed config.yaml and
+    # checkpoint still describes the network it produced; new configs opt in.
+    attn_init: str = "torch_default"
 
 
 @dataclass
@@ -164,6 +173,14 @@ class TrainConfig:
     phase1_value_weight_anchor: float = 1.0
     phase1_mate1_mix: float = 0.05  # fraction of mate-in-1 anchors per batch
     phase1_mate2_mix: float = 0.0  # fraction of mate-in-2 anchors per batch (round d+)
+    # How the Phase 1 sampler turns the mixes into sample weights (REVIEW-2026-10-21 E1).
+    # "legacy": random rows weighted (1-a) AND anchor rows mix/(1-a) — the (1-a)
+    #   normalisation applied twice, so a configured mix m is realised as
+    #   m / ((1-a)^2 + a): 0.05 -> 0.0525, phase1_d's 0.08/0.07 -> 0.0917/0.0802.
+    #   Every Phase 1 round trained under this.
+    # "exact": a configured mix is the realised batch fraction.
+    # Legacy default so committed checkpoint configs describe what they trained on.
+    phase1_anchor_weighting: str = "legacy"
     # Masking the policy CE zeroes the gradient on illegal logits, so the trunk never
     # learns legality — and on uniform-random-play data the masked loss is already at
     # its optimum at init. Phase 1 therefore trains unmasked; Phase 2 (search-improved
@@ -197,6 +214,15 @@ class TrainConfig:
     # stays pure CE at full weight rather than being blended against a fabricated
     # zero. See ReplayBuffer's ``root_q_mask``.
     value_q_mse_weight: float = 0.0
+    # How the blend treats rows *without* a root_q (REVIEW-2026-10-21 C1).
+    # "batch_mean": (1-w)*CE + w*MSE with CE the full-batch mean, so the masked-off
+    #   rows' CE is also scaled by (1-w) — rehearsal rows received half their value
+    #   supervision from p2_c on, contrary to the paragraph above. p2_c and p2_d
+    #   trained under this; RUNLOG-p2_c carries the erratum.
+    # "per_row": masked-off rows keep CE at weight 1, masked-on rows get
+    #   (1-w)*CE + w*MSE — what the paragraph above describes.
+    # Legacy default so committed run configs describe what they trained.
+    value_q_blend: str = "batch_mean"
     rehearsal_mate1_dir: str = "runs/data/mate1_100k_clean"
     rehearsal_mate2_dir: str = "runs/data/mate2_50k_clean"
 
