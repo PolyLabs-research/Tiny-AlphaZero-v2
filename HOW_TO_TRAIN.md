@@ -104,26 +104,49 @@ Add `--max-steps 600` for a timing/smoke slice that does not commit to the full 
 
 ### What happens
 
-- Loads a 6.5M-param `ChessNet` with the default config (`configs/default.yaml`).
-- Builds a mixed DataLoader: 95% random-play (value weight 0.25) + 5% mate-in-1 (value weight 1.0), sampled via `WeightedRandomSampler`.
+- Loads a 6.5M-param `ChessNet` with the **dataclass defaults** in
+  `src/tinyalphazero/config.py` (dropout 0.1, legality auxiliary on), or with the
+  Phase 1 YAML named by `--config` (`configs/phase1_c.yaml`, `configs/phase1_d.yaml`
+  are the pinned rounds). Do **not** pass `configs/default.yaml` here: it is the
+  Phase 2 campaign config (`dropout 0.0`, `legality_loss_weight 0.0`) and would train
+  Phase 1 with the legality auxiliary off, making the `legality_auc ≥ 0.995` gate
+  unmeetable.
+- Builds a mixed DataLoader over random play (value weight 0.25) and the mate-in-1
+  anchors (value weight 1.0), sampled with per-sample weights. How the configured
+  mix `train.phase1_mate1_mix` becomes a batch fraction is set by
+  `train.phase1_anchor_weighting`: `exact` makes a mix of 0.05 **5.00 %** of every
+  batch; the dataclass default `legacy` reproduces the double normalisation every
+  round up to the anchor v2 trained under, which realises 0.05 as **5.25 %**
+  (0.08/0.07 as 9.17 %/8.02 %). The run log prints the realised fraction
+  (`anchor weighting=... | realised fractions: mate1=...`), and the embedded
+  config of a checkpoint says which weighting produced it.
 - Trains with AdamW, lr cosine 3e-4 → 3e-5, batch 1024, bf16 autocast on GPU.
 - Uses **unmasked** policy CE (`phase1_policy_masked=False`). Masking the CE gives
   illegal logits zero gradient, so `top1_legal_rate` can never train; see the
   `runs/phase1_a` post-mortem in `PROGRESS.md`.
+- Writes the run's provenance first: `runs/phase1_a/config.yaml` (the resolved
+  config, seed included) and `runs/phase1_a/provenance.json` (git SHA, config
+  fingerprint, torch version, device, the `check_env` report).
 - Logs a progress line every 200 steps with **per-component** losses, and per-epoch
-  metrics to `runs/phase1_a/metrics.jsonl`.
+  metrics to `runs/phase1_a/metrics.jsonl`. The per-epoch metrics are computed on
+  `--eval-data` / `--eval-mate1`; if either is omitted the script falls back to the
+  training dir **and says so** — treat that warning as a reason to stop.
 - Saves epoch checkpoints (`epoch_01.pt`, `epoch_02.pt`, `epoch_03.pt`) and `final.pt`.
 
 ### Expected console output
 
 ```
-Phase 1 training | device=cuda | bf16=True | steps=28008/28008 | batch=1024 | workers=8 | masked_policy=False
+Phase 1 training | device=cuda | bf16=True | steps=28008/28008 | batch=1024 | workers=8 | masked_policy=False | compile=False
+  anchor weighting=exact | realised fractions: mate1=0.0500
   step    200/28008  loss=9.4715  policy=8.2717  promo=0.9710  value=0.1882  leg=0.0406  lr=3.00e-04
   step    400/28008  loss=8.2164  policy=6.8483  promo=1.1518  value=0.1745  leg=0.0419  lr=2.99e-04
   ...
-Epoch 1 | loss=5.4120 (policy=3.6210) | top1_legal=0.9123 | mate1_solve=0.4210 | auc=0.9812 | wdl_anchor=0.7431
+Epoch 1 | loss=5.4120 (policy=3.6210) | mate2_top16=nan | mate1_top8=0.8210 | auc=0.9812 | wdl_anchor=0.7431 | top1_legal=0.9123ⁱ | mate1_solve=0.4210ⁱ
 Saved runs/phase1_a/epoch_01.pt
 ```
+
+The `ⁱ` marks informational metrics (retired gates, see Step 3); `mate2_top16` is
+`nan` unless `--eval-mate2` is given.
 
 **Read the components, not the total.** The totals here are not comparable to the
 old guide's numbers:
@@ -137,7 +160,9 @@ old guide's numbers:
   over four pieces.
 - Converged total ≈ **4.8–5.5** is expected and fine.
 
-By epoch 3, `top1_legal` should approach or exceed 0.99.
+By epoch 3 the gated metrics should be at or near their gates: `auc` ≥ 0.995,
+`mate1_top8` ≥ 0.97, `wdl_anchor` ≥ 0.80. `top1_legal` and `mate1_solve` are
+informational since BLOCKED-2026-08-06.
 
 ### Non-finite gradients
 
@@ -196,14 +221,35 @@ VIRTUAL_ENV=.venv .venv/bin/python scripts/train_phase1.py \
     --ckpt runs/phase1_a/epoch_02.pt
 ```
 
-The optimizer state and LR schedule are restored automatically.
+A resumed run is the run the checkpoint describes:
+
+- **Config comes from the checkpoint**, not from `--config` or the dataclass
+  defaults: epochs (and so the cosine `T_max`), batch size, LR start/end, the anchor
+  mixes and weighting, and the seed. `--config`, `--epochs`, `--batch` or `--seed`
+  that disagree with it are refused with an error naming both values; drop them, or
+  start a new run with `--init-weights` if a different config is the intention.
+- **Data order is the uninterrupted run's.** Each epoch's sample multiset is derived
+  from `(seed, epoch)`, so resumed epoch 3 draws exactly what uninterrupted epoch 3
+  would have, not a replay of epoch 1.
+- **Optimizer state is restored and the LR schedule is replayed** from step 0 to
+  the checkpoint's step, so the resumed trajectory matches the uninterrupted one
+  (verified bit-identical on the mini config, CPU).
+- `metrics.jsonl` is appended to; `provenance.json` gains a `resumes` entry with the
+  checkpoint, step and the SHA of the resuming code; a run dir whose `config.yaml`
+  disagrees with the checkpoint is refused.
 
 ### Custom config
 
 ```bash
-# Use mini config for a quick smoke run (< 5 min on CPU)
+# Use mini config for a quick smoke run (< 5 min on CPU). Pass the held-out dirs:
+# without --eval-mate1 the gated mate-in-1 metrics are measured on the training
+# anchors (the script warns), and without any mate-in-1 dir they are measured on
+# positions the metric code generates itself.
 VIRTUAL_ENV=.venv .venv/bin/python scripts/train_phase1.py \
     --data runs/data/phase1 \
+    --mate1 runs/data/mate1 \
+    --eval-data runs/data/eval_rand \
+    --eval-mate1 runs/data/eval_mate1 \
     --out runs/smoke \
     --config configs/mini.yaml \
     --epochs 1
@@ -213,41 +259,56 @@ VIRTUAL_ENV=.venv .venv/bin/python scripts/train_phase1.py \
 
 ## Step 3 — Evaluate
 
+Evaluate on the **held-out** sets from Step 1, never on the training dirs:
+
 ```bash
 VIRTUAL_ENV=.venv .venv/bin/python scripts/eval_phase1.py \
     --ckpt runs/phase1_a/final.pt \
-    --data runs/data/phase1 \
-    --mate1 runs/data/mate1
+    --data runs/data/eval_rand \
+    --mate1 runs/data/eval_mate1 \
+    [--eval-mate2 runs/data/eval_mate2_1k]
 ```
 
-### Acceptance table (§5 gates)
+`--mate1` is required for a verdict: two of the three gates are anchor-set
+metrics, and without it they print `not measured` and the script exits 1 rather
+than scoring positions it generated itself. `--eval-mate2` adds the round-d gate.
+The header reports the denominators actually used (`min(n, len(dataset))`).
+
+### Acceptance table (§5 gates, as revised by BLOCKED-2026-08-06 and -08-08)
 
 ```
-==================================================================
-Metric                        Value          Gate    Pass
-------------------------------------------------------------------
-  top1_legal_rate             0.9934      ≥ 0.99    PASS
-  mate1_solve_rate            0.9210      ≥ 0.90    PASS
-  legality_auc                0.9967     ≥ 0.995    PASS
-  wdl_anchor_mass             0.8340      ≥ 0.80    PASS
-------------------------------------------------------------------
-  top1_exact_rate             0.2810          (informational)
-==================================================================
+========================================================================
+Metric                            Value          Gate    Pass
+------------------------------------------------------------------------
+  legality_auc                     0.9967       ≥ 0.995    PASS
+  wdl_anchor_mass                  0.8340        ≥ 0.80    PASS
+  mate1_top8_masked                0.9850        ≥ 0.97    PASS
+  mate2_top16_coverage             0.9620        ≥ 0.95    PASS   (only with --eval-mate2)
+------------------------------------------------------------------------
+  mate2_solve_rate                 0.6100  informational (top-1)
+  top1_legal_rate                  0.9934  retired 2026-08-06 (was ≥ 0.99)
+  mate1_solve_rate                 0.9210  retired 2026-08-06 (was ≥ 0.90)
+  top1_exact_rate                  0.2810  informational
+  mate1_top3_masked                0.9700  informational
+  mate1_top16_masked               0.9990  informational
+========================================================================
 
 All gates PASSED — ready for Phase 2.
 ```
 
-The script exits 0 on pass, 1 on any failure.
+The script exits 0 on pass, 1 on any failure (including "not measured").
 
 ### Metric definitions
 
 | Metric | Definition |
 |--------|-----------|
-| `top1_legal_rate` | Fraction of positions where the raw unmasked policy argmax is a legal move — measures whether the model has learned piece mobility without relying on the mask |
-| `top1_exact_rate` | Fraction where the masked policy argmax matches the played move (supervised accuracy) |
-| `mate1_solve_rate` | Fraction of mate-in-1 positions where the masked policy argmax is the mating move — no search |
 | `legality_auc` | ROC AUC of the auxiliary legality head's per-square predictions against the true legal mask |
 | `wdl_anchor_mass` | Mean P(win) assigned by the value head on mate-in-1 positions (side to move wins) |
+| `mate1_top8_masked` | Fraction of mate-in-1 positions whose mating move is in the masked policy's top 8 — the considered-set question search actually asks |
+| `mate2_top16_coverage` | Fraction of mate-in-2 positions with **any** key move in the masked top 16 (Gumbel's considered-set size) |
+| `top1_legal_rate` | Retired. Fraction of positions where the raw unmasked policy argmax is a legal move |
+| `top1_exact_rate` | Informational. Fraction where the masked policy argmax matches the played move (supervised accuracy) |
+| `mate1_solve_rate` | Retired. Fraction of mate-in-1 positions where the masked policy argmax is the mating move — equals `mate1_top1_masked` |
 
 ---
 
@@ -260,8 +321,12 @@ VIRTUAL_ENV=.venv .venv/bin/python -m tinyalphazero.encoding --fuzz 1000000
 ```
 Any violation printed here invalidates the dataset — regenerate from scratch with a fresh seed.
 
-**`mate1_solve_rate` below 0.85 after 3 epochs**
-Check the mate1 mixture is actually being sampled: inspect `runs/phase1_a/metrics.jsonl` to confirm `mate1_solve_rate` rises each epoch. If it's flat, the mate1 DataLoader path may not be loading correctly. Also confirm the mate1 dataset has genuine checkmates:
+**`mate1_top8_masked` below 0.97 after 3 epochs**
+Check the mate1 mixture is actually being sampled: the run log's `realised fractions:
+mate1=...` line says what share of each batch came from the anchors, and
+`runs/phase1_a/metrics.jsonl` should show `mate1_top8_masked` rising each epoch. If it's
+flat, the mate1 DataLoader path may not be loading correctly. Also confirm the mate1
+dataset has genuine checkmates:
 ```bash
 VIRTUAL_ENV=.venv .venv/bin/python -m pytest tests/test_data.py::test_mate_in_1_move_is_checkmate -v
 ```
@@ -446,6 +511,8 @@ runs/
     phase1/          # random-play memmap dataset (~1.3 GB)
     mate1/           # mate-in-1 anchor dataset (~13 MB)
   phase1_a/
+    config.yaml      # resolved config, seed included — what --ckpt resumes
+    provenance.json  # git SHA, config fingerprint, torch/device, check_env report
     epoch_01.pt      # checkpoint after epoch 1
     epoch_02.pt
     epoch_03.pt

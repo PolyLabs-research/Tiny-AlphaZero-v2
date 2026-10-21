@@ -8,7 +8,15 @@ Usage:
         --eval-data runs/data/eval_rand \\
         --eval-mate1 runs/data/eval_mate1 \\
         --out runs/phase1_a \\
-        [--epochs 3] [--batch 1024] [--seed 42] [--ckpt <resume>] [--config configs/default.yaml]
+        [--config configs/phase1_d.yaml] [--epochs 3] [--batch 1024] [--seed 42]
+
+    # resume: config, epochs, batch, mixes and seed come from the checkpoint
+    python scripts/train_phase1.py --data ... --mate1 ... --out runs/phase1_a \\
+        --ckpt runs/phase1_a/epoch_02.pt
+
+Without --config the dataclass defaults apply (Phase 1 values: dropout 0.1,
+legality auxiliary on). configs/default.yaml is the *Phase 2* campaign config
+and is not a Phase 1 config.
 """
 
 from __future__ import annotations
