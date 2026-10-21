@@ -1385,7 +1385,25 @@ def test_breadth_lever_returns_unexpanded_replies_then_stops() -> None:
     assert search._unexpanded_reply(tree, csl, e) is None
 
 
-def test_breadth_lever_converts_mate2_165_on_a_real_checkpoint() -> None:
+@pytest.fixture
+def pinned_torch_threads() -> Iterator[None]:
+    """Pin torch to four threads for one test and put the process back afterwards.
+
+    ``torch.set_num_threads`` is process-global; left set, it changed the thread
+    count for every later test in the session (review P8).
+    """
+    import torch
+
+    before = torch.get_num_threads()
+    torch.set_num_threads(4)
+    try:
+        yield
+    finally:
+        torch.set_num_threads(before)
+
+
+@pytest.mark.slow
+def test_breadth_lever_converts_mate2_165_on_a_real_checkpoint(pinned_torch_threads: None) -> None:
     """The lever's registered claim (W3), measured where it actually lives.
 
     Every synthetic version of this test was vacuous, and the reasons are worth
@@ -1398,6 +1416,9 @@ def test_breadth_lever_converts_mate2_165_on_a_real_checkpoint() -> None:
     across four p2_c passes.
 
     CPU on purpose: Track 1 must never contend with a training run for the GPU.
+    Marked slow (two 128-sim searches through a real net on four CPU threads)
+    and skipped where the gitignored checkpoint is absent, so it runs where the
+    record it pins was made and nowhere else.
     """
     import json
 
@@ -1413,7 +1434,7 @@ def test_breadth_lever_converts_mate2_165_on_a_real_checkpoint() -> None:
     if not (ckpt.exists() and cfg_path.exists()):
         pytest.skip("p2_c endpoint checkpoint not present in this working tree")
 
-    torch.set_num_threads(4)
+    assert torch.get_num_threads() == 4, "the pinned_torch_threads fixture is not in effect"
     cfg = load_config(str(cfg_path))
     net, _ = load_checkpoint(ckpt, device=torch.device("cpu"))
     net.eval()
@@ -1438,19 +1459,48 @@ def test_breadth_lever_converts_mate2_165_on_a_real_checkpoint() -> None:
     assert solved[True] is True, "the breadth lever failed to convert mate2_165 (W3)"
 
 
-def test_breadth_lever_is_deterministic_under_the_eval_profile() -> None:
-    """Two runs at identical settings pick identical moves.
+def test_breadth_lever_is_deterministic_under_the_eval_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two *differently seeded* runs at identical settings give identical trees.
 
     A measurement instrument that reorders under reseeding is no better than the
-    one it replaces (the argument that retired root noise from the ladder).
+    one it replaces (the argument that retired root noise from the ladder). The
+    eval profile draws no Gumbel noise and the lever breaks ties on the prior,
+    so the seed must be unable to reach the result. Both runs used to be built
+    with ``default_rng(0)``, which could not detect the failure the docstring
+    names (review P4).
+
+    The threshold is dropped to -1 so the lever fires beneath every visited
+    edge. At 0.95 the constant-value stub never trips it (the real-checkpoint
+    test above records why), and a determinism test of a lever that never
+    runs is the plain eval profile's, which is gated earlier in this file. A
+    spy asserts it fired; with the firings in place, a tie-break that consulted
+    the rng instead of the prior makes the two seeds disagree.
     """
     import numpy as np
 
     from tinyalphazero.mcts.search import Search
 
+    fired: list[bool] = []
+    orig = Search._unexpanded_reply
+
+    def spy(self, tree, sl, parent_edge):  # noqa: ANN001
+        picked = orig(self, tree, sl, parent_edge)
+        fired.append(picked is not None)
+        return picked
+
+    monkeypatch.setattr(Search, "_unexpanded_reply", spy)
+
     board = chess.Board("6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1")
-    moves = []
-    for _ in range(2):
-        search = Search(_stub_evaluator(), _pde_cfg(), np.random.default_rng(0))
-        moves.append(search.run(board, None, 32).best_move())
-    assert moves[0] == moves[1]
+    results = []
+    for seed in (0, 999):
+        fired.clear()
+        search = Search(
+            _stub_evaluator(), _pde_cfg(proof_q_threshold=-1.0), np.random.default_rng(seed)
+        )
+        results.append(search.run(board, None, 32))
+        assert sum(fired) > 0, "the lever never fired; this would test only the eval profile"
+    assert results[0].best_move() == results[1].best_move()
+    assert results[0].chosen == results[1].chosen
+    np.testing.assert_array_equal(results[0].visits, results[1].visits)
