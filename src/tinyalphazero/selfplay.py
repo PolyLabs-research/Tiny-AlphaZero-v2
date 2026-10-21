@@ -503,14 +503,23 @@ def _store(
     pool_positions = 0
     for pos in trace.positions:
         board = decode_board(pos.tokens)
-        acted = max(pos.improved_policy, key=lambda e: e[2]) if pos.improved_policy else (0, 0, 0.0)
+        if pos.played_ft >= 0:
+            # The move the game continued with (REVIEW-2026-10-21 C4) — the
+            # promotion head's target is read at this cell.
+            move_ft, promo = int(pos.played_ft), int(pos.played_promo)
+        else:
+            # A trace built without the runner: the improved-policy argmax.
+            acted = (
+                max(pos.improved_policy, key=lambda e: e[2]) if pos.improved_policy else (0, 0, 0.0)
+            )
+            move_ft, promo = int(acted[0]), int(acted[1])
         mover_is_latest = assignment.key_for(pos.side_to_move) == LATEST
         pool_positions += not mover_is_latest
         buffer.add(
             tokens=pos.tokens,
             legals=legal_moves_packed(board),
-            move_ft=int(acted[0]),
-            promo=int(acted[1]),
+            move_ft=move_ft,
+            promo=promo,
             outcome=int(pos.outcome),
             improved_policy=pos.improved_policy,
             iteration=iteration,

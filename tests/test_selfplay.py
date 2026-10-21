@@ -228,6 +228,47 @@ def test_play_games_scores_and_stores(tmp_path) -> None:
     assert float(batch["policy"].sum(dim=1).min()) > 0.99
 
 
+def test_the_ring_stores_the_move_actually_played(tmp_path) -> None:
+    """`moves.dat` is the game's move, not the improved-policy argmax (REVIEW-2026-10-21 C4).
+
+    The acting rule is the argmax over the *survivors* of g + logits + σ(q̂); the
+    improved policy is softmax(logits + σ(q̂)) over all legal moves with no g. Under
+    self-play noise the two differed on ~95% of positions, and the ring recorded
+    the latter under the name "the move actually played" — so the promotion head
+    was trained at a cell the game may never have reached.
+    """
+    import chess
+
+    from tinyalphazero.mcts.batch_runner import BatchRunner
+
+    cfg = Config()  # root_noise on: the self-play profile, where the two diverge
+    runner = BatchRunner(uniform_stub_batch, cfg.mcts, max_plies=12, keep_debug_trees=False)
+    traces = list(runner.play_games(2, seeds=[1, 2], num_sims=8))
+    for gi, trace in enumerate(traces):
+        board = chess.Board()
+        for pos, move in zip(
+            trace.positions, runner._games_debug[gi].board.move_stack, strict=True
+        ):
+            assert pos.played_ft == move.from_square * 64 + move.to_square
+            assert pos.played_promo == (0 if move.promotion is None else pos.played_promo)
+            board.push(move)
+    positions = [p for t in traces for p in t.positions]
+    argmax_ft = [max(p.improved_policy, key=lambda e: e[2])[0] for p in positions]
+    played_ft = [p.played_ft for p in positions]
+    assert played_ft != argmax_ft, (
+        "non-vacuous: the acting move and the argmax must differ somewhere"
+    )
+
+    buf = ReplayBuffer.create(tmp_path / "replay", capacity=256)
+    cfg.selfplay.max_plies = 12
+    traces, stats = play_games(
+        uniform_stub_batch, num_games=2, cfg=cfg, seed=7, num_sims=8, buffer=buf
+    )
+    stored = sorted(int(f) * 64 + int(t) for f, t in np.asarray(buf._arr["moves"][: len(buf)]))
+    assert stored == sorted(p.played_ft for t in traces for p in t.positions)
+    assert buf.version == 4, "a ring whose moves are the played move says so"
+
+
 def test_play_games_is_reproducible_from_the_seed(tmp_path) -> None:
     cfg = Config()
     cfg.selfplay.max_plies = 4

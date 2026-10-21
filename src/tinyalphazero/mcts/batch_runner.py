@@ -29,7 +29,7 @@ import chess
 import numpy as np
 
 from tinyalphazero.config import MCTSConfig
-from tinyalphazero.encoding import legal_mask_ft
+from tinyalphazero.encoding import encode_move, legal_mask_ft
 from tinyalphazero.mcts import gumbel
 from tinyalphazero.mcts.search import (
     FIFTY_MOVE_PLIES,
@@ -57,6 +57,15 @@ class TracePosition:
     # Spec §8's collapse detector is a question about the *policy* — has the
     # network stopped considering alternatives — and only the prior answers it.
     root_prior_entropy: float = 0.0
+    # The move the game actually continued with, as from*64+to and its promotion
+    # class (0 none, 1..4 N/B/R/Q). The acting rule is the argmax over the
+    # *survivors* of g + logits + σ(q̂) (+ the proven-win bonus), which is not the
+    # argmax of `improved_policy`: with self-play noise the two differed on ~95%
+    # of positions, and the replay ring stored the latter as "the move actually
+    # played" (REVIEW-2026-10-21 C4). -1 means "not recorded" (a trace built by
+    # hand); the store then falls back to the improved-policy argmax.
+    played_ft: int = -1
+    played_promo: int = 0
 
 
 @dataclass
@@ -483,6 +492,8 @@ class BatchRunner:
         )
         scores = search._gumbel_scores(tree, root, gs.g, gs.logits)
         result.chosen = int(max(gs.survivors, key=lambda a: scores[a]))
+        played = result.best_move()
+        played_from, played_to, played_promo = encode_move(played)
 
         gs.trace.positions.append(
             TracePosition(
@@ -499,6 +510,8 @@ class BatchRunner:
                 ply=gs.ply,
                 root_q=float(completed_q.max()),
                 root_prior_entropy=gumbel.entropy(tree.prior[sl]),
+                played_ft=played_from * 64 + played_to,
+                played_promo=played_promo,
             )
         )
 

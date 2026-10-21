@@ -9,7 +9,7 @@ Layout, one directory per buffer (the chunk-2 fields plus what search targets
 need):
 
     boards.dat        int8    (C, 72)     position tokens
-    moves.dat         int16   (C, 2)      the move actually played (from, to)
+    moves.dat         int16   (C, 2)      the move actually played (from, to) [v4+]
     promos.dat        int8    (C,)        its promotion class, 0..4
     legals.dat        uint8   (C, 512)    packed legal-move bitset
     outcomes.dat      int8    (C,)        +1/0/-1, side-to-move perspective
@@ -59,9 +59,15 @@ import numpy as np
 # v2 (chunk 9) adds mover_latest. Bumping rather than defaulting: a Phase 2 run
 # that silently read a chunk-8 ring would see mover_is_latest=0 everywhere and,
 # with train_on_pool_moves=False, sample from an empty set.
-VERSION = 3
+# v3 adds root_q. v4 changes no layout: it marks that `moves`/`promos` hold the
+# move the game actually continued with. In v2/v3 rings (p2_a..p2_d) they hold
+# the improved-policy *argmax*, which under self-play noise differs from the
+# played move on ~95% of positions; the promotion head was trained at that
+# cell (REVIEW-2026-10-21 C4). `sample` reads both the same way — the version
+# is what tells a reader which quantity a ring's `moves` column is.
+VERSION = 4
 #: Versions this build can open. Older rings lose the fields they predate.
-_READABLE_VERSIONS = frozenset({2, 3})
+_READABLE_VERSIONS = frozenset({2, 3, 4})
 MAX_POLICY_ENTRIES = 96
 SEQ_LEN = 72
 LEGAL_BYTES = 512
