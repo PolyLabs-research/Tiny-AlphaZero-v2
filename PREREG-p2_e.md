@@ -2,10 +2,9 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT — expectations UNSIGNED.** The expectations below were drafted
-> on 2026-10-22 from p2_d's measurements for sign-off. Nothing in this file is
-> registered until the sign-off line at the end is filled in and committed. **Step 0
-> and the launch both wait on that commit.**
+> **STATUS: REGISTERED 2026-10-22** (see Sign-off). The expectations were drafted
+> from p2_d's measurements and checked against the records and the scripts before
+> signing. No data has been produced under them: Step 0 has not run.
 
 **Amendment policy.** A rule may be added after launch *only* for a measurement
 that has not yet produced any data, and only as a dated addendum recording the run
@@ -42,6 +41,7 @@ It answers two things, in order:
 | Warm start | `runs/p2_d/ckpt_iter0020.pt` |
 | League | seeded from `runs/p2_d` |
 | Length | 20 iterations, `--ladder-every 5`, rungs `random,greedy,phase1,stockfish:0` |
+| Recorded cadence | The ladder flags are now written into a new run's `config.yaml` (C3/D7), so `runs/p2_e/config.yaml` will read `eval.eval_every_n_iters: 5`, `eval.ladder_anchors: random,greedy,phase1,stockfish:0` and `eval.anchor_ckpt: runs/phase1_anchor.pt`, where `runs/p2_d/config.yaml` reads 10, the default three rungs and no anchor. p2_d ran at exactly this cadence and these rungs (its rows at 5/10/15/20 say so) and did not record them. Records only: the ladder is read-only with respect to training, and `test_p2e_config_is_the_brief` compares the launch config, not the run's |
 | Judged at | pass 20 |
 | Code | `main` at launch, clean tree. `provenance.json`'s `git_sha` is the run's code (the writers capture it once at launch since C2/D2) |
 | GPU | the run is launched under `gpu hold` (`HOW_TO_TRAIN.md` Step 4), so llama-server is stopped for its duration; a shared-GPU stretch (ComfyUI used mid-run) is logged in the RUNLOG with its times |
@@ -67,7 +67,7 @@ Step 0, and it is reported before p2_e is judged.
 
 ---
 
-## Registered expectations — DRAFT, UNSIGNED
+## Registered expectations
 
 ### Bridge (Step 0): `p2_d/0020` re-measured on the fixed code
 
@@ -82,8 +82,11 @@ recorded at p2_d pass 20 (`runs/p2_d/ladder.jsonl`):
 - **B3. Skill-0 (nondeterministic).** Three replays, verdict against p2_d's
   recorded old-code reps (`runs/p2_d/reps_iter0020_r*.jsonl`, mean 0.3033): the
   paired-difference 95% CI **includes zero**.
-- **B4. ECE** (its positions include the skill-0 games, so not exact):
-  **0.1762 ± 0.02**.
+- **B4. ECE — reported, no tolerance registered.** Reference **0.1762**. Its
+  5,000 positions are drawn from the phase1 and skill-0 games, so the skill-0
+  rung's own randomization moves it, and that spread has never been measured on
+  ECE. A tolerance here would be a guess dressed as a rule; the bridge value is
+  recorded as the first measurement of it.
 
 Any B1/B2 difference means the fix pass changed search or evaluation more than the
 review measured. It does not stop the round. p2_e is judged against the bridge
@@ -119,15 +122,17 @@ p2_c 0.1678 → p2_d 0.1762, and nothing in the code delta targets calibration.
 
 ### H (reported)
 
-- **H1. The funnel collapse persists (direction registered).** Per-iteration
-  `H_prior` at iteration 20 < 0.05, and book entropy at every pass ≤ 1.575
-  (p2_c's). p2_d showed the collapse with nothing touched, and the code delta
-  does not touch exploration (root noise, considered set, acting rule).
-- **H2.** Non-finite skips < 10 (p2_d: 0 in 8,000).
-- **H3. Value loss by halves — direction-free.** Registered with a direction twice,
-  wrong both times.
+- **H1. The funnel collapse persists (direction registered).**
+  `move1_prior_entropy` (`iterations.jsonl`) at iteration 20 < 0.05 (p2_d:
+  0.0107), and `book_move1_entropy` (`ladder.jsonl`) at every pass ≤ 1.575
+  (p2_c's; p2_d: 1.313, 1.482, 1.346, 1.381). p2_d showed the collapse with
+  nothing touched, and the code delta does not touch exploration (root noise,
+  considered set, acting rule).
+- **H2.** `skipped_steps` summed over the run < 10 (p2_d: 0 in 8,000).
+- **H3. `value_loss` by halves — direction-free.** Registered with a direction
+  twice, wrong both times.
 - **H4. `decisive_rate` — direction-free.** p2_d fell 0.854 → 0.709.
-- **H5. Promo loss — reported, not compared** with p2_a–d (C4 moved its target).
+- **H5. `promo_loss` — reported, not compared** with p2_a–d (C4 moved its target).
 
 ## Decision rules
 
@@ -199,8 +204,29 @@ Every record above is reachable by git (`tests/test_gitignore_musttrack.py`
 
 ## Sign-off
 
-Expectations drafted 2026-10-22 from p2_d's measurements, for review. To register
-them, edit any number above, replace the line below with your name and the
-date/time, and commit before Step 0.
+Checked before signing, 2026-10-22 13:13 BST:
 
-**Signed: — UNSIGNED —**
+- every number above against `runs/p2_d/ladder.jsonl` (pass-20 rows: suites,
+  the 17 failures, the three seeded rungs, ECE, `book_move1_entropy` per pass),
+  `runs/p2_d/reps_iter0020_r*.jsonl` (0.330, 0.285, 0.295), `runs/p2_d/p2_verdict_reps.json`
+  (+0.1033 [+0.0600, +0.1467], SE 0.0220, 100 openings) and
+  `runs/p2_d/iterations.jsonl` (`move1_prior_entropy` 0.0107, `skipped_steps` 0,
+  `decisive_rate` 0.709 at iteration 20);
+- every command against the scripts' current flags: `eval_ladder.py`
+  `--config/--iteration/--role`, `eval_reps.py run --out-dir`, `eval_reps.py
+  verdict --a/--b`, `train_phase2.py --init/--seed-pool/--ladder-*`; the row
+  writer creates `runs/p2_e_bridge/` itself;
+- Stockfish: `eval.stockfish_path: ''` resolves to `which stockfish` =
+  `/usr/games/stockfish` (Stockfish 16), the same fallback p2_d ran on, so no
+  `--stockfish` is needed;
+- `runs/p2_d/state.json` holds a 20-entry league pool for `--seed-pool`;
+- the code table's claims against `configs/p2_e.yaml` (`batch_leaves` 512 >
+  `concurrent_games` 256).
+
+Three corrections came out of the check and are in the text above: the H
+expectations name the fields they are read from; B4 is reported with no
+tolerance; the contract states the recorded-cadence difference.
+
+**Signed: the Claude Code session that drafted it, at Michael's instruction,
+2026-10-22 13:13 BST.** Michael asked that the draft be checked and signed as
+drafted; the commit carrying this line is the registration.
