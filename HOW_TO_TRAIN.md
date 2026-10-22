@@ -356,21 +356,47 @@ process alternates generate → train → snapshot, forever, from the Phase 1 an
 make golden
 
 # A campaign. TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 is the blessed stack on
-# this box (see "Non-finite gradients" above); nothing else should hold the GPU.
-TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 python scripts/train_phase2.py \
+# this box (see "Non-finite gradients" above); nothing else should hold the GPU,
+# so the run goes under `gpu hold` (below).
+gpu hold --by tinyalphazero -- env TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 \
+    .venv/bin/python scripts/train_phase2.py \
     --config configs/default.yaml \
     --init runs/phase1_anchor.pt \
     --out runs/p2_a \
     --iterations 50
 ```
 
+### Sharing the GPU: `gpu hold`
+
+The box's GPU is shared with a local LLM (`llama-server.service`, ~45 GB, Vulkan)
+and ComfyUI, both managed by `~/.local/bin/gpu`. Memory is not the conflict — the
+network is small — compute is: a co-tenant makes the logged throughput and wall
+clock incomparable with earlier rounds (campaign rule 6). `gpu hold --by WHO --
+CMD...` runs CMD with the GPU to itself:
+
+| When | What `gpu hold` does |
+|---|---|
+| ComfyUI has queued jobs | refuses (exit 1); run it again when they finish |
+| another hold is live | refuses (exit 1) |
+| start | asks an idle ComfyUI to unload; stops llama-server (and anything else in the tool's `DROPPABLE`) whatever VRAM is free; writes a lease bound to CMD's pid |
+| while CMD runs | `gpu restore`, Comfy Studio's Resume button and the 5-minute `comfyui-idle-unload` timer all leave the lease alone |
+| CMD exits (any status) | restarts llama-server through its own `gpu guard` and waits for `/health` (~45 s); exits with CMD's status. If ComfyUI is mid-job at that moment, the restart is left to the timer, which does it once ComfyUI is idle |
+| the wrapper is killed but CMD runs on | the lease stays bound to CMD |
+| CMD dies without the wrapper restoring | the timer gives the GPU back on its next tick (ComfyUI idle ≥ 10 min) |
+
+`gpu status` shows a live hold as `held … by tinyalphazero (pid N)`. Ctrl-C reaches
+the training process directly; it is not intercepted. ComfyUI *can* still be used
+during a run — the hold does not block it — and if it is, that stretch of the log
+is a shared-GPU stretch. On a machine without the tool, drop the `gpu hold … --`
+prefix.
+
 ### Resuming
 
 Killing the process at any point is safe, and `--resume` is how you come back:
 
 ```bash
-TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 python scripts/train_phase2.py \
-    --resume runs/p2_a --iterations 50
+gpu hold --by tinyalphazero -- env TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 \
+    .venv/bin/python scripts/train_phase2.py --resume runs/p2_a --iterations 50
 ```
 
 The iteration counter, league pool, replay ring and optimizer state are
