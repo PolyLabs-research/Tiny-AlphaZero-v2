@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from tinyalphazero.config import Config, SelfPlayConfig
+from tinyalphazero.encoding import TURN_B, TURN_W
 from tinyalphazero.mcts.batch_runner import GameTrace, TracePosition, uniform_stub_batch
 from tinyalphazero.replay import ReplayBuffer
 from tinyalphazero.selfplay import (
@@ -226,6 +227,61 @@ def test_play_games_scores_and_stores(tmp_path) -> None:
     batch = buf.sample(8, np.random.default_rng(0))
     assert batch["policy"].shape[0] == 8
     assert float(batch["policy"].sum(dim=1).min()) > 0.99
+
+
+def _lost_for(loser: bool):
+    """Flat policy; every position is worth -1 to ``loser`` and +1 to the other side.
+
+    Values are from the side to move's view, read off the turn token, so the
+    loser's root completed-Q sits at -1 wherever the search looks.
+    """
+    loser_turn = TURN_W if loser == chess.WHITE else TURN_B
+
+    def evaluate(tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        logits, promo, _ = uniform_stub_batch(tokens)
+        return logits, promo, np.where(tokens[:, 64] == loser_turn, -1.0, 1.0).astype(np.float32)
+
+    return evaluate
+
+
+@pytest.mark.parametrize(
+    "loser", [chess.WHITE, chess.BLACK], ids=["white_resigns", "black_resigns"]
+)
+def test_a_decisive_game_reaches_the_ring_signed_for_each_mover(tmp_path, loser) -> None:
+    """``play_games → _store`` with a decided game: winner's rows +1, loser's -1.
+
+    ``test_play_games_scores_and_stores`` caps every game at 6 plies, so the only
+    outcome it ever stores is 0 and a sign error anywhere on the decisive path —
+    ``winner_of`` on a resignation, ``fill_outcomes``, the ring write — passes it
+    (REVIEW-2026-10-21 C10/T11). Here the evaluator makes one side lost, the
+    resignation rule fires on its eighth own move, and every stored row is
+    checked against the turn token in the ring and against the search's own
+    ``root_q`` for that row.
+    """
+    cfg = Config()
+    cfg.selfplay.resign_disabled_frac = 0.0  # every game may resign
+    buf = ReplayBuffer.create(tmp_path / "replay", capacity=256)
+    traces, stats = play_games(
+        _lost_for(loser), num_games=2, cfg=cfg, seed=7, num_sims=8, buffer=buf
+    )
+
+    assert stats.results == {RESIGN_RESULT: 2}
+    own_moves = cfg.selfplay.resign_consecutive
+    resign_ply = 2 * (own_moves - 1) + (0 if loser == chess.WHITE else 1)
+    for t in traces:
+        assert t.would_resign_ply == resign_ply
+        assert len(t.positions) == resign_ply + 1
+
+    n = len(buf)
+    assert n == stats.positions
+    loser_turn = TURN_W if loser == chess.WHITE else TURN_B
+    loser_rows = np.asarray(buf._arr["boards"][:n, 64]) == loser_turn
+    outcomes = np.asarray(buf._arr["outcomes"][:n])
+    root_q = np.asarray(buf._arr["root_q"][:n], dtype=np.float32)
+    assert loser_rows.any() and (~loser_rows).any(), "non-vacuous: both movers stored"
+    assert (outcomes[loser_rows] == -1).all(), "the resigner's moves are losses"
+    assert (outcomes[~loser_rows] == 1).all(), "the winner's moves are wins"
+    assert (np.sign(root_q) == outcomes).all(), "label and search disagree in sign"
 
 
 def test_the_ring_stores_the_move_actually_played(tmp_path) -> None:
