@@ -72,6 +72,9 @@ MUST_REACH: list[str] = [
     "runs/p2_e_bridge/ladder.jsonl",
     "runs/p2_e_bridge/reps_iter0020_r1.jsonl",
     "runs/p2_e_bridge/p2_verdict_reps.json",
+    # A second diagnostic replay beside the first (the ladder skips a matchup
+    # already in a file, so replays cannot share one).
+    "runs/p2_e_bridge/ladder_diagnostic_r2.jsonl",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that

@@ -22,6 +22,7 @@ runs/**
 # reproducible; the campaign reads this copy, not configs/.
 !runs/**/ladder.jsonl
 !runs/**/ladder_diagnostic.jsonl
+!runs/**/ladder_diagnostic_r*.jsonl
 !runs/**/config.yaml
 !runs/**/triage_mate2_*.json
 !runs/**/diagnose_mate2_*.txt

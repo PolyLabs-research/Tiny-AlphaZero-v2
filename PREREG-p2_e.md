@@ -230,3 +230,89 @@ tolerance; the contract states the recorded-cadence difference.
 **Signed: the Claude Code session that drafted it, at Michael's instruction,
 2026-10-22 13:13 BST.** Michael asked that the draft be checked and signed as
 drafted; the commit carrying this line is the registration.
+
+---
+
+## Addendum 1 (2026-10-22 14:40 BST) — Step 0: the bridge, and the skill-0 instrument
+
+**Run state at the time of writing:** nothing has trained; `runs/p2_e` does not
+exist. Step 0 ran 13:17–14:01 BST at `43dbe42` (clean tree, `= main`) under
+`gpu hold`; the attribution replays below ran 14:19–14:35. Records:
+`runs/p2_e_bridge/{ladder.jsonl, reps_iter0020_r{1,2,3}.jsonl, p2_verdict_reps.json,
+ladder_diagnostic.jsonl, ladder_diagnostic_r2.jsonl}`; console in
+`runs/p2_e_bridge.console.log` (untracked, like `p2_d.console.log`). Nothing
+above this line is edited.
+
+### Measured against B1–B4
+
+| | Registered | Measured | |
+|---|---|---|---|
+| B1 | mate-in-2 183/200, the same 17 failures; mate-in-3 129/200 | 183/200, the same 17; 129/200 | identical |
+| B2 | random 1.000, greedy 1.000, phase1 0.9975 (199W/1D/0L) | identical, including `pair_scores` element for element and mean plies 32.03 / 32.66 / 56.61 | identical |
+| B3 | skill-0, three reps: paired CI vs p2_d's recorded reps includes zero | **0.435, 0.510, 0.483** (mean 0.476) vs recorded 0.330, 0.285, 0.295 (mean 0.303); paired difference **+0.1725 [+0.1225, +0.2217]**, excludes zero | **FAILED** |
+| B4 | ECE reported, reference 0.1762 | **0.0798** (n = 5000) | moved with B3 |
+
+The skill-0 games changed character with the score: 131–136 mean plies against
+p2_d's 124–127, draws 46–50 per 200 against 22–26, losses 73–90 against 121–131.
+
+### Attribution
+
+Ruled out by measurement: the learner (B2's `pair_scores` are identical, so the
+search plays the same games at 48 sims); the Stockfish binary (`16-1build1`,
+installed 2026-08-11, two days before p2_d ran; file dated 2024-04-22); the new
+60 s wall-clock ceiling (20 positions at skill 0: 10,000–10,025 nodes searched
+with and without it).
+
+What remains is the P9 fix. `StockfishOpponent.choose` now passes a game key to
+python-chess, which sends `ucinewgame` whenever the key changes. The ladder calls
+`choose(board, rng)` with no key, so the key is `id(board)`, which changes on
+every interleaved switch between the ~200 concurrent games that share one engine
+process: **the 16 MB table is cleared on essentially every engine move.** Before
+the fix the call was `play(board, Limit(nodes=10000))` with no key: one
+`ucinewgame` per matchup, and the table accumulated over the ~13,000 engine
+moves of the match, so a move in game k drew on the search of games 1..k-1 and on
+the order the scheduler interleaved them.
+
+**Test.** The pre-fix call restored, verbatim, under today's code, p2_d/0020,
+two replays: **0.275** (45W/20D/135L, 124.2 plies) and **0.285** (45W/24D/131L,
+125.7 plies) — inside the old instrument's spread and with its game profile.
+Three readings of one checkpoint:
+
+| engine call | code | skill-0 score |
+|---|---|---|
+| shared table (no key) | p2_d's (`91293f7`) | 0.330, 0.285, 0.295 — mean **0.303** |
+| shared table (no key) | today's (`43dbe42`) | 0.275, 0.285 — mean **0.280** |
+| table cleared per switch (key) | today's (`43dbe42`) | 0.435, 0.510, 0.483 — mean **0.476** |
+
+The shift is the table, entirely. The rest of the fix pass contributes nothing
+measurable to the skill-0 reading.
+
+### What this changes, recorded before any p2_e data exists
+
+- The p2_b..p2_d skill-0 series was measured on an engine whose effective depth
+  grew through each matchup and whose moves depended on game order — the
+  non-reproducibility P9 named. Its numbers are internally consistent (same
+  instrument throughout) and discontinuous with the fixed code.
+- Neither instrument is an engine game: an engine keeps its table *within* a
+  game. A per-game table needs one engine process per concurrent game, or
+  sequential matches — a design change, not a flag. It is not made here.
+- **M4** (mean-over-reps score vs skill 0 with its CI entirely above 0.5) was
+  written against the shared-table instrument, on which p2_d/0020 reads 0.303.
+  On the cleared-table instrument the same weights read 0.476, one rep at 0.510.
+- **P2e stands as written** (+0.10 against the bridge, CI excluding zero above).
+  It was drafted on the old scale; it is not reworded.
+- **The ECE expectation stands as written** ("fails again, ≈ 0.17–0.18") and is
+  already known, before data, to have been drafted on the other instrument: the
+  bridge reads 0.080 on these weights. A p2_e ECE below 0.15 is therefore read
+  against the bridge's 0.0798 (same instrument), not scored as a calibration
+  gain against p2_d's 0.1762. Registered here so it cannot be decided after.
+- **N stands as written.** mate-in-2 is a deterministic suite and the bridge
+  reproduced it to the position.
+
+### Decisions pending (Michael), before launch — the launch waits on them
+
+1. **Instrument.** Keep the cleared-table call, or restore the shared table.
+2. **Continuity.** Re-measure p2_c/0020 (three reps) and p2_b's endpoint on
+   whichever instrument is kept, so the series is one instrument end to end.
+3. **M4.** Restate its bar against the kept instrument now, or declare it a
+   different test. Not to be decided after p2_e's number is seen.
