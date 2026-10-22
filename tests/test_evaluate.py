@@ -684,6 +684,9 @@ def test_generator_scripts_are_runnable() -> None:
         "eval_ladder.py",
         "eval_reps.py",
         "eval_track1.py",
+        "run_suite.py",
+        "selfplay_smoke.py",
+        "fuzz_encoding.py",
     ):
         # The interpreter running the tests, not whatever `python` is on PATH: on
         # this box there is none outside an activated venv (REVIEW-2026-10-21 D13).

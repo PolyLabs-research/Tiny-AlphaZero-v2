@@ -363,16 +363,18 @@ def test_legal_mask_starting_position_spot_check() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. Markov invariant — light version (full fuzz is in __main__)
+# 5. Markov invariant — light version (the 1M fuzz is scripts/fuzz_encoding.py)
 # ---------------------------------------------------------------------------
 
 
 def test_markov_invariant_200k() -> None:
-    """200K-position Markov invariant check (fast subset of the __main__ fuzz)."""
-    from tinyalphazero.encoding import _fuzz
+    """200K-position Markov invariant check (fast subset of the script's fuzz)."""
+    from tinyalphazero.encoding import fuzz_markov_invariant
 
-    # Should complete without raising
-    _fuzz(200_000, seed=99)
+    stats = fuzz_markov_invariant(200_000, seed=99)  # raises on a violation
+    assert stats["positions"] == 200_000
+    assert 0 < stats["unique"] <= 200_000
+    assert stats["collisions"] == 200_000 - stats["unique"]
 
 
 def test_repetition_from_board_helper() -> None:

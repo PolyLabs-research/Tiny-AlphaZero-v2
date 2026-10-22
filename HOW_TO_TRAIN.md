@@ -317,7 +317,7 @@ The script exits 0 on pass, 1 on any failure (including "not measured").
 **`top1_legal_rate` plateaus below 0.98**
 The most likely cause is an encoding bug. Re-run the Markov fuzz:
 ```bash
-VIRTUAL_ENV=.venv .venv/bin/python -m tinyalphazero.encoding --fuzz 1000000
+VIRTUAL_ENV=.venv .venv/bin/python scripts/fuzz_encoding.py --fuzz 1000000
 ```
 Any violation printed here invalidates the dataset — regenerate from scratch with a fresh seed.
 

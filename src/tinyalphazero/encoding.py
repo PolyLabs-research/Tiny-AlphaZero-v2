@@ -6,8 +6,6 @@ This module is the single source of truth for all vocabulary constants.
 
 from __future__ import annotations
 
-import argparse
-import sys
 from typing import TYPE_CHECKING
 
 import chess
@@ -279,16 +277,17 @@ def _repetitions_from_board(board: chess.Board) -> int:
 
 
 # ---------------------------------------------------------------------------
-# __main__ fuzz harness
+# Markov-invariant fuzz (driven by scripts/fuzz_encoding.py and the tests)
 # ---------------------------------------------------------------------------
 
 
-def _fuzz(n_positions: int, seed: int = 0) -> None:
+def fuzz_markov_invariant(n_positions: int, seed: int = 0) -> dict[str, int]:
     """Generate n_positions random positions and verify the Markov invariant.
 
     Buckets all positions by their 72-token encoding and asserts that any two
     positions sharing an encoding have identical legal move sets and identical
-    50-move / threefold draw-claim status.
+    50-move / threefold draw-claim status. Raises ``AssertionError`` on the
+    first violation; returns ``{"positions", "unique", "collisions"}`` otherwise.
     """
     rng = np.random.default_rng(seed)
 
@@ -341,24 +340,4 @@ def _fuzz(n_positions: int, seed: int = 0) -> None:
         plies_since_reset += 1
         total += 1
 
-    print(
-        f"Fuzz complete: {total} positions, {len(seen)} unique encodings, "
-        f"{collisions} same-encoding collisions — all invariants hold."
-    )
-
-
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Encoding fuzz / smoke tests")
-    parser.add_argument("--fuzz", type=int, metavar="N", help="Run Markov fuzz over N positions")
-    parser.add_argument("--seed", type=int, default=0)
-    args = parser.parse_args(argv)
-
-    if args.fuzz:
-        _fuzz(args.fuzz, seed=args.seed)
-    else:
-        parser.print_help()
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
+    return {"positions": total, "unique": len(seen), "collisions": collisions}
