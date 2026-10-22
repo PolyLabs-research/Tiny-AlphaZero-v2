@@ -387,6 +387,40 @@ def test_p2d_config_is_the_brief() -> None:
     assert b["mcts"].get("proof_directed_expansion", False) is False
 
 
+def test_p2e_config_is_the_brief() -> None:
+    """configs/p2_e.yaml resolves to exactly p2_d's run config: the null re-baseline.
+
+    p2_e is the first round on the REVIEW-2026-10-21 code, which changed what a
+    fixed config trains (C4) and searches (A1-A6, D15). Its claim is "the code
+    moved and nothing else did", and an accidental config delta would leave that
+    claim unreadable while still producing a clean-looking run.
+    """
+    import dataclasses
+
+    p2e = REPO / "configs" / "p2_e.yaml"
+    p2d = REPO / "runs" / "p2_d" / "config.yaml"
+    if not (p2e.exists() and p2d.exists()):
+        pytest.skip("p2_e config or p2_d run config not present")
+
+    differences = _config_deltas(p2d, p2e, "p2_d", "p2_e", allowed=set())
+    assert not differences, "the null re-baseline is not null:\n  " + "\n  ".join(differences)
+    # The fields the fix pass added, asserted by name: each defaults to the legacy
+    # behaviour today, and a future default change must not redefine this round.
+    b = dataclasses.asdict(load_config(str(p2e)))
+    assert b["train"]["value_q_blend"] == "batch_mean"
+    assert b["model"]["attn_init"] == "torch_default"
+    assert b["train"]["phase1_anchor_weighting"] == "legacy"
+    assert b["mcts"]["proof_directed_expansion"] is False
+    raw = (REPO / "configs" / "p2_e.yaml").read_text()
+    for pinned in (
+        "value_q_blend:",
+        "attn_init:",
+        "phase1_anchor_weighting:",
+        "proof_directed_expansion:",
+    ):
+        assert f"  {pinned}" in raw, f"{pinned} must be written in p2_e.yaml, not inherited"
+
+
 def test_p2c_config_is_the_brief() -> None:
     """configs/p2_c.yaml differs from p2_b's resolved config in exactly one field.
 

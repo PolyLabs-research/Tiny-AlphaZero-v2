@@ -68,6 +68,10 @@ MUST_REACH: list[str] = [
     "runs/p2_e/reps_iter0020_r1.jsonl",
     "runs/p2_e/ladder_pairscores.jsonl",
     "runs/data/mate2_tune_fresh/mate_in_2.epd",
+    # p2_e's bridge: p2_d/0020 re-measured on the fixed code (PREREG-p2_e Step 0).
+    "runs/p2_e_bridge/ladder.jsonl",
+    "runs/p2_e_bridge/reps_iter0020_r1.jsonl",
+    "runs/p2_e_bridge/p2_verdict_reps.json",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that
