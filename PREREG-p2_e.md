@@ -316,3 +316,72 @@ measurable to the skill-0 reading.
    whichever instrument is kept, so the series is one instrument end to end.
 3. **M4.** Restate its bar against the kept instrument now, or declare it a
    different test. Not to be decided after p2_e's number is seen.
+
+---
+
+## Addendum 2 (2026-10-22 15:15 BST) — continuity on the kept instrument, and M4 restated
+
+**Decisions taken** (Michael, 2026-10-22 ~14:45, on Addendum 1's three questions):
+the cleared-table instrument is kept; p2_c/0020 is re-measured on it; M4 is
+restated here, before launch, the restatement delegated to the session; p2_e
+launches at the commit carrying this addendum. **Run state:** nothing has
+trained; `runs/p2_e` does not exist. The re-measure ran 14:44–15:09 BST at
+`bc1d88d`.
+
+### p2_c/0020 on the cleared-table instrument
+
+Three reps (`runs/p2_c_bridge/reps_iter0020_r{1,2,3}.jsonl`): **0.4325, 0.395,
+0.4225** (mean **0.417**; 64W/45D/91L, 55W/48D/97L, 64W/41D/95L) against p2_c's
+recorded shared-table reps 0.165, 0.230, 0.205 (mean 0.200).
+
+| checkpoint | shared table (recorded) | cleared table | offset |
+|---|---|---|---|
+| p2_c/0020 | 0.200 | 0.417 | +0.217 |
+| p2_d/0020 | 0.303 | 0.476 | +0.173 |
+
+The fixed-code slope p2_c → p2_d (`runs/p2_c_bridge/p2_verdict_reps.json`,
+paired bootstrap over the 100 openings on rep-means): **+0.059 [+0.010,
++0.108]**, SE 0.025, 2.4 SE. The recorded shared-table verdict was +0.103
+[+0.060, +0.147], 4.7 SE. **p2_d's P2 verdict is re-affirmed on the kept
+instrument, with less margin:** the CI excludes zero on both.
+
+The two offsets differ by 0.044, about 1.5 SE of their difference. Two points
+cannot show the offset constant; what they show is a smaller offset at the
+stronger checkpoint. The instrument change compresses the score scale in this
+region: the same twenty iterations of training read as +0.06 where they read
++0.10.
+
+### M4 restated
+
+M4 was "mean-over-reps score vs skill 0 with its 95% CI entirely above 0.5",
+written against the shared-table instrument, on which p2_d/0020 reads 0.303.
+Restated, before any p2_e data:
+
+**M4: mean-over-reps skill-0 score on the cleared-table instrument, with its 95%
+CI entirely above 0.675.**
+
+0.675 is 0.5 carried through the offset measured at the checkpoint nearest the
+bar (p2_d/0020, +0.1725, rounded up to 0.175). If the offset is constant, this is
+the original milestone on the new scale. If it shrinks toward parity, as the two
+points suggest, the true equivalent lies below 0.675 and this bar is stricter
+than the original. It is not weaker in either case: no p2_e result can meet M4
+by the instrument change. A milestone, not a stopping rule: the run continues to
+20 regardless. **Not expected in p2_e:** 0.476 plus the fixed-code slope is about
+0.54.
+
+### P2e, re-read on the kept instrument — the criterion is unchanged
+
+P2e's registered criterion is the paired CI against the bridge excluding zero
+above; it stands. Its point expectation, +0.10, was the shared-table slope; the
+fixed-code slope of the same step is +0.059. Recorded here so that a p2_e
+difference near +0.06 with its CI above zero is read as the flywheel continuing
+at its measured fixed-code rate, and a shortfall against +0.10 alone is not a
+miss of the registered criterion.
+
+### Launch
+
+p2_e launches from clean `main` at the commit carrying this addendum, with the
+command in "Measurement protocol", under `gpu hold`.
+
+**Signed: the Claude Code session, at Michael's instruction (decision 3
+delegated the restatement to it), 2026-10-22 15:15 BST.**
