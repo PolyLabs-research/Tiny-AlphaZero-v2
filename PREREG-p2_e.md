@@ -385,3 +385,14 @@ command in "Measurement protocol", under `gpu hold`.
 
 **Signed: the Claude Code session, at Michael's instruction (decision 3
 delegated the restatement to it), 2026-10-22 15:15 BST.**
+
+**Launch note (2026-10-22 15:20 BST).** Launched 15:12 BST from clean `main` =
+`0913957` under `gpu hold`; `runs/p2_e/provenance.json` records that SHA,
+`git_dirty: false`, `init_from: runs/p2_d/ckpt_iter0020.pt`,
+`seed_pool_from: runs/p2_d`, the p2_d stack (torch 2.12.1+rocm7.2, Radeon 8060S),
+and config fingerprint `17f92fa7…` (= `sha256sum runs/p2_e/config.yaml`). One
+correction to the contract's "Recorded cadence" row: the run's resolved config
+differs from `runs/p2_d/config.yaml` in **two** fields, `eval.eval_every_n_iters`
+(10 → 5) and `eval.ladder_anchors` (three rungs → four); `eval.anchor_ckpt`
+resolves to the pinned anchor under both, so it is not a delta. Records only,
+as stated.
