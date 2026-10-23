@@ -78,6 +78,13 @@ MUST_REACH: list[str] = [
     # p2_e Addendum 3's control: p2_d's mid-run checkpoints, one verdict each.
     "runs/p2_d_midrun/reps_iter0005_r1.jsonl",
     "runs/p2_d_midrun/p2_verdict_reps_iter0005.json",
+    # p2_f (PREREG-p2_f): Step 0's p2_e trajectory, and the judged trajectory.
+    "runs/p2_e_midrun/reps_iter0005_r1.jsonl",
+    "runs/p2_e_midrun/p2_verdict_reps_iter0005.json",
+    "runs/p2_f/reps_iter0005_r1.jsonl",
+    "runs/p2_f/p2_verdict_reps_iter0005.json",
+    "runs/p2_f/p2_verdict_reps.json",
+    "runs/p2_f/annotations.jsonl",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that
