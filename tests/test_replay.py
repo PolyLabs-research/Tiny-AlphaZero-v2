@@ -292,3 +292,104 @@ def test_a_ring_older_than_root_q_reports_it_absent_not_zero(tmp_path) -> None:
     assert not old.has("root_q")
     batch = old.sample(2, np.random.default_rng(0))
     assert not bool(batch["root_q_mask"].any()), "a v2 ring claimed to have search-Q"
+
+
+# ---------------------------------------------------------------------------
+# seed_from: carrying a ring across a round boundary (PREREG-p2_f)
+# ---------------------------------------------------------------------------
+
+
+def _donor(path: Path, iterations: int, rows_per_iter: int, torn: int, capacity: int):
+    """A donor ring: ``iterations`` committed iterations, then ``torn`` uncommitted rows.
+
+    Row ``g`` carries tokens ``g % 43`` (via ``_row``) and the tag of the iteration
+    that produced it; the torn rows are tagged ``iterations + 1`` and flushed, so
+    the durable head sits past the commit exactly as p2_e's did.
+    """
+    buf = ReplayBuffer.create(path, capacity=capacity)
+    g = 0
+    for it in range(1, iterations + 1):
+        for _ in range(rows_per_iter):
+            buf.add(**{**_row(g), "iteration": it})
+            g += 1
+    committed = buf.total_written
+    for _ in range(torn):
+        buf.add(**{**_row(g), "iteration": iterations + 1})
+        g += 1
+    buf.flush()
+    return ReplayBuffer.open(path, readonly=True), committed
+
+
+def test_seed_from_carries_only_committed_intact_rows_oldest_first(tmp_path: Path) -> None:
+    """The torn tail overwrote the oldest committed slots; neither may be carried.
+
+    Donor: capacity 10, 7 iterations × 3 rows (global rows 0..20), then 4 torn rows
+    (21..24) that wrapped onto slots 1..4. Committed and intact is rows 15..20 —
+    slot 5 onward holds rows 15..19 and slot 0 holds row 20.
+    """
+    donor, committed = _donor(tmp_path / "d", iterations=7, rows_per_iter=3, torn=4, capacity=10)
+    assert (committed, donor.total_written) == (21, 25)
+
+    ring = ReplayBuffer.create(tmp_path / "r", capacity=16)
+    assert ring.seed_from(donor, committed=committed, iteration_offset=-7) == 6
+    ring.flush()
+
+    reopened = ReplayBuffer.open(tmp_path / "r")
+    assert len(reopened) == 6
+    assert [int(reopened._arr["boards"][k][0]) for k in range(6)] == [g % 43 for g in range(15, 21)]
+    # Rows 15..17 came from iteration 6 and 18..20 from 7: rebased, all <= 0.
+    assert [int(reopened._arr["iteration"][k]) for k in range(6)] == [-1, -1, -1, 0, 0, 0]
+    # The next write lands after the carried rows, not on top of them.
+    reopened.add(**_row(99))
+    assert int(reopened._arr["boards"][6][0]) == 99 % 43
+
+
+def test_seed_from_keeps_the_newest_rows_when_the_donor_window_is_larger(tmp_path: Path) -> None:
+    donor, committed = _donor(tmp_path / "d", iterations=7, rows_per_iter=3, torn=0, capacity=10)
+    ring = ReplayBuffer.create(tmp_path / "r", capacity=4)
+    assert ring.seed_from(donor, committed=committed, iteration_offset=-7) == 4
+    assert [int(ring._arr["boards"][k][0]) for k in range(4)] == [g % 43 for g in range(17, 21)]
+
+
+def test_seed_from_refuses_rows_from_past_the_donor_commit(tmp_path: Path) -> None:
+    """A committed head that claims the torn rows must not smuggle them in."""
+    donor, _committed = _donor(tmp_path / "d", iterations=7, rows_per_iter=3, torn=4, capacity=10)
+    ring = ReplayBuffer.create(tmp_path / "r", capacity=16)
+    with pytest.raises(ValueError, match="after its commit"):
+        ring.seed_from(donor, committed=25, iteration_offset=-7)
+    assert len(ReplayBuffer.open(tmp_path / "r")) == 0, "a refused seed left rows behind"
+
+
+def test_seed_from_refuses_a_donor_of_another_version(tmp_path: Path) -> None:
+    """A v3 ring's `moves` is the policy argmax, a v4 ring's the played move (C4)."""
+    import json
+
+    _donor(tmp_path / "d", iterations=2, rows_per_iter=3, torn=0, capacity=10)
+    meta = json.loads((tmp_path / "d" / "meta.json").read_text())
+    meta["version"] = 3
+    (tmp_path / "d" / "meta.json").write_text(json.dumps(meta))
+    ring = ReplayBuffer.create(tmp_path / "r", capacity=16)
+    with pytest.raises(ValueError, match="version 3"):
+        ring.seed_from(
+            ReplayBuffer.open(tmp_path / "d", readonly=True), committed=6, iteration_offset=-2
+        )
+
+
+def test_seed_from_fills_only_an_empty_ring(tmp_path: Path) -> None:
+    donor, committed = _donor(tmp_path / "d", iterations=2, rows_per_iter=3, torn=0, capacity=10)
+    ring = ReplayBuffer.create(tmp_path / "r", capacity=16)
+    ring.add(**_row(0))
+    with pytest.raises(ValueError, match="empty ring"):
+        ring.seed_from(donor, committed=committed, iteration_offset=-2)
+
+
+def test_seed_from_never_writes_the_donor(tmp_path: Path) -> None:
+    """The donor is a finished run's record; seeding reads it through a read-only map."""
+    donor, committed = _donor(tmp_path / "d", iterations=3, rows_per_iter=3, torn=2, capacity=10)
+    before = {p.name: p.read_bytes() for p in sorted((tmp_path / "d").iterdir())}
+    ring = ReplayBuffer.create(tmp_path / "r", capacity=16)
+    ring.seed_from(donor, committed=committed, iteration_offset=-3)
+    ring.flush()
+    assert {p.name: p.read_bytes() for p in sorted((tmp_path / "d").iterdir())} == before
+    with pytest.raises(ValueError):
+        donor._arr["boards"][0] = 1  # read-only map

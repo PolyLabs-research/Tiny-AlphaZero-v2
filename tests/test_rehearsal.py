@@ -421,6 +421,23 @@ def test_p2e_config_is_the_brief() -> None:
         assert f"  {pinned}" in raw, f"{pinned} must be written in p2_e.yaml, not inherited"
 
 
+def test_p2f_config_is_the_brief() -> None:
+    """configs/p2_f.yaml resolves to exactly p2_e's run config: the lever is a flag.
+
+    p2_f's one change is `--seed-replay runs/p2_e` at launch, recorded in its
+    provenance.json. A config delta on top of it would make the ring carry
+    unattributable while the run still looked clean. Compared against p2_e's
+    *resolved* run config, which carries the ladder cadence and rungs p2_e ran.
+    """
+    p2f = REPO / "configs" / "p2_f.yaml"
+    p2e = REPO / "runs" / "p2_e" / "config.yaml"
+    if not (p2f.exists() and p2e.exists()):
+        pytest.skip("p2_f config or p2_e run config not present")
+
+    differences = _config_deltas(p2e, p2f, "p2_e", "p2_f", allowed=set())
+    assert not differences, "p2_f moves more than the ring:\n  " + "\n  ".join(differences)
+
+
 def test_p2c_config_is_the_brief() -> None:
     """configs/p2_c.yaml differs from p2_b's resolved config in exactly one field.
 

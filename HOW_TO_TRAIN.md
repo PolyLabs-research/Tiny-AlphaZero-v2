@@ -390,6 +390,29 @@ during a run — the hold does not block it — and if it is, that stretch of th
 is a shared-GPU stretch. On a machine without the tool, drop the `gpu hold … --`
 prefix.
 
+### Warm-starting a round from the last one
+
+A new round continues the previous one in a fresh run directory (campaign rule 1):
+
+```bash
+gpu hold --by tinyalphazero -- env TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 \
+    .venv/bin/python scripts/train_phase2.py --config configs/p2_f.yaml \
+    --init runs/p2_e/ckpt_iter0020.pt --seed-pool runs/p2_e --seed-replay runs/p2_e \
+    --out runs/p2_f --iterations 20
+```
+
+| flag | carries over | otherwise |
+|---|---|---|
+| `--init` | the weights | fresh weights from the run seed |
+| `--seed-pool` | the league's last `league_pool_size` snapshots | a one-member pool |
+| `--seed-replay` | the replay ring's committed, intact rows, re-tagged to iterations ≤ 0 | an empty ring: 7–8 draws per stored row at iteration 1, full only at iteration 9–10 |
+
+The optimizer is never carried: `--init` loads weights only, and AdamW starts
+fresh. `--seed-replay` reads the donor's commit from its `state.json`, so a torn
+iteration in the donor's ring stays behind (p2_e's held 55,259 such rows), and it
+refuses a donor ring of another version. p2_b–p2_e ran without it; p2_f is the
+round that tests it (`PREREG-p2_f.md`).
+
 ### Resuming
 
 Killing the process at any point is safe, and `--resume` is how you come back:

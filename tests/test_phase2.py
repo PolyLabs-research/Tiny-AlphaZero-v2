@@ -485,6 +485,41 @@ def test_iteration_zero_pool_is_the_initial_weights(tmp_path: Path) -> None:
     assert meta["phase"] == "2-init"
 
 
+def test_seed_replay_continues_the_donor_ring_and_records_it(tmp_path: Path) -> None:
+    """--seed-replay: a new run opens on the donor's committed rows, tagged pre-run.
+
+    The ring is what training samples, so the new run's head, its state.json and
+    the donor's commit must agree, provenance must say where the rows came from,
+    and the carried rows must read as the donor's (iteration <= 0), not the run's.
+    """
+    cfg = load_config(str(MINI))
+    donor = Phase2Run.create(tmp_path / "a", cfg, torch.device("cpu"))
+    donor.iterate()
+    committed = donor.state.replay_total_written
+    assert committed > 0
+
+    run = Phase2Run.create(
+        tmp_path / "b",
+        cfg,
+        torch.device("cpu"),
+        seed_pool=tmp_path / "a",
+        seed_replay=tmp_path / "a",
+    )
+    carried = min(committed, cfg.train.replay_capacity)
+    assert run.buffer.total_written == run.state.replay_total_written == carried
+    prov = json.loads((tmp_path / "b" / "provenance.json").read_text())
+    assert prov["seed_replay_from"] == str(tmp_path / "a")
+    assert prov["seed_replay"]["rows"] == carried
+    assert prov["seed_replay"]["iteration_offset"] == -1
+    tags = np.asarray(run.buffer._arr["iteration"][:carried])
+    assert (tags <= 0).all() and (tags == 0).any()
+
+    row = run.iterate().row
+    assert row["replay_size"] == min(carried + row["positions"], cfg.train.replay_capacity)
+    resumed = Phase2Run.resume(tmp_path / "b", torch.device("cpu"))
+    assert resumed.buffer.total_written == carried + row["positions"]
+
+
 # ---------------------------------------------------------------------------
 # Provenance and protocol persistence (REVIEW-2026-10-21 C2, C3, C5, C9)
 # ---------------------------------------------------------------------------

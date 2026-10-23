@@ -7,9 +7,10 @@ Usage:
         --config configs/default.yaml --init runs/phase1_anchor.pt \\
         --out runs/p2_a --iterations 3
 
-    # continue it after a crash, a reboot, or a deliberate stop
+    # continue it after a crash, a reboot, or a deliberate stop; --iterations
+    # counts *this invocation*, so pass what is left (here: 50 planned, 24 done)
     TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 python scripts/train_phase2.py \\
-        --resume runs/p2_a --iterations 50
+        --resume runs/p2_a --iterations 26
 
     # the golden mini-run (CPU, < 3 min)
     python scripts/train_phase2.py --config configs/mini.yaml --out runs/golden --device cpu
@@ -78,7 +79,20 @@ def main(argv: list[str] | None = None) -> int:
         "a confound, not a control.",
     )
     ap.add_argument(
-        "--iterations", type=int, default=None, help="Iterations to run this invocation"
+        "--seed-replay",
+        type=Path,
+        default=None,
+        help="Continue another run's replay ring: copy its committed, intact rows "
+        "into this run's ring, so training does not open on a near-empty ring "
+        "(7-8 draws per stored row at iteration 1). Rows are re-tagged to "
+        "iterations <= 0; a torn iteration past the donor's commit is left behind.",
+    )
+    ap.add_argument(
+        "--iterations",
+        type=int,
+        default=None,
+        help="Iterations to run this invocation. On --resume that is how many *more* "
+        "to run, not the run's total",
     )
     ap.add_argument("--device", default=None, help="cuda | cpu (default: cuda if available)")
     ap.add_argument("--seed", type=int, default=None, help="Run seed (default: config seed)")
@@ -119,6 +133,8 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--init is meaningless with --resume: a resumed run starts from its own snapshot")
     if args.resume is not None and args.seed_pool is not None:
         ap.error("--seed-pool is meaningless with --resume: a resumed run keeps its own pool")
+    if args.resume is not None and args.seed_replay is not None:
+        ap.error("--seed-replay is meaningless with --resume: a resumed run keeps its own ring")
     if args.out is not None and (args.out / STATE_FILE).exists():
         # Silently continuing would be the safe *implementation* and the wrong
         # *behaviour*: "start a campaign" and "continue one" are different
@@ -167,6 +183,8 @@ def main(argv: list[str] | None = None) -> int:
         )
     if args.seed_pool is not None:
         print(f"  league seeded from {args.seed_pool}")
+    if args.seed_replay is not None:
+        print(f"  replay ring seeded from {args.seed_replay}")
 
     outcomes = run_phase2(
         out,
@@ -176,6 +194,7 @@ def main(argv: list[str] | None = None) -> int:
         init_ckpt=args.init,
         seed=args.seed,
         seed_pool=args.seed_pool,
+        seed_replay=args.seed_replay,
         resume=args.resume is not None,
         on_stage=_print_stage,
         ladder_every=args.ladder_every,

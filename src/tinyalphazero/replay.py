@@ -168,7 +168,12 @@ class ReplayBuffer:
     """Fixed-capacity ring over memmapped arrays."""
 
     def __init__(
-        self, path: Path, capacity: int, total_written: int, version: int = VERSION
+        self,
+        path: Path,
+        capacity: int,
+        total_written: int,
+        version: int = VERSION,
+        readonly: bool = False,
     ) -> None:
         self.path = Path(path)
         self.capacity = capacity
@@ -181,7 +186,7 @@ class ReplayBuffer:
             self._arr[name] = np.memmap(
                 self.path / f"{name}.dat",
                 dtype=dtype,
-                mode="r+",
+                mode="r" if readonly else "r+",
                 shape=(capacity, *shape) if shape else (capacity,),
             )
 
@@ -203,8 +208,12 @@ class ReplayBuffer:
         return buf
 
     @classmethod
-    def open(cls, path: str | Path) -> ReplayBuffer:
-        """Reopen an existing buffer, resuming its write position."""
+    def open(cls, path: str | Path, readonly: bool = False) -> ReplayBuffer:
+        """Reopen an existing buffer, resuming its write position.
+
+        ``readonly`` maps the files read-only, for reading another run's ring
+        (``seed_from``) without any chance of writing into it.
+        """
         path = Path(path)
         meta = json.loads((path / "meta.json").read_text())
         version = int(meta.get("version", 0))
@@ -219,7 +228,7 @@ class ReplayBuffer:
             )
         capacity = int(meta["capacity"])
         _check_layout(path, meta, capacity, version)
-        return cls(path, capacity, int(meta["total_written"]), version=version)
+        return cls(path, capacity, int(meta["total_written"]), version=version, readonly=readonly)
 
     @classmethod
     def open_or_create(cls, path: str | Path, capacity: int = 500_000) -> ReplayBuffer:
@@ -319,6 +328,74 @@ class ReplayBuffer:
             )
         self.total_written = int(total_written)
         self._write_meta()
+
+    def seed_from(
+        self,
+        donor: ReplayBuffer,
+        committed: int,
+        iteration_offset: int,
+        chunk: int = 50_000,
+    ) -> int:
+        """Fill this empty ring with ``donor``'s committed, intact rows, oldest first.
+
+        A warm-started run otherwise opens on an empty ring and spends its first
+        iterations fitting a few tens of thousands of positions many times over:
+        400 × 1024 draws against ~56K stored rows is 7–8 draws per row at
+        iteration 1, falling to 0.82 only once the ring fills (RUNLOG-p2_e §4).
+        Carrying the previous round's ring makes the round boundary invisible to
+        what training samples.
+
+        **Which donor rows are carried.** ``committed`` is the head the donor's
+        ``state.json`` committed. Its durable head can be ahead of that by a torn
+        iteration (contract point 3), and a torn iteration overwrites the *oldest*
+        committed slots, the same honest caveat as ``rewind_to``. The intact window
+        is therefore the global rows ``[max(committed, head) − capacity,
+        committed)``: committed, and not overwritten by anything after. If that is
+        more than this ring holds, the newest rows win, as they would in the ring.
+
+        **Row tags.** ``iteration`` is rebased by ``iteration_offset`` (the donor's
+        last committed iteration, negated), so every carried row reads ≤ 0: made
+        before this run's iteration 1, never mistaken for one of its own. A row
+        that would read > 0 was produced after the donor's commit, and raises.
+        Training never reads the tag; it is provenance.
+
+        Copied in chunks, field by field, so host RAM holds one chunk of one field
+        at a time (a full 500K-row ring is ~0.5 GB). Returns the rows carried; the
+        caller flushes.
+        """
+        if self.total_written:
+            raise ValueError(f"seed_from fills an empty ring; {self.path} holds {len(self)} rows")
+        if donor.version != self.version:
+            # v2/v3 rings store the improved-policy argmax in `moves`, v4 the played
+            # move (C4): a mixed ring would train the promotion head on two targets.
+            raise ValueError(
+                f"donor ring {donor.path} is version {donor.version}; this ring is "
+                f"{self.version}, and their `moves` columns do not mean the same thing"
+            )
+        if committed > donor.total_written:
+            raise ValueError(
+                f"committed head {committed} is ahead of {donor.path}'s durable head "
+                f"{donor.total_written}; the donor never wrote those rows"
+            )
+        start = max(
+            max(committed, donor.total_written) - donor.capacity, committed - self.capacity, 0
+        )
+        for a in range(start, committed, chunk):
+            b = min(a + chunk, committed)
+            slots = np.arange(a, b) % donor.capacity
+            dst = slice(a - start, b - start)
+            for name, arr in self._arr.items():
+                block = np.asarray(donor._arr[name][slots])
+                if name == "iteration":
+                    block = block.astype(np.int64) + iteration_offset
+                    if (block > 0).any():
+                        raise ValueError(
+                            f"{donor.path} holds rows from after its commit inside the "
+                            f"window [{start}, {committed}); refusing to carry them"
+                        )
+                arr[dst] = block
+        self.total_written = committed - start
+        return self.total_written
 
     # -- reading ---------------------------------------------------------
 

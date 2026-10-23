@@ -123,6 +123,32 @@ def _copy_seed_pool(donor: Path, dest: Path, pool_size: int) -> list[str]:
     return names
 
 
+def _copy_seed_replay(donor: Path, buffer: ReplayBuffer) -> dict[str, Any]:
+    """Continue the donor run's replay ring in ``buffer``; return what was carried.
+
+    The committed head comes from the donor's ``state.json``, not its ring's
+    ``meta.json``: the ring can hold a torn iteration past the commit (p2_e's held
+    55,259 rows of an iteration that never happened), and ``seed_from`` carries only
+    rows that are committed and intact. Copied rather than referenced, like the pool.
+    """
+    state_path = donor / STATE_FILE
+    if not state_path.exists():
+        raise FileNotFoundError(f"--seed-replay {donor} is not a run directory (no {STATE_FILE})")
+    state = json.loads(state_path.read_text())
+    committed = int(state["replay_total_written"])
+    donor_iteration = int(state["iteration"])
+    source = ReplayBuffer.open(donor / "replay", readonly=True)
+    rows = buffer.seed_from(source, committed=committed, iteration_offset=-donor_iteration)
+    buffer.flush()
+    return {
+        "rows": rows,
+        "donor_iteration": donor_iteration,
+        "donor_committed": committed,
+        "donor_head": source.total_written,
+        "iteration_offset": -donor_iteration,
+    }
+
+
 @dataclass
 class RunState:
     """Everything ``--resume`` needs that is not already in a checkpoint."""
@@ -205,6 +231,7 @@ class Phase2Run:
         init_ckpt: str | Path | None = None,
         seed: int | None = None,
         seed_pool: str | Path | None = None,
+        seed_replay: str | Path | None = None,
     ) -> Phase2Run:
         """Start a run: iteration 0 is the initial weights, and the pool is {them}.
 
@@ -213,6 +240,11 @@ class Phase2Run:
         20 iterations playing an opponent distribution that no longer resembles the
         weights it inherited — a confound, and a large one, in a run whose whole
         purpose is attributing a change to one lever. Continuity is not a lever.
+
+        ``seed_replay`` continues another run's replay ring the same way, so the
+        first iterations do not fit a near-empty ring many times over. Unlike the
+        pool, it is being *tested* as a lever (PREREG-p2_f), because p2_b..p2_e all
+        ran without it and their mid-round dips sit exactly in the fill phase.
         """
         path = Path(path)
         path.mkdir(parents=True, exist_ok=True)
@@ -242,6 +274,7 @@ class Phase2Run:
             net.parameters(), lr=cfg.train.lr, weight_decay=cfg.train.weight_decay
         )
         buffer = ReplayBuffer.open_or_create(path / "replay", cfg.train.replay_capacity)
+        seeded = _copy_seed_replay(Path(seed_replay), buffer) if seed_replay is not None else None
         state = RunState(
             iteration=0,
             replay_total_written=buffer.total_written,
@@ -265,6 +298,8 @@ class Phase2Run:
                     ),
                     "init_from": state.init_from,
                     "seed_pool_from": str(seed_pool or ""),
+                    "seed_replay_from": str(seed_replay or ""),
+                    "seed_replay": seeded,
                     # The check_env report AGENTS §4 asks every run dir to carry;
                     # the matmul probe only where it is cheap (REVIEW-2026-10-21 E3).
                     "environment": environment_report(matmul=device.type == "cuda"),
@@ -361,10 +396,19 @@ class Phase2Run:
         init_ckpt: str | Path | None = None,
         seed: int | None = None,
         seed_pool: str | Path | None = None,
+        seed_replay: str | Path | None = None,
     ) -> Phase2Run:
         if (Path(path) / STATE_FILE).exists():
             return cls.resume(path, device)
-        return cls.create(path, cfg, device, init_ckpt=init_ckpt, seed=seed, seed_pool=seed_pool)
+        return cls.create(
+            path,
+            cfg,
+            device,
+            init_ckpt=init_ckpt,
+            seed=seed,
+            seed_pool=seed_pool,
+            seed_replay=seed_replay,
+        )
 
     # -- one iteration ---------------------------------------------------
 
@@ -667,6 +711,7 @@ def run_phase2(
     init_ckpt: str | Path | None = None,
     seed: int | None = None,
     seed_pool: str | Path | None = None,
+    seed_replay: str | Path | None = None,
     resume: bool = False,
     on_stage: Any = None,
     ladder_every: int | None = None,
@@ -696,7 +741,13 @@ def run_phase2(
         Phase2Run.resume(out, device)
         if resume
         else Phase2Run.open_or_create(
-            out, cfg, device, init_ckpt=init_ckpt, seed=seed, seed_pool=seed_pool
+            out,
+            cfg,
+            device,
+            init_ckpt=init_ckpt,
+            seed=seed,
+            seed_pool=seed_pool,
+            seed_replay=seed_replay,
         )
     )
     run.on_stage = on_stage
