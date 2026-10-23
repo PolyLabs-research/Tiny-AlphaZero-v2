@@ -396,3 +396,126 @@ differs from `runs/p2_d/config.yaml` in **two** fields, `eval.eval_every_n_iters
 (10 → 5) and `eval.ladder_anchors` (three rungs → four); `eval.anchor_ckpt`
 resolves to the pinned anchor under both, so it is not a delta. Records only,
 as stated.
+
+---
+
+## Addendum 3 (2026-10-23 10:20 BST) — a regressed row, and a control before any A/B
+
+**Run state at the time of writing.** Iterations 0–14 are committed
+(`state.json`: iteration 14, step 5600, 2 skipped steps). The host stopped hard at
+**00:25:07 BST** during iteration 15's self-play: the journal ends mid-stream with
+no OOM, amdgpu, thermal, MCE or shutdown record, and no crash dump was written.
+The box was back at 09:29. p2_e **resumed at 10:04 BST** under `gpu hold` from
+`dc51296`, which differs from the launch SHA `0913957` in this file only
+(`git diff --stat 0913957 dc51296`: `PREREG-p2_e.md`, 11 insertions). Resume
+is reconstruction: RNG is derived from (seed, iteration, stream), so iteration 15
+redraws what it would have drawn. `state.json` records the resuming SHA in
+`resumed_with` at the iteration-15 snapshot. The pass-15 ladder has not run. The
+RUNLOG carries the full account at close.
+
+**Data already seen.** Two protocol ladder passes, both read before this addendum
+was written, and the reason for it:
+
+| pass | skill-0 (one replay) | vs the bridge's 0.476 | mate-in-2 | ECE |
+|---|---|---|---|---|
+| 5 | 0.3375 (49W/37D/114L) | −0.139 | 0.920 | 0.1255 |
+| 10 | 0.3525 (48W/45D/107L) | −0.124 | 0.930 | 0.1192 |
+
+**P2e has produced no data.** Its statistic is three replays at
+`ckpt_iter0020`, and that checkpoint does not exist yet. Under the amendment
+policy a rule may be added for it. This addendum leaves P2e's expectation and
+criterion as written (CI against the bridge excluding zero above). It changes
+only what follows when P2e does *not* pass, and adds one measurement (the control
+below) before that measurement has produced any data. The control runs **whatever
+P2e's outcome**, so running it does not depend on the result.
+
+### Why the "P2e flat" row is replaced
+
+The registered row reads: flat → "C4 is the only change measured to reach
+training: a BLOCKED conversation on C4 before any lever." Two problems, both
+known before P2e's data:
+
+1. **It has no row for a regression.** P2e has three outcomes on its statistic:
+   the paired CI is entirely above zero (passes), includes zero (flat), or is
+   entirely below zero (regressed). Passes 5 and 10 sit about 0.13 below the
+   start, roughly four times a single replay's spread on this instrument (the
+   bridge's three reps span 0.435–0.510). A regressed endpoint is a live outcome,
+   and the table says nothing about it.
+2. **C4 is a weak suspect.** In the ring, the stored move is read only to place
+   the promotion target at the acted (from, to) cell (`replay.py` sampling,
+   `promo_mask`). The mask is on for **0.58%** of rows (20,000 rows sampled from
+   the p2_e ring, 2026-10-22 22:36 BST). A change confined to the promotion head
+   on 0.58% of rows is an unlikely cause of a skill-0 drop. Pointing the
+   investigation at C4 first would test the cheapest hypothesis, not the likeliest.
+
+Before any code is suspected, one cheaper question has to be answered: **does
+the old code also dip mid-run on this instrument?** Only p2_d's endpoints (0000 via
+p2_c/0020, and 0020) have been read on the cleared-table instrument. Its mid-run
+passes were read on the shared-table instrument only, where they sat at 0.180,
+0.215 and 0.1925 against a start of 0.200 (p2_c/0020's recorded reps): no dip of
+p2_e's size. Addendum 2 showed the two instruments do not map by a constant
+offset, so that reading does not settle the question. The control does.
+
+### Control C (added): p2_d's mid-run on the cleared-table instrument
+
+`runs/p2_d/ckpt_iter0005.pt`, `…0010.pt`, `…0015.pt`, three skill-0 replays each,
+with the same invocation as the bridge (`eval_reps.py run`, config beside the
+checkpoint, default seed) and output in `runs/p2_d_midrun/`. Each is read against
+p2_d's start on the same instrument, p2_c/0020 (`runs/p2_c_bridge/reps_iter0020_r*.jsonl`,
+mean 0.417), on the registered statistic (paired bootstrap over openings on
+rep-means). `src/`, `scripts/` and `configs/` are unchanged between the
+reference reps (`bc1d88d`, `43dbe42`) and `dc51296`, so all of these are one
+instrument.
+
+- **Dip:** at least one of the three has its CI entirely below zero.
+- **No dip:** none does.
+- **Depth:** the most negative of the three point estimates. It is used only in
+  the regressed rows below.
+
+Runs after the P2e replays, under one `gpu hold` with them, about 75 minutes.
+
+### Decision rules (replace the "P2e flat" row and add the regressed case)
+
+| P2e at pass 20 | Control C | Decision |
+|---|---|---|
+| **passes, N holds** | either | As registered: the fixed loop is the baseline, and p2_f takes one lever. C is recorded as the reference trajectory for reading later rounds' mid-run passes. |
+| **flat** | dip | The old code dips mid-run on this instrument too, so p2_e's trajectory is not evidence against the fixed code. **Next is protocol, not code:** a single 20-iteration endpoint cannot resolve the fixed-code slope (+0.059, SE 0.025; at that true slope the test reads flat about one time in three). Options for Michael, to be pre-registered before the next round: more replays per endpoint, longer rounds, or a trajectory statistic. No lever and no A/B. |
+| **regressed** | dip at least as deep as P2e's point estimate | Same as the row above: the endpoint lies within the trough the old code reaches. |
+| **flat** | no dip | **The fixed code is implicated → Step 2.** |
+| **regressed** | no dip, or a dip shallower than P2e's point estimate | **The fixed code is implicated → Step 2.** |
+| **N or ECE breaks** | — | Standard stop rules (unchanged). |
+
+Gates are untouched in every row. No lever is added while a row points at Step 2.
+
+**Step 2 (registered in outline; it gets its own pre-registration before any
+compute).** An A/B from one start. Five iterations of p2_d's training code
+(`72e7f1a`, the SHA in `runs/p2_d/provenance.json`) from `runs/p2_d/ckpt_iter0020.pt`
+at `runs/p2_d/config.yaml`, league seeded from `runs/p2_d`, in a separate
+worktree. Its 0005 is measured against `runs/p2_e/ckpt_iter0005.pt`, three replays
+each, both on today's cleared-table instrument.
+
+- If the old code's 0005 is above p2_e's (CI above zero), bisect the fix-pass
+  commits that touch the training path. C4 is one of them, not the first.
+- If both drop alike, the code is not implicated, and the decision falls back to
+  the protocol row.
+
+### Commands (added to "Measurement protocol")
+
+```bash
+# Control C — after the P2e replays, under the same gpu hold
+gpu hold --by tinyalphazero -- env TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 \
+    .venv/bin/python scripts/eval_reps.py run --ckpt runs/p2_d/ckpt_iter0005.pt \
+    --anchor stockfish:0 --reps 3 --out-dir runs/p2_d_midrun
+# … and the same for ckpt_iter0010.pt and ckpt_iter0015.pt
+.venv/bin/python scripts/eval_reps.py verdict \
+    --a p2_c_fixed runs/p2_c_bridge/reps_iter0020_r*.jsonl \
+    --b p2_d_iter0005 runs/p2_d_midrun/reps_iter0005_r*.jsonl \
+    --out runs/p2_d_midrun/p2_verdict_reps_iter0005.json
+# … and the same for 0010 and 0015
+```
+
+The negation `!runs/**/p2_verdict_reps_*.json` and `MUST_REACH` entries for
+`runs/p2_d_midrun/` land in the commit carrying this addendum.
+
+**Signed: the Claude Code session, at Michael's instruction (2026-10-23 ~10:00:
+"resume it, and do both the addendum and control"), 2026-10-23 10:20 BST.**
