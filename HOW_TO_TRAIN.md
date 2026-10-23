@@ -395,9 +395,17 @@ prefix.
 Killing the process at any point is safe, and `--resume` is how you come back:
 
 ```bash
+# a 50-iteration run that died with 24 iterations committed:
 gpu hold --by tinyalphazero -- env TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 \
-    .venv/bin/python scripts/train_phase2.py --resume runs/p2_a --iterations 50
+    .venv/bin/python scripts/train_phase2.py --resume runs/p2_a --iterations 26
 ```
+
+**`--iterations` counts this invocation, not the run.** A resume runs that many
+*more* iterations from `state.json`'s, so finishing a run means passing
+`planned − committed`. Passing the run's total overruns it: p2_e, resumed at 14
+with `--iterations 20`, began an unregistered iteration 21 after its pass-20
+ladder and had to be stopped (`RUNLOG-p2_e.md` §6). A run started with `setsid`
+or `&` ignores SIGINT; stop it with SIGTERM, which is as safe as any other kill.
 
 The iteration counter, league pool, replay ring and optimizer state are
 reconstructed from the run directory; the config is re-read from
