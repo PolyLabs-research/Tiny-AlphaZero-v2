@@ -217,3 +217,20 @@ Checked before signing, 2026-10-24:
 **Signed: the Claude Code session, at Michael's instruction ("b, on the lever, go with
 whichever you think has the best chance of working"), 2026-10-24.** The commit carrying
 this line is the registration.
+
+---
+
+## Addendum 1 (2026-10-24 15:10 BST) — the training GPU
+
+**Run state at the time of writing.** Step 0a is running on this box (p2_f/0020 from
+the initial position, no expectation registered). Step 0b and the run have produced
+nothing. The pod launched at 15:08 BST.
+
+No secure RTX A4000 or A5000 with ≥ 24 vCPU was available for fifteen minutes of
+retries; with that floor the only card on offer was a secure **RTX 4090** at $0.89/h.
+Michael approved it and its cost (16 h worst case $14.24); the session ceiling in
+`~/.config/taz-cloud/limits.json` was raised to $15 for it (ledger entry
+`limits_changed`). Pod `h10w6nqxio60zt`: RTX 4090, 32 vCPU, 125 GB RAM, same image.
+
+What changes: the training GPU, nothing else. Step 0b bridges this pod as written —
+its gates do not move — and `actor_processes` stays 20. No expectation is reworded.
