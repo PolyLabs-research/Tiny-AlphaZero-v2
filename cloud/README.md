@@ -47,3 +47,22 @@ Ledger of every launch and termination: `~/.local/state/taz-cloud/ledger.jsonl`.
   `runpod/pytorch:1.4.1-cu1281-torch2121-ubuntu2404` (the default image), which
   matches the local torch 2.12.1 and gets Stockfish 16 from apt.
 - Boot to SSH, including a cold image pull: ~4 min.
+
+## First cloud benchmark, 2026-10-24 ($0.16)
+
+`benchmarks/bench_actors.py` on `ez8aqzcf5ijaa3`: secure RTX A4000, $0.25/h, 25 vCPU
+(cgroup quota 21.25), AMD EPYC 7702, torch 2.12.1+cu129, code `627dfd7`. Same 512
+specs as the local sweep (rows in `benchmarks/results.jsonl`, `note` names the pod).
+
+| | sims/s | GPU busy | cores used |
+|---|---|---|---|
+| local Strix Halo, 12 actors (best) | 5,707 | 88.5% | — |
+| pod, in-process | 794 | 6.3% | 1.07 |
+| pod, 8 / 16 / 20 actors | 5,168 / 6,364 / **7,864** | 48 / 56 / 65% | 7.3 / 10.3 / 11.8 |
+
+- One EPYC 7702 core is ~0.55x a Strix Halo core (794 vs 1,455 sims/s in-process).
+- At 20 actors the pod is 1.38x the box's best and still rising, yet neither the GPU
+  (65%) nor the CPU quota (11.8 of 21.25 cores) is saturated: the next limit is
+  most likely the single serving process (one thread runs every forward and copies
+  ~80 KB per leaf back, 64 KB of it the promotion plane). Unprofiled.
+- The job guard worked unattended: the pod deleted itself 11 s after the pull.
