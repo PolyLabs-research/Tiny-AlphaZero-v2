@@ -1,0 +1,31 @@
+{
+  "git_sha": "fe51064",
+  "git_dirty": false,
+  "config_fingerprint": "17f92fa7f1f513bd03ba91c5241084828ffd0783796e293ef57ca9395ca41a09",
+  "seed": 42,
+  "torch": "2.12.1+rocm7.2",
+  "device": "cuda",
+  "device_name": "AMD Radeon 8060S",
+  "init_from": "runs/p2_e/ckpt_iter0020.pt",
+  "seed_pool_from": "runs/p2_e",
+  "seed_replay_from": "runs/p2_e",
+  "seed_replay": {
+    "rows": 444741,
+    "donor_iteration": 20,
+    "donor_committed": 1130902,
+    "donor_head": 1186161,
+    "iteration_offset": -20
+  },
+  "environment": {
+    "torch_version": "2.12.1+rocm7.2",
+    "python_version": "3.12.3",
+    "cuda_available": true,
+    "device": "cuda:0",
+    "vram_gb": 96.0,
+    "matmul_tflops": 27.71,
+    "matmul_matrix_size": 4096,
+    "rocm": true,
+    "device_name": "AMD Radeon 8060S",
+    "rocm_version": "7.2.53211"
+  }
+}
