@@ -202,15 +202,32 @@ class BatchRunner:
             groups: dict[Any, list[_LeafRequest]] = {}
             for req in pending:
                 groups.setdefault(req.evaluator, []).append(req)
-            for fn, reqs in groups.items():
-                self._forward(fn, reqs, games)
+            # Evaluators that share a ``hub`` (the actor-process proxies) are answered
+            # in one round trip for all their groups; anything else is called once
+            # per group, as always. Answers are applied in group order either way.
+            hub = getattr(next(iter(groups)), "hub", None)
+            if hub is not None and all(getattr(fn, "hub", None) is hub for fn in groups):
+                items = list(groups.items())
+                answers = hub.evaluate_many([(fn, self._tokens(reqs)) for fn, reqs in items])
+                for (_fn, reqs), answer in zip(items, answers, strict=True):
+                    self._apply(answer, reqs, games)
+            else:
+                for fn, reqs in groups.items():
+                    self._forward(fn, reqs, games)
         pending.clear()
+
+    @staticmethod
+    def _tokens(reqs: list[_LeafRequest]) -> np.ndarray:
+        return np.stack([r.tokens for r in reqs]).astype(np.int64)
 
     def _forward(
         self, evaluate_batch: Any, reqs: list[_LeafRequest], games: list[_GameState]
     ) -> None:
-        tokens = np.stack([r.tokens for r in reqs]).astype(np.int64)
-        policies, promos, values = evaluate_batch(tokens)
+        self._apply(evaluate_batch(self._tokens(reqs)), reqs, games)
+
+    def _apply(self, answer: Any, reqs: list[_LeafRequest], games: list[_GameState]) -> None:
+        """Mask, normalise and hand each leaf its evaluation, in request order."""
+        policies, promos, values = answer
         self.stats["forwards"] += 1
         self.stats["leaves"] += len(reqs)
 

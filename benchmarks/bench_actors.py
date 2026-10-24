@@ -118,37 +118,58 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--ckpt", type=Path, required=True)
     ap.add_argument("--opponent", type=Path, default=None, help="League opponent for 1 game in 5")
+    ap.add_argument(
+        "--opponents",
+        default=None,
+        help="Comma list of league opponents (overrides --opponent): 1 game in 5 is a league "
+        "game, dealt round the list with colours alternating, as a real iteration's league is",
+    )
     ap.add_argument("--config", default="configs/p2_f.yaml")
     ap.add_argument("--games", type=int, default=512)
     ap.add_argument("--sims", type=int, default=48)
-    ap.add_argument("--max-plies", type=int, default=40)
+    ap.add_argument("--max-plies", type=int, default=40, help="0 = the config's (full games)")
     ap.add_argument("--processes", default="0,2,4,8", help="0 = in-process")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", type=Path, default=Path("benchmarks/results.jsonl"))
     ap.add_argument("--no-record", action="store_true")
     ap.add_argument("--note", default="", help="where this ran, e.g. the pod and its quota")
+    ap.add_argument(
+        "--no-merge",
+        action="store_true",
+        help="one round trip per network per flush (the pre-hub protocol), for comparison",
+    )
     args = ap.parse_args()
 
     cfg = load_config(args.config)
     sp = cfg.selfplay
-    sp.games_per_iteration, sp.sims_per_move, sp.max_plies = args.games, args.sims, args.max_plies
+    sp.games_per_iteration, sp.sims_per_move = args.games, args.sims
+    if args.max_plies > 0:
+        sp.max_plies = args.max_plies
     device = torch.device(args.device)
     net, _ = load_checkpoint(args.ckpt, device=device)
     net.eval()
     evaluators = {LATEST: torch_evaluate_batch(net, device)}
     assignments = [GameAssignment()] * args.games
-    if args.opponent is not None:
-        opp, _ = load_checkpoint(args.opponent, device=device)
+    opponents = (
+        [Path(p) for p in args.opponents.split(",")]
+        if args.opponents
+        else ([args.opponent] if args.opponent is not None else [])
+    )
+    for j, path in enumerate(opponents):
+        opp, _ = load_checkpoint(path, device=device)
         opp.eval()
-        evaluators["opponent"] = torch_evaluate_batch(opp, device)
-        assignments = [
-            GameAssignment()
-            if i % 5
-            else GameAssignment(white=LATEST, black="opponent")
-            if (i // 5) % 2
-            else GameAssignment(white="opponent", black=LATEST)
-            for i in range(args.games)
-        ]
+        evaluators[f"opponent{j}"] = torch_evaluate_batch(opp, device)
+    if opponents:
+        assignments = []
+        for i in range(args.games):
+            key = f"opponent{(i // 5) % len(opponents)}"
+            assignments.append(
+                GameAssignment()
+                if i % 5
+                else GameAssignment(white=LATEST, black=key)
+                if (i // 5) % 2
+                else GameAssignment(white=key, black=LATEST)
+            )
 
     wave = sp.concurrent_games
     waves = [(w, s, min(wave, args.games - s)) for w, s in enumerate(range(0, args.games, wave))]
@@ -157,6 +178,7 @@ def main() -> int:
     base = None
     for processes in [int(p) for p in args.processes.split(",")]:
         stats = SelfPlayStats()
+        server: dict = {}
         busy0, total0 = _cpu_times()
         cg0 = _cgroup_cpu_s()
         t0 = time.perf_counter()
@@ -176,10 +198,16 @@ def main() -> int:
                     stats.absorb(st)
             else:
                 results, rs = play_specs_parallel(
-                    evaluators, specs, cfg, args.sims, processes=processes
+                    evaluators,
+                    specs,
+                    cfg,
+                    args.sims,
+                    processes=processes,
+                    merge_networks=not args.no_merge,
                 )
                 record_games(results, specs, stats, None, iteration=0)
                 stats.sims, stats.forwards = rs["sims"], rs["forwards"]
+                server = {k: v for k, v in rs.items() if k not in ("sims", "forwards")}
         elapsed = time.perf_counter() - t0
         busy1, total1 = _cpu_times()
         cg1 = _cgroup_cpu_s()
@@ -189,7 +217,9 @@ def main() -> int:
             "selfplay_actors",
             device=str(device),
             ckpt=str(args.ckpt),
-            opponent=str(args.opponent or ""),
+            opponent=",".join(str(p) for p in opponents),
+            max_plies_effective=sp.max_plies,
+            merge_networks=not args.no_merge,
             processes=processes,
             games=stats.games,
             positions=stats.positions,
@@ -209,12 +239,14 @@ def main() -> int:
             gpu_name=torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu",
             note=args.note,
             results=stats.results,
+            **server,
         )
         print(
             f"processes={processes:>2}  {row['sims_per_s']:>8.0f} sims/s  "
             f"x{row['speedup_vs_first']:<5}  {row['elapsed_s']:>7.1f}s  "
             f"gpu {row['gpu_busy_mean']}%  cores {row['cpu_cores_used']}  "
-            f"leaves/forward {row['leaves_per_forward']}",
+            f"leaves/forward {row['leaves_per_forward']}  "
+            f"{'server ' + str(server) if server else ''}",
             flush=True,
         )
         if not args.no_record:

@@ -43,6 +43,7 @@ import os
 import queue as queue_mod
 import secrets
 import sys
+import time
 import traceback
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
@@ -102,29 +103,64 @@ class _Slot:
                 shm.unlink()
 
 
-class _ProxyEvaluator:
-    """An actor's ``evaluate_batch``: ships the batch to the server and waits.
+class _Hub:
+    """An actor's line to the server: every network's leaves in one round trip.
 
-    One instance per network key, so the runner's per-evaluator grouping in
-    ``_flush`` still separates the learner's leaves from a league opponent's.
-    The answer is copied out of the slot: the search keeps references into what
-    it is handed, and the slot is overwritten by the next request.
+    A flush under league play holds leaves for up to five networks. Sending one
+    request per network made each flush up to five sequential round trips, and the
+    server answered each with its own small forward; p2_g's shakedown ran at 2,977
+    sims/s against a one-opponent benchmark's 7,864. Here the groups are written
+    back to back into the slot and announced as one message of ``(key, n)``
+    segments; the server answers them all, grouped by network across actors, and
+    acknowledges once. Answers are copied out of the slot: the search keeps
+    references into what it is handed, and the next flush overwrites the slot.
     """
 
-    def __init__(self, wid: int, key: str, slot: _Slot, conn: Any, requests: Any) -> None:
-        self.wid, self.key, self.slot, self.conn, self.requests = wid, key, slot, conn, requests
+    def __init__(self, wid: int, slot: _Slot, conn: Any, requests: Any) -> None:
+        self.wid, self.slot, self.conn, self.requests = wid, slot, conn, requests
+
+    def evaluate_many(
+        self, items: list[tuple[_ProxyEvaluator, np.ndarray]]
+    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        a = self.slot.arr
+        segments, off = [], 0
+        for proxy, tokens in items:
+            n = len(tokens)
+            a["tokens"][off : off + n] = tokens
+            segments.append((proxy.key, n))
+            off += n
+        self.requests.put(("eval", self.wid, segments))
+        _await_answer(self.conn)
+        out, off = [], 0
+        for _key, n in segments:
+            out.append(
+                (
+                    a["policy"][off : off + n].reshape(n, 64, 64).copy(),
+                    a["promo"][off : off + n].reshape(n, 64, 64, 4).copy(),
+                    a["value"][off : off + n].copy(),
+                )
+            )
+            off += n
+        return out
+
+
+class _ProxyEvaluator:
+    """An actor's ``evaluate_batch`` for one network key.
+
+    One instance per key, so the runner's per-evaluator grouping in ``_flush``
+    still separates the learner's leaves from a league opponent's; the shared
+    ``hub`` is what lets ``_flush`` answer all of them in one round trip. Called
+    directly (one network), it is a one-segment round trip through the same hub.
+    """
+
+    def __init__(self, key: str, hub: _Hub, merge: bool = True) -> None:
+        # ``merge=False`` hides the hub from the runner, so each network is its own
+        # round trip again: the pre-hub protocol, kept only to measure the change.
+        self.key, self._hub = key, hub
+        self.hub = hub if merge else None
 
     def __call__(self, tokens: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        n = len(tokens)
-        self.slot.arr["tokens"][:n] = tokens
-        self.requests.put(("eval", self.wid, n, self.key))
-        _await_answer(self.conn)
-        a = self.slot.arr
-        return (
-            a["policy"][:n].reshape(n, 64, 64).copy(),
-            a["promo"][:n].reshape(n, 64, 64, 4).copy(),
-            a["value"][:n].copy(),
-        )
+        return self._hub.evaluate_many([(self, tokens)])[0]
 
 
 def _await_answer(conn: Any, poll_s: float = 1.0) -> None:
@@ -146,12 +182,14 @@ def _actor_main(
     slot_names: dict[str, str],
     conn: Any,
     requests: Any,
+    merge: bool = True,
 ) -> None:
     """Actor process entry: play this shard, send the scored games back."""
     slot = None
     try:
         slot = _Slot(len(specs), names=slot_names)
-        proxies = {k: _ProxyEvaluator(wid, k, slot, conn, requests) for k in keys}
+        hub = _Hub(wid, slot, conn, requests)
+        proxies = {k: _ProxyEvaluator(k, hub, merge) for k in keys}
         results, runner_stats = play_specs(
             proxies[LATEST],
             specs,
@@ -213,6 +251,7 @@ def play_specs_parallel(
     processes: int,
     league: bool = True,
     poll_s: float = 1.0,
+    merge_networks: bool = True,
 ) -> tuple[list[GameResult], dict[str, int]]:
     """``selfplay.play_specs`` across ``processes`` actor processes; results in spec order.
 
@@ -257,6 +296,7 @@ def play_specs_parallel(
                         slot.names,
                         recv_end,
                         requests,
+                        merge_networks,
                     ),
                     name=f"taz-actor-{w}",
                     daemon=True,
@@ -267,29 +307,40 @@ def play_specs_parallel(
                 conns.append(send_end)
 
         results: list[GameResult | None] = [None] * len(specs)
-        sims = forwards = 0
+        sims = forwards = round_trips = rows = 0
+        wait_s = forward_s = copy_s = 0.0
         done: set[int] = set()
         while len(done) < k:
+            t_wait = time.perf_counter()
             try:
                 batch = [requests.get(timeout=poll_s)]
             except queue_mod.Empty:
+                wait_s += time.perf_counter() - t_wait
                 for w, proc in enumerate(procs):
                     if w not in done and not proc.is_alive():
                         raise RuntimeError(
                             f"self-play actor {w} exited (code {proc.exitcode}) without reporting"
                         ) from None
                 continue
+            wait_s += time.perf_counter() - t_wait
             while True:
                 try:
                     batch.append(requests.get_nowait())
                 except queue_mod.Empty:
                     break
 
-            pending: dict[str, list[tuple[int, int]]] = {}
+            # key -> [(actor, offset in its slot, rows)]; each actor acked once.
+            pending: dict[str, list[tuple[int, int, int]]] = {}
+            asked: list[int] = []
             for msg in batch:
                 if msg[0] == "eval":
-                    _, w, n, key = msg
-                    pending.setdefault(key, []).append((w, n))
+                    _, w, segments = msg
+                    off = 0
+                    for key, n in segments:
+                        pending.setdefault(key, []).append((w, off, n))
+                        off += n
+                    asked.append(w)
+                    round_trips += 1
                 elif msg[0] == "done":
                     _, w, shard_results, runner_stats = msg
                     for local, i in enumerate(shards[w]):
@@ -299,28 +350,43 @@ def play_specs_parallel(
                 else:
                     raise RuntimeError(f"self-play actor {msg[1]} failed:\n{msg[2]}")
 
-            for key, reqs in pending.items():
-                tokens = np.concatenate([slots[w].arr["tokens"][:n] for w, n in reqs])
+            for key, segs in pending.items():
+                tokens = np.concatenate([slots[w].arr["tokens"][o : o + n] for w, o, n in segs])
+                t_fwd = time.perf_counter()
                 policy, promo, value = evaluators[key](tokens)
+                t_copy = time.perf_counter()
+                forward_s += t_copy - t_fwd
                 forwards += 1
                 total = len(tokens)
+                rows += total
                 policy = np.asarray(policy, dtype=np.float32).reshape(total, _POLICY)
                 promo = np.asarray(promo, dtype=np.float32).reshape(total, _PROMO)
                 value = np.asarray(value, dtype=np.float32).reshape(total)
-                off = 0
-                for w, n in reqs:
+                at = 0
+                for w, o, n in segs:
                     a = slots[w].arr
-                    a["policy"][:n] = policy[off : off + n]
-                    a["promo"][:n] = promo[off : off + n]
-                    a["value"][:n] = value[off : off + n]
-                    off += n
-                    conns[w].send(None)
+                    a["policy"][o : o + n] = policy[at : at + n]
+                    a["promo"][o : o + n] = promo[at : at + n]
+                    a["value"][o : o + n] = value[at : at + n]
+                    at += n
+                copy_s += time.perf_counter() - t_copy
+            for w in asked:
+                conns[w].send(None)
 
         missing = [i for i, r in enumerate(results) if r is None]
         if missing:
             # Dropping them would shift every later game onto the wrong spec.
             raise RuntimeError(f"self-play actors returned no result for games {missing[:8]}")
-        return list(results), {"sims": sims, "forwards": forwards}  # type: ignore[arg-type]
+        stats = {
+            "sims": sims,
+            "forwards": forwards,
+            "round_trips": round_trips,
+            "rows": rows,
+            "server_wait_s": round(wait_s, 2),
+            "server_forward_s": round(forward_s, 2),
+            "server_copy_s": round(copy_s, 2),
+        }
+        return list(results), stats  # type: ignore[arg-type]
     finally:
         for proc in procs:
             if proc.is_alive():
