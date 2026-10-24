@@ -15,11 +15,11 @@ shift 2
 [ "${1:-}" = "--" ] && shift
 mkdir -p "$WORK"
 
-# An SSH session does not inherit the container's environment; the pod's own id and
-# its RunPod-injected key are in pid 1's. Read the two values, nothing else.
-env1() { tr '\0' '\n' < /proc/1/environ | sed -n "s/^$1=//p"; }
-POD_ID=$(env1 RUNPOD_POD_ID)
-POD_KEY=$(env1 RUNPOD_API_KEY)
+# An SSH session does not inherit the container's environment -- the image's PIP_*
+# settings, its CUDA PATH, RunPod's injected RUNPOD_* -- so adopt pid 1's.
+while IFS= read -r -d '' kv; do export "$kv"; done < /proc/1/environ
+POD_ID=$RUNPOD_POD_ID
+POD_KEY=$RUNPOD_API_KEY
 
 log() { echo "$(date -Is) $*" >> "$WORK/lifecycle.log"; }
 
