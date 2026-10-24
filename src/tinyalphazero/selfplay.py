@@ -364,6 +364,9 @@ class GameSpec:
     seed: int
     resign_disabled: bool
     assignment: GameAssignment = GameAssignment()
+    # The position the game is searched from; None is the initial position. Set by
+    # the random-opening lever (``selfplay.opening_random_plies``).
+    start_fen: str | None = None
 
 
 @dataclass
@@ -389,14 +392,69 @@ def wave_specs(
     """
     rng = np.random.default_rng(seed)
     disabled_flags = rng.random(num_games) < sp.resign_disabled_frac
+    excluded = _excluded_starts(sp.opening_exclude) if sp.opening_random_plies > 0 else set()
     return [
         GameSpec(
             seed=game_seed(seed, i),
             resign_disabled=bool(disabled_flags[i]),
             assignment=assignments[i] if assignments is not None else GameAssignment(),
+            start_fen=(
+                _random_opening(seed, i, sp.opening_random_plies, excluded)
+                if sp.opening_random_plies > 0
+                else None
+            ),
         )
         for i in range(num_games)
     ]
+
+
+#: Stream tag for the opening draw, so it cannot collide with ``game_seed``'s.
+_OPENING_STREAM = 0x0BE7
+
+
+def _random_opening(seed: int, game_index: int, max_plies: int, excluded: set[str]) -> str | None:
+    """A start position k uniformly random legal plies in, k ~ U{0..max_plies}.
+
+    Drawn from its own stream of (wave seed, game index), so a wave's other draws
+    are untouched and each game's opening is replayable alone. A position that is
+    over, or whose EPD is in ``excluded``, is redrawn (k included); after 1,000 tries
+    the game starts from the initial position, which is never excluded. Returns
+    None for the initial position, so k = 0 is indistinguishable from the lever off.
+    """
+    rng = np.random.default_rng(np.random.SeedSequence([seed, game_index, _OPENING_STREAM]))
+    for _ in range(1000):
+        k = int(rng.integers(0, max_plies + 1))
+        board = chess.Board()
+        for _ply in range(k):
+            moves = list(board.legal_moves)
+            if not moves:
+                break
+            board.push(moves[int(rng.integers(len(moves)))])
+        if k == 0:
+            return None
+        if board.is_game_over() or board.epd() in excluded:
+            continue
+        return board.fen()
+    return None
+
+
+_EXCLUDED_CACHE: dict[str, set[str]] = {}
+
+
+def _excluded_starts(path: str) -> set[str]:
+    """EPD position keys of a suite, relative to the repo root unless absolute."""
+    if not path:
+        return set()
+    if path not in _EXCLUDED_CACHE:
+        from tinyalphazero.mcts.search import load_epd
+
+        full = (
+            Path(path) if Path(path).is_absolute() else Path(__file__).resolve().parents[2] / path
+        )
+        _EXCLUDED_CACHE[path] = {
+            chess.Board.from_epd(line)[0].epd() for line, _id in load_epd(full)
+        }
+    return _EXCLUDED_CACHE[path]
 
 
 def play_games(
@@ -509,7 +567,7 @@ def play_specs(
             return evaluators[specs[gi].assignment.key_for(root_side)]
 
     runner = BatchRunner(evaluate_batch, mcts, device=device, max_plies=sp.max_plies)
-    boards = [chess.Board() for _ in range(num_games)]
+    boards = [chess.Board(spec.start_fen) if spec.start_fen else chess.Board() for spec in specs]
 
     # The runner creates its _GameState list up front, so the trackers can be
     # bound before the first committed move.
@@ -556,7 +614,9 @@ def record_games(
         stats.plies.append(trace.plies)
         if winner is not None:
             stats.decisive_plies.append(trace.plies)
-        if trace.positions:
+        if trace.positions and spec.start_fen is None:
+            # Spec §8's collapse detector is a reading at the *initial* position, so a
+            # game started elsewhere by the opening lever does not contribute to it.
             first = trace.positions[0]
             stats.move1_entropies.append(gumbel.entropy([e[2] for e in first.improved_policy]))
             stats.move1_prior_entropies.append(first.root_prior_entropy)

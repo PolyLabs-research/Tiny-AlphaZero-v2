@@ -65,9 +65,10 @@ def _evaluator(a: int, b: int):
     return evaluate
 
 
-def _scenario() -> tuple[Config, dict, list[GameAssignment]]:
+def _scenario(openings: int = 0) -> tuple[Config, dict, list[GameAssignment]]:
     cfg = Config()
     sp = cfg.selfplay
+    sp.opening_random_plies = openings
     sp.games_per_iteration, sp.concurrent_games, sp.sims_per_move, sp.max_plies = 16, 8, 8, 40
     sp.resign_threshold, sp.resign_consecutive, sp.resign_disabled_frac = -0.6, 3, 0.25
     evaluators = {LATEST: _evaluator(31, 17), "snap": _evaluator(13, 29)}
@@ -108,9 +109,9 @@ def _shm_segments() -> set[str]:
     )
 
 
-def _in_process(tmp_path: Path) -> tuple[ReplayBuffer, SelfPlayStats]:
+def _in_process(tmp_path: Path, openings: int = 0) -> tuple[ReplayBuffer, SelfPlayStats]:
     """The reference: play_games wave by wave, exactly as Phase2Run._generate does."""
-    cfg, evaluators, assignments = _scenario()
+    cfg, evaluators, assignments = _scenario(openings)
     sp = cfg.selfplay
     buf = ReplayBuffer.create(tmp_path / "in_process", capacity=4096)
     merged = SelfPlayStats()
@@ -131,19 +132,21 @@ def _in_process(tmp_path: Path) -> tuple[ReplayBuffer, SelfPlayStats]:
     return buf, merged
 
 
-@pytest.mark.parametrize("processes", [1, 3])
-def test_actors_store_exactly_the_in_process_ring(tmp_path: Path, processes: int) -> None:
+@pytest.mark.parametrize(("processes", "openings"), [(1, 0), (3, 0), (3, 6)])
+def test_actors_store_exactly_the_in_process_ring(
+    tmp_path: Path, processes: int, openings: int
+) -> None:
     """Same specs, same games, same order: every ring field byte-identical.
 
     The scenario is built to reach the branches a quiet run would not: league games
     on both colours, resignations, resign-disabled games that would have resigned,
-    and games ending at the ply cap.
+    and games ending at the ply cap; and, with ``openings``, random-opening starts.
     """
-    ref_buf, ref_stats = _in_process(tmp_path)
+    ref_buf, ref_stats = _in_process(tmp_path, openings)
     assert ref_stats.results.get("resign", 0) > 0 and ref_stats.would_have_resigned > 0
     assert ref_stats.pool_positions > 0
 
-    cfg, evaluators, assignments = _scenario()
+    cfg, evaluators, assignments = _scenario(openings)
     sp = cfg.selfplay
     specs = []
     for w, start in enumerate(range(0, sp.games_per_iteration, sp.concurrent_games)):

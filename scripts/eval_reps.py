@@ -56,6 +56,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     if config_path is None and (args.ckpt.parent / "config.yaml").exists():
         config_path = str(args.ckpt.parent / "config.yaml")
     cfg = load_config(config_path)
+    if args.openings is not None:
+        # A different book for this measurement only; the run's config.yaml is untouched.
+        cfg.eval.openings_path = args.openings
     device = torch.device(
         args.device if args.device else ("cuda" if torch.cuda.is_available() else "cpu")
     )
@@ -129,6 +132,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--out-dir", type=Path, default=None, help="default: beside --ckpt")
     run.add_argument("--device", default=None)
     run.add_argument("--stockfish", default="", help="default: eval.stockfish_path")
+    run.add_argument(
+        "--openings",
+        default=None,
+        help="EPD book, repo-relative (default: eval.openings_path, the frozen 4-ply book)",
+    )
     run.set_defaults(fn=cmd_run)
 
     ver = sub.add_parser("verdict", help="paired bootstrap over per-opening rep-means, b - a")

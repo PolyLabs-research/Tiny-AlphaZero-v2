@@ -163,6 +163,14 @@ class SelfPlayConfig:
     # iteration's games to N actors that share the GPU through this process. The
     # games and the ring are the same either way (test_actors.py); only wall clock moves.
     actor_processes: int = 1
+    # Random-opening starts (p2_g). Each game first plays k uniformly random legal
+    # plies, k drawn uniformly from 0..opening_random_plies, and is searched and
+    # stored from there; 0 starts every game from the initial position, as every
+    # round before p2_g did. The draw has its own RNG stream, so 0 changes nothing.
+    # A start position in opening_exclude is redrawn: by default that is the skill-0
+    # rung's own book, which therefore never becomes a training start.
+    opening_random_plies: int = 0
+    opening_exclude: str = "tests/suites/openings_4ply.epd"
 
 
 @dataclass
