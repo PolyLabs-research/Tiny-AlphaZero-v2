@@ -35,7 +35,8 @@ log() { echo "$(date -Is) $*" >> "$LOG"; }
 pod_alive() { "$PY" -c "import sys; from tinyalphazero.cloud import RunPod; sys.exit(0 if RunPod().get_pod('$POD') else 1)" 2> /dev/null; }
 committed() { "$PY" -c "import json; print(json.load(open('runs/$RUN/state.json'))['iteration'])" 2> /dev/null || echo -1; }
 pull_run() {
-    "${RP[@]}" pull "$POD" "/root/chess/runs/$RUN/" "runs/$RUN/" "$@" >> "$LOG" 2>&1
+    # seed_* are the donor run's own checkpoints, copied in by --seed-pool; this box has them.
+    "${RP[@]}" pull "$POD" "/root/chess/runs/$RUN/" "runs/$RUN/" --exclude='seed_*' "$@" >> "$LOG" 2>&1
     "${RP[@]}" pull "$POD" /root/taz/work/job.log "runs/$RUN.console.log" >> "$LOG" 2>&1
 }
 

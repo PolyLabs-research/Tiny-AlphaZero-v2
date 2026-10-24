@@ -272,3 +272,33 @@ games (mean 98 plies) against the benchmark's 40-ply cap, and four league oppone
 per iteration against one.
 
 What happens next is Michael's decision; this file does not decide it.
+
+---
+
+## Addendum 3 (2026-10-24 17:50 BST) — launching on CUDA after the failed gate
+
+**Run state at the time of writing.** Nothing of p2_g has trained. Step 0b's gate
+failed (Addendum 2) and stands as recorded; nothing here rewords it.
+
+**Michael's decision (2026-10-24 ~15:45):** fix the self-play pace, then launch on
+CUDA, **recorded as a deviation from the failed gate**. The evidence it rests on was
+measured after the gate, on the gate's own batches (`FINDING-2026-10-24-rocm-layernorm-backward.md`):
+the mismatch is this box's ROCm LayerNorm backward — the value head's LayerNorm affine
+gradients are ~70% wrong at its 1,024 rows — and CUDA bf16 is within 1.3% of CPU fp32
+on every batch. The run therefore trains on the correct stack, where every earlier
+round trained on the defective one.
+
+**A third confound for G2, named before any data:** p2_f, the historical control,
+trained its value-head LayerNorm on noise; p2_g does not. G2 stays directional.
+
+**Code since registration** — throughput only, games unchanged by test:
+`f118680` (one round trip per flush for every network; the reference fingerprint is
+byte-identical in-process and at 3 actors) and `0939a39` (an optional gather window,
+default off and not used). The config is unchanged: the four registered deltas.
+
+**Pod and pace.** `7ovptr9vaaeb2z`, secure RTX 4090, 24 vCPU (quota 20.4), EPYC 7352,
+launched 16:51 BST with a 16 h deadline (07:51 GMT, 2026-10-25). A one-iteration
+shakedown of the registered config on it (`runs/p2_g_shake2`) ran **10.6 min**
+(4,261 sims/s; self-play 9.8 min, training 0.9 min), against 14.4 min on the
+pre-hub protocol. The run's code is `0939a39`, the pod's checkout; the commit carrying
+this addendum changes only this file and the campaign driver's pull filter.
