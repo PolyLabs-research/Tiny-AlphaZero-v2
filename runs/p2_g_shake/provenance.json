@@ -1,0 +1,30 @@
+{
+  "git_sha": "0d4c50f",
+  "git_dirty": false,
+  "config_fingerprint": "7563c9f74f4d6231f0ef6688644ee1994d4a50426db1e1fdd5e714d8ab4abccc",
+  "seed": 42,
+  "torch": "2.12.1+cu129",
+  "device": "cuda",
+  "device_name": "NVIDIA GeForce RTX 4090",
+  "init_from": "runs/p2_f/ckpt_iter0020.pt",
+  "seed_pool_from": "runs/p2_f",
+  "seed_replay_from": "runs/p2_f",
+  "seed_replay": {
+    "rows": 500000,
+    "donor_iteration": 20,
+    "donor_committed": 1556008,
+    "donor_head": 1556008,
+    "iteration_offset": -20
+  },
+  "environment": {
+    "torch_version": "2.12.1+cu129",
+    "python_version": "3.12.3",
+    "cuda_available": true,
+    "device": "cuda:0",
+    "vram_gb": 23.52,
+    "matmul_tflops": 147.435,
+    "matmul_matrix_size": 4096,
+    "rocm": false,
+    "device_name": "NVIDIA GeForce RTX 4090"
+  }
+}

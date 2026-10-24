@@ -234,3 +234,41 @@ Michael approved it and its cost (16 h worst case $14.24); the session ceiling i
 
 What changes: the training GPU, nothing else. Step 0b bridges this pod as written —
 its gates do not move — and `actor_processes` stays 20. No expectation is reworded.
+
+---
+
+## Addendum 2 (2026-10-24 15:50 BST) — Step 0a and Step 0b results; the gate failed
+
+Results only: no rule here is added, weakened or reworded.
+
+**Step 0a** (this box, `191c4dd`): p2_f/0020 from the initial position, three reps:
+0.66, 0.6675, 0.6375 (mean 0.655) — against 0.4967 from the book. G4's baseline.
+
+**Step 0b** (pod `h10w6nqxio60zt`, RTX 4090, EPYC 7763, quota 31.1 CPUs, `0d4c50f`):
+
+| part | registered pass | measured | |
+|---|---|---|---|
+| 0b.1 training step | loss within 2%, grad_norm within 10%, every batch | loss within 0.05% on all 8; grad_norm 55.0% off on batch 0 and 12.3% on batch 6 | **FAIL** |
+| 0b.2 search | mate-in-2 within ±4 of 189, mate-in-3 within ±6 of 140 | 189/200 and 140/200 — identical | pass |
+| 0b.3 shakedown | two iterations commit, lever and seed replay recorded, no abort | both committed; `seed_replay` 500,000 rows, offset −20; config records the lever and 20 actors | pass |
+
+**The gate failed; per its rule nothing launched and the pod was terminated at 15:42
+(cost $0.65).** Records: `runs/p2_g_bridge/{bridge_local,bridge_pod,ladder}.json*`,
+`runs/p2_g_shake/`, consoles untracked.
+
+**Which side is off** (measured after the gate, not a rule): the same 8 batches on
+this box's CPU in fp32 (`runs/p2_g_bridge/bridge_cpu.json`), the exact reference.
+The pod's CUDA bf16 gradient norms are within 1.3% of it on every batch; this box's
+ROCm bf16 norms are higher on every batch — +122% on batch 0, +13.9% on batch 6,
++11.1% on batch 7. Losses agree on all three stacks within 0.08%. The deviation is in
+this box's backward, the place `HOW_TO_TRAIN`'s non-finite-gradient note already
+locates a ROCm defect. With `grad_clip: 1.0` and these norms above 1, every local
+update is rescaled to unit norm; whether its *direction* is distorted is not measured.
+
+**Pace** (not a gate; the session's operational rule was 14 min): 14.4 and 14.7 min
+per iteration, 2,977 and 2,957 sims/s (self-play 13.5–13.8 min, training 0.9 min).
+The A4000 benchmark's 7,864 sims/s did not transfer to real iterations: full-length
+games (mean 98 plies) against the benchmark's 40-ply cap, and four league opponents
+per iteration against one.
+
+What happens next is Michael's decision; this file does not decide it.

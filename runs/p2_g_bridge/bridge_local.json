@@ -1,0 +1,90 @@
+{
+  "ckpt": "runs/p2_f/ckpt_iter0020.pt",
+  "device": "AMD Radeon 8060S",
+  "torch": "2.12.1+rocm7.2",
+  "hip": "7.2.53211",
+  "cuda": null,
+  "tensors_moved": 0,
+  "rows": [
+    {
+      "batch": 0,
+      "loss": 2.353262,
+      "policy_loss": 1.570882,
+      "promo_loss": 0.483449,
+      "value_loss": 0.298931,
+      "legality_loss": 0.0,
+      "grad_norm": 3.917237,
+      "skipped": 0.0
+    },
+    {
+      "batch": 1,
+      "loss": 2.539667,
+      "policy_loss": 1.568963,
+      "promo_loss": 0.654621,
+      "value_loss": 0.316083,
+      "legality_loss": 0.0,
+      "grad_norm": 3.500164,
+      "skipped": 0.0
+    },
+    {
+      "batch": 2,
+      "loss": 2.383548,
+      "policy_loss": 1.498913,
+      "promo_loss": 0.576699,
+      "value_loss": 0.307937,
+      "legality_loss": 0.0,
+      "grad_norm": 2.833074,
+      "skipped": 0.0
+    },
+    {
+      "batch": 3,
+      "loss": 2.234939,
+      "policy_loss": 1.541116,
+      "promo_loss": 0.390842,
+      "value_loss": 0.302981,
+      "legality_loss": 0.0,
+      "grad_norm": 2.163023,
+      "skipped": 0.0
+    },
+    {
+      "batch": 4,
+      "loss": 2.711978,
+      "policy_loss": 1.576121,
+      "promo_loss": 0.841413,
+      "value_loss": 0.294444,
+      "legality_loss": 0.0,
+      "grad_norm": 2.046049,
+      "skipped": 0.0
+    },
+    {
+      "batch": 5,
+      "loss": 3.349943,
+      "policy_loss": 1.525402,
+      "promo_loss": 1.531928,
+      "value_loss": 0.292613,
+      "legality_loss": 0.0,
+      "grad_norm": 13.352237,
+      "skipped": 0.0
+    },
+    {
+      "batch": 6,
+      "loss": 1.806803,
+      "policy_loss": 1.509796,
+      "promo_loss": 0.001933,
+      "value_loss": 0.295075,
+      "legality_loss": 0.0,
+      "grad_norm": 1.47931,
+      "skipped": 0.0
+    },
+    {
+      "batch": 7,
+      "loss": 2.228482,
+      "policy_loss": 1.548023,
+      "promo_loss": 0.376546,
+      "value_loss": 0.303913,
+      "legality_loss": 0.0,
+      "grad_norm": 1.629511,
+      "skipped": 0.0
+    }
+  ]
+}

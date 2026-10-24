@@ -1,0 +1,90 @@
+{
+  "ckpt": "runs/p2_f/ckpt_iter0020.pt",
+  "device": "NVIDIA GeForce RTX 4090",
+  "torch": "2.12.1+cu129",
+  "hip": null,
+  "cuda": "12.9",
+  "tensors_moved": 0,
+  "rows": [
+    {
+      "batch": 0,
+      "loss": 2.353791,
+      "policy_loss": 1.570989,
+      "promo_loss": 0.484,
+      "value_loss": 0.298802,
+      "legality_loss": 0.0,
+      "grad_norm": 1.763404,
+      "skipped": 0.0
+    },
+    {
+      "batch": 1,
+      "loss": 2.54029,
+      "policy_loss": 1.569147,
+      "promo_loss": 0.655155,
+      "value_loss": 0.315988,
+      "legality_loss": 0.0,
+      "grad_norm": 3.417244,
+      "skipped": 0.0
+    },
+    {
+      "batch": 2,
+      "loss": 2.382461,
+      "policy_loss": 1.498862,
+      "promo_loss": 0.575739,
+      "value_loss": 0.307861,
+      "legality_loss": 0.0,
+      "grad_norm": 2.726203,
+      "skipped": 0.0
+    },
+    {
+      "batch": 3,
+      "loss": 2.234476,
+      "policy_loss": 1.540555,
+      "promo_loss": 0.390851,
+      "value_loss": 0.303069,
+      "legality_loss": 0.0,
+      "grad_norm": 2.039489,
+      "skipped": 0.0
+    },
+    {
+      "batch": 4,
+      "loss": 2.711651,
+      "policy_loss": 1.575429,
+      "promo_loss": 0.841706,
+      "value_loss": 0.294516,
+      "legality_loss": 0.0,
+      "grad_norm": 1.921642,
+      "skipped": 0.0
+    },
+    {
+      "batch": 5,
+      "loss": 3.350259,
+      "policy_loss": 1.525125,
+      "promo_loss": 1.53223,
+      "value_loss": 0.292903,
+      "legality_loss": 0.0,
+      "grad_norm": 13.399459,
+      "skipped": 0.0
+    },
+    {
+      "batch": 6,
+      "loss": 1.80689,
+      "policy_loss": 1.509885,
+      "promo_loss": 0.001942,
+      "value_loss": 0.295063,
+      "legality_loss": 0.0,
+      "grad_norm": 1.297737,
+      "skipped": 0.0
+    },
+    {
+      "batch": 7,
+      "loss": 2.22865,
+      "policy_loss": 1.548085,
+      "promo_loss": 0.376759,
+      "value_loss": 0.303806,
+      "legality_loss": 0.0,
+      "grad_norm": 1.470771,
+      "skipped": 0.0
+    }
+  ]
+}
