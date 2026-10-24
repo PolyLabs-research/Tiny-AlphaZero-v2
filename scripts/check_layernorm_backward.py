@@ -6,10 +6,11 @@
 The reproducer for FINDING-2026-10-24-rocm-layernorm-backward.md. Random fp64 data,
 an fp64 CPU LayerNorm as the reference, the same LayerNorm in fp32 on the GPU, and the
 relative error of ``weight.grad``, ``bias.grad`` and the input gradient across row
-counts. On torch 2.12.1+rocm7.2 / Radeon 8060S (gfx1151) the affine gradients are
-~70% wrong -- and differently on every run -- for 256..8192 rows at width 256, exact at
-64 and 73,728; the input gradient is always right. A GPU check, so it lives here and
-not in the CPU-only test suite (AGENTS.md section 3).
+counts. On torch 2.12.1+rocm7.2 / Radeon 8060S (gfx1151) the odd-indexed affine
+gradient elements are never written for 128..65,536 rows (pytorch/pytorch#199265,
+fixed in torch >= 2.13), so the relative error is ~0.70; exact at 64 and from 73,728;
+the input gradient is always right. A GPU check, so it lives here and not in the
+CPU-only test suite (AGENTS.md section 3).
 """
 
 from __future__ import annotations

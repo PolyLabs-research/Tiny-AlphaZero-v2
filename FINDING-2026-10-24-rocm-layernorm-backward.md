@@ -1,22 +1,61 @@
 # FINDING 2026-10-24 — ROCm's LayerNorm backward returns wrong affine gradients
 
 **Stack:** torch 2.12.1+rocm7.2, HIP 7.2.53211, AMD Radeon 8060S (gfx1151) — this box.
-**Reproducer:** `python scripts/check_layernorm_backward.py` (exit 1 when wrong).
+**Reproducers:** `python scripts/check_layernorm_backward.py` (exit 1 when wrong);
+`upstream/repro_layernorm_backward.py` (torch only).
+**Status: a known upstream bug, fixed in torch ≥ 2.13** — see "Upstream" below.
 
 ## What is wrong
 
-`nn.LayerNorm(256)` on the GPU, fp32, against an fp64 CPU reference on random data:
+For **128 ≤ rows ≤ 65,536**, LayerNorm's backward **never computes the odd-indexed
+elements of `weight.grad` and `bias.grad`**; the even-indexed ones are exact. fp32 on
+the GPU against an fp64 CPU reference, random data:
 
-| rows | `weight.grad` | `bias.grad` | input grad |
-|---|---|---|---|
-| 64 | 1.8e-07 | 1.5e-07 | 6.6e-08 |
-| 256 – 8192 | **0.64 – 0.74** | **0.67 – 0.74** | ~7e-08 |
-| 73,728 | 1.6e-07 | 1.5e-07 | 6.8e-08 |
+| rows | width | even columns (rel. error) | odd columns: max \|value\| | odd columns (rel. error) |
+|---|---|---|---|---|
+| 64 | 256 | 1.8e-07 | (correct) | 0.00 |
+| 128, 1,024 | 256 | ~1e-07 | **0** | **1.00** |
+| 65,536 | 256 | 1.1e-06 | 3.3 (stale) | **1.00** |
+| 73,728 and 131,072 | 256 | ~1.6e-07 | (correct) | 0.00 |
+| 1,024 | 64 / 512 / 1,024 / 257 | ~1.7e-07 | 0 / 0.23 / 0.20 / 3.4 | **1.00** |
+| 1,024 | 256, bf16 | 3e-03 | 0 | 1.00 |
 
-The affine gradients are ~70% wrong for every row count tested from 256 to 8,192,
-and **differently on every run** (n = 1024 over four runs: 0.709, 0.745, 0.710, 0.734)
-— the signature of a race in a reduction. The gradient passed to the input is always
-right, and so is the forward. On the CPU, and on CUDA, nothing is wrong.
+Odd elements are left unwritten — zero in a fresh allocation, stale values otherwise —
+so the whole-vector relative error is ≈ √½ ≈ 0.70. It is **deterministic** (identical
+inputs give identical wrong output), unchanged by `AMD_SERIALIZE_KERNEL=3` /
+`HIP_LAUNCH_BLOCKING=1`, the same against plain-op gradients on the same device, and
+present in fp32, fp16 and bf16 at every width tried. The input gradient and the forward
+are right. On the CPU, and on CUDA, nothing is wrong. Workaround, verified exact at
+128 / 1,024 / 65,536 rows: `nn.LayerNorm(d, elementwise_affine=False)` followed by an
+explicit `* weight + bias`.
+
+## Upstream
+
+- [pytorch/pytorch#199265](https://github.com/pytorch/pytorch/issues/199265) (gfx1201,
+  closed 2026-10-05): the identical symptom on torch 2.12.1+rocm7.2 — "never writes
+  odd-indexed weight/bias grad elements (M >= 128)". Root cause: the ROCm path of
+  `aten/src/ATen/native/cuda/layer_norm_kernel.cu` assumed a 64-wide warp; on wave32
+  RDNA GPUs half the feature values were dropped.
+- [pytorch/pytorch#183864](https://github.com/pytorch/pytorch/pull/183864) (merged
+  2026-05-27) queries the warp size at runtime and names "AMD Strix Halo and other RDNA
+  GPUs"; it is in torch 2.13.0 and later. #199265 confirms 2.12.1 fails and
+  2.14.1+rocm7.2 passes on gfx1201.
+- [ROCm/TheRock#9064](https://github.com/ROCm/TheRock/issues/9064) (gfx1151, closed
+  2026-10-16): the same on gfx1151 nightlies, resolved by a newer torch.
+- `download.pytorch.org/whl/rocm7.2` carries torch 2.13.0, 2.14.0 and 2.14.1 for cp312.
+
+**Verified on this box (2026-10-24):** torch 2.14.1+rocm7.2 from that index, in a
+throwaway venv, passes `upstream/repro_layernorm_backward.py` at every row count from
+64 to 131,072 and at widths 64, 256, 512 and 1,024 (worst relative error ~1e-6); 2.12.1
+fails the same script. No new upstream report is needed; this box was simply on the
+last affected release.
+
+### Correction (2026-10-24 19:50)
+
+The first version of this file said the error varied "differently on every run — the
+signature of a race" and spanned 256–8,192 rows. Both were wrong: the "repeats" drew new
+random data each time, and the row range was only what had been tested. Measured since:
+deterministic, 128–65,536 rows, odd columns never written.
 
 ## Where it lands in this model
 
@@ -49,10 +88,8 @@ unaffected: the ladder, the suites and the skill-0 rung run forward passes only.
 
 - **Training on CUDA is the correct stack**, not merely an equivalent one; PREREG-p2_g's
   Step 0b bridge failed because its reference (this box) is the side that is wrong.
-- Local training, if it resumes, needs a workaround before it is trusted — for example the
-  value head's LayerNorm without fused affine (`elementwise_affine=False` plus an explicit
-  scale and shift), checked with the reproducer — or a fixed ROCm build.
+- **Local training needs torch ≥ 2.13** (or the explicit-affine workaround) before it is
+  trusted. Upgrading is a stack change, so not while p2_g is measured on this box
+  (campaign rule 6); after it closes, with a bridge like p2_e's Step 0.
 - The earlier note on non-finite gradients on ROCm (`HOW_TO_TRAIN.md`) may share a cause;
   not tested.
-- Worth reporting upstream (PyTorch / ROCm), with `scripts/check_layernorm_backward.py`
-  as the minimal reproducer.
