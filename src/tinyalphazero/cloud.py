@@ -161,7 +161,8 @@ def watchdog_start_cmd(enabled: bool = True) -> list[str]:
         "for i in 1 2 3 4 5 6; do "
         'runpodctl remove pod "$RUNPOD_POD_ID" >> /taz-watchdog.log 2>&1 && break; '
         'curl -fsS -X DELETE "https://rest.runpod.io/v1/pods/$RUNPOD_POD_ID" '
-        '-H "Authorization: Bearer $RUNPOD_API_KEY" >> /taz-watchdog.log 2>&1 && break; '
+        '-H "Authorization: Bearer $RUNPOD_API_KEY" -A "taz-cloud/1.0 (+tinyalphazero)" '
+        ">> /taz-watchdog.log 2>&1 && break; "
         "sleep 30; done"
     )
     return ["bash", "-c", f"( {watchdog} ) & exec {IMAGE_CMD}"]
@@ -308,6 +309,10 @@ class LaunchSpec:
     ram_per_gpu: int = 32
     container_disk_gb: int = 60
     watchdog: bool = True
+    # Host CUDA versions to accept, or None for no filter. An image's own
+    # NVIDIA_REQUIRE_CUDA is what actually binds; the API's filter matched no host
+    # at all on 2026-10-24 for ["12.8", "12.9", "13.0"], so it is opt-in.
+    allowed_cuda: tuple[str, ...] | None = None
 
     def body(self, deadline: int) -> dict[str, Any]:
         return {
@@ -323,9 +328,9 @@ class LaunchSpec:
             "minRAMPerGPU": self.ram_per_gpu,
             "ports": ["22/tcp"],
             "supportPublicIp": True,  # full SSH (rsync) needs a public IP, not the proxy
-            "allowedCudaVersions": ["12.8", "12.9", "13.0"],
             "dockerStartCmd": watchdog_start_cmd(self.watchdog),
             "env": {"TAZ_DEADLINE": str(deadline)},
+            **({"allowedCudaVersions": list(self.allowed_cuda)} if self.allowed_cuda else {}),
         }
 
 

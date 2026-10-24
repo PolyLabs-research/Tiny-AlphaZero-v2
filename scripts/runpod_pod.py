@@ -70,13 +70,16 @@ def cmd_launch(rp: cloud.RunPod, args: argparse.Namespace) -> int:
         ram_per_gpu=args.ram,
         container_disk_gb=args.disk,
         watchdog=not args.no_watchdog,
+        image=args.image,
+        allowed_cuda=tuple(args.cuda.split(",")) if args.cuda else None,
     )
     body = spec.body(deadline)
     print(
         f"plan: {gpu_id} ({args.cloud}) at listed ${listed:.3f}/h, {args.hours} h cap "
         f"-> worst case ${worst:.2f}; balance ${account['balance']:.2f}\n"
         f"      name {body['name']}  deadline {time.strftime('%H:%M:%S %Z', time.localtime(deadline))}"
-        f"  vCPU>={args.vcpu} RAM>={args.ram}GB disk {args.disk}GB  watchdog={'on' if spec.watchdog else 'OFF'}"
+        f"  vCPU>={args.vcpu} RAM>={args.ram}GB disk {args.disk}GB  watchdog={'on' if spec.watchdog else 'OFF'}\n"
+        f"      image {args.image}  cuda filter {args.cuda or 'none'}"
     )
     if not args.yes:
         print("dry run: nothing created (pass --yes to launch)")
@@ -210,6 +213,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--ram", type=int, default=32, help="minimum RAM, GB")
     p.add_argument("--disk", type=int, default=60, help="container disk, GB")
     p.add_argument("--no-watchdog", action="store_true", help="lifecycle tests only")
+    p.add_argument("--image", default=cloud.DEFAULT_IMAGE)
+    p.add_argument("--cuda", default=None, help="comma list of host CUDA versions to accept")
     p.add_argument("--yes", action="store_true", help="actually create the pod")
     p = sub.add_parser("wait-ssh")
     p.add_argument("pod")

@@ -79,3 +79,13 @@ def test_watchdog_runs_before_the_image_start_and_can_be_disabled_for_tests() ->
     assert "runpodctl remove pod" in on[2] and "rest.runpod.io/v1/pods" in on[2]
     off = cloud.watchdog_start_cmd(False)
     assert "runpodctl" not in off[2] and off[2] == f"exec {cloud.IMAGE_CMD}"
+
+
+def test_cuda_filter_is_opt_in_and_the_watchdog_names_itself_to_cloudflare() -> None:
+    """The API's CUDA filter matched no host on 2026-10-24, and Cloudflare refuses
+    anonymous-looking clients, so: no filter unless asked, and a User-Agent on curl."""
+    body = cloud.LaunchSpec(tag="t", gpu_type="g", hours=1).body(deadline=1_800_000_000)
+    assert "allowedCudaVersions" not in body
+    pinned = cloud.LaunchSpec(tag="t", gpu_type="g", hours=1, allowed_cuda=("12.8",))
+    assert pinned.body(deadline=1_800_000_000)["allowedCudaVersions"] == ["12.8"]
+    assert '-A "taz-cloud/1.0' in cloud.watchdog_start_cmd(True)[2]
