@@ -1,0 +1,10 @@
+# Layer 3 of tinyalphazero.cloud: terminate any taz- pod past its deadline (+grace)
+# or carrying none. System python + the source tree, so it keeps working while the
+# project venv is being rebuilt; standard library only.
+[Unit]
+Description=RunPod sweeper: terminate taz- pods past their deadline
+
+[Service]
+Type=oneshot
+Environment=PYTHONPATH=%h/Documents/dev/chess/src
+ExecStart=/usr/bin/python3 %h/Documents/dev/chess/scripts/runpod_pod.py sweep --grace 300
