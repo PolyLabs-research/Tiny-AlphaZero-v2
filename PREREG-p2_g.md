@@ -220,11 +220,11 @@ this line is the registration.
 
 ---
 
-## Addendum 1 (2026-10-24 15:10 BST) — the training GPU
+## Addendum 1 (2026-10-24 15:01 BST) — the training GPU
 
 **Run state at the time of writing.** Step 0a is running on this box (p2_f/0020 from
 the initial position, no expectation registered). Step 0b and the run have produced
-nothing. The pod launched at 15:08 BST.
+nothing. The pod launched at 14:57 BST.
 
 No secure RTX A4000 or A5000 with ≥ 24 vCPU was available for fifteen minutes of
 retries; with that floor the only card on offer was a secure **RTX 4090** at $0.89/h.
