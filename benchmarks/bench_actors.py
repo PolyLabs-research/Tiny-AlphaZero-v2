@@ -13,15 +13,18 @@ truncates games so a sweep fits in minutes; per-simulation cost is what is being
 compared, and truncation changes it for every row alike.
 
 Each row records sims/s, forwards (and so the mean leaves per forward), mean GPU
-busy (``gpu_busy_percent``, sampled every 0.5 s) and mean host CPU busy across all
-logical CPUs (``/proc/stat``), so a plateau can be attributed: GPU-bound, CPU-bound,
-or neither.
+busy (amdgpu's ``gpu_busy_percent`` or ``nvidia-smi``, sampled every 0.5 s), mean
+host CPU busy (``/proc/stat``) and the cores this cgroup actually used — inside a
+container the host figure counts every tenant — so a plateau can be attributed:
+GPU-bound, CPU-bound, or neither. ``--note`` says where the row was measured.
 """
 
 from __future__ import annotations
 
 import argparse
 import glob
+import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -44,19 +47,35 @@ from tinyalphazero.train import load_checkpoint
 
 
 class _Sampler:
-    """Mean GPU busy % over a window, from the amdgpu sysfs counter."""
+    """Mean GPU busy % over a window: amdgpu's sysfs counter, or ``nvidia-smi``."""
 
     def __init__(self) -> None:
         paths = glob.glob("/sys/class/drm/card*/device/gpu_busy_percent")
         self.path = Path(paths[0]) if paths else None
+        self.nvidia = self.path is None and shutil.which("nvidia-smi") is not None
         self.samples: list[int] = []
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
+    def _read(self) -> int | None:
+        if self.path is not None:
+            return int(self.path.read_text())
+        if self.nvidia:
+            out = subprocess.run(
+                ["nvidia-smi", "--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+                capture_output=True,
+                text=True,
+            )
+            return (
+                int(out.stdout.split()[0]) if out.returncode == 0 and out.stdout.strip() else None
+            )
+        return None
+
     def _run(self) -> None:
         while not self._stop.wait(0.5):
-            if self.path is not None:
-                self.samples.append(int(self.path.read_text()))
+            value = self._read()
+            if value is not None:
+                self.samples.append(value)
 
     def __enter__(self) -> _Sampler:
         self._thread.start()
@@ -78,6 +97,23 @@ def _cpu_times() -> tuple[int, int]:
     return sum(fields) - idle, sum(fields)
 
 
+def _cgroup_cpu_s() -> float | None:
+    """CPU seconds used by this cgroup so far (v2 or v1), or None.
+
+    Inside a container ``/proc/stat`` counts the whole host — a RunPod pod reported
+    96 CPUs against a 7.65-CPU quota — so cores actually used come from the cgroup.
+    """
+    v2 = Path("/sys/fs/cgroup/cpu.stat")
+    if v2.exists():
+        for line in v2.read_text().splitlines():
+            if line.startswith("usage_usec "):
+                return int(line.split()[1]) / 1e6
+    v1 = Path("/sys/fs/cgroup/cpuacct/cpuacct.usage")
+    if v1.exists():
+        return int(v1.read_text()) / 1e9
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--ckpt", type=Path, required=True)
@@ -90,6 +126,7 @@ def main() -> int:
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", type=Path, default=Path("benchmarks/results.jsonl"))
     ap.add_argument("--no-record", action="store_true")
+    ap.add_argument("--note", default="", help="where this ran, e.g. the pod and its quota")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -121,6 +158,7 @@ def main() -> int:
     for processes in [int(p) for p in args.processes.split(",")]:
         stats = SelfPlayStats()
         busy0, total0 = _cpu_times()
+        cg0 = _cgroup_cpu_s()
         t0 = time.perf_counter()
         with _Sampler() as gpu:
             if processes == 0:
@@ -144,6 +182,7 @@ def main() -> int:
                 stats.sims, stats.forwards = rs["sims"], rs["forwards"]
         elapsed = time.perf_counter() - t0
         busy1, total1 = _cpu_times()
+        cg1 = _cgroup_cpu_s()
         sims_per_s = stats.sims / elapsed
         base = base or sims_per_s
         row = benchmark_row(
@@ -164,12 +203,17 @@ def main() -> int:
             leaves_per_forward=round(stats.sims / max(stats.forwards, 1), 1),
             gpu_busy_mean=gpu.mean,
             cpu_busy_mean=round(100 * (busy1 - busy0) / max(total1 - total0, 1), 1),
+            cpu_cores_used=round((cg1 - cg0) / elapsed, 2)
+            if cg0 is not None and cg1 is not None
+            else None,
+            gpu_name=torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu",
+            note=args.note,
             results=stats.results,
         )
         print(
             f"processes={processes:>2}  {row['sims_per_s']:>8.0f} sims/s  "
             f"x{row['speedup_vs_first']:<5}  {row['elapsed_s']:>7.1f}s  "
-            f"gpu {row['gpu_busy_mean']}%  cpu {row['cpu_busy_mean']}%  "
+            f"gpu {row['gpu_busy_mean']}%  cores {row['cpu_cores_used']}  "
             f"leaves/forward {row['leaves_per_forward']}",
             flush=True,
         )
