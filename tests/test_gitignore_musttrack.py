@@ -85,6 +85,17 @@ MUST_REACH: list[str] = [
     "runs/p2_f/p2_verdict_reps_iter0005.json",
     "runs/p2_f/p2_verdict_reps.json",
     "runs/p2_f/annotations.jsonl",
+    # p2_g (PREREG-p2_g): Step 0a/0b, the shakedown, and the locally measured run.
+    "runs/p2_f/startpos/reps_iter0020_r1.jsonl",
+    "runs/p2_g_bridge/bridge_local.json",
+    "runs/p2_g_bridge/bridge_pod.json",
+    "runs/p2_g_shake/iterations.jsonl",
+    "runs/p2_g/iterations.jsonl",
+    "runs/p2_g/ladder.jsonl",
+    "runs/p2_g/reps_iter0010_r1.jsonl",
+    "runs/p2_g/p2_verdict_reps_iter0010.json",
+    "runs/p2_g/p2_verdict_reps.json",
+    "runs/p2_g/startpos/p2_verdict_reps.json",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that

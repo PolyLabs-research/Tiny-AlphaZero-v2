@@ -41,6 +41,8 @@ runs/**
 # One directory holding several checkpoints' reps needs one verdict per checkpoint
 # (PREREG-p2_e Addendum 3, runs/p2_d_midrun/).
 !runs/**/p2_verdict_reps_*.json
+# PREREG-p2_g Step 0b: the training-step numbers from each stack.
+!runs/**/bridge_*.json
 !runs/**/reps_iter*.jsonl
 !runs/**/ladder_pairscores.jsonl
 # The mate-in-2 *tuning* suite (BLOCKED-2026-08-08 stage 2): the disjoint set the

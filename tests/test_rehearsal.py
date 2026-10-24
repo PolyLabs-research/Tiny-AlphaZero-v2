@@ -438,6 +438,32 @@ def test_p2f_config_is_the_brief() -> None:
     assert not differences, "p2_f moves more than the ring:\n  " + "\n  ".join(differences)
 
 
+def test_p2g_config_is_the_brief() -> None:
+    """configs/p2_g.yaml is p2_f's run config plus the lever and three run settings.
+
+    The lever is ``opening_random_plies``. ``actor_processes`` moves wall clock only
+    (tests/test_actors.py), ``eval_every_n_iters: 0`` moves the ladder off the pod to
+    the local instrument, and ``iterations`` is the protocol's length. Anything else
+    moving would be a second lever.
+    """
+    import dataclasses
+
+    p2g = REPO / "configs" / "p2_g.yaml"
+    p2f = REPO / "runs" / "p2_f" / "config.yaml"
+    if not (p2g.exists() and p2f.exists()):
+        pytest.skip("p2_g config or p2_f run config not present")
+
+    allowed = {"opening_random_plies", "actor_processes", "eval_every_n_iters", "iterations"}
+    differences = _config_deltas(p2f, p2g, "p2_f", "p2_g", allowed=allowed)
+    assert not differences, "p2_g moves more than registered:\n  " + "\n  ".join(differences)
+    g = dataclasses.asdict(load_config(str(p2g)))
+    assert g["selfplay"]["opening_random_plies"] == 8
+    assert g["selfplay"]["opening_exclude"] == "tests/suites/openings_4ply.epd"
+    assert g["selfplay"]["actor_processes"] == 20
+    assert g["eval"]["eval_every_n_iters"] == 0
+    assert g["phase2"]["iterations"] == 60
+
+
 def test_p2c_config_is_the_brief() -> None:
     """configs/p2_c.yaml differs from p2_b's resolved config in exactly one field.
 
