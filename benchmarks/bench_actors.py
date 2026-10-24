@@ -134,6 +134,9 @@ def main() -> int:
     ap.add_argument("--no-record", action="store_true")
     ap.add_argument("--note", default="", help="where this ran, e.g. the pod and its quota")
     ap.add_argument(
+        "--gather-ms", type=float, default=0.0, help="server gather window per forward round"
+    )
+    ap.add_argument(
         "--no-merge",
         action="store_true",
         help="one round trip per network per flush (the pre-hub protocol), for comparison",
@@ -204,6 +207,7 @@ def main() -> int:
                     args.sims,
                     processes=processes,
                     merge_networks=not args.no_merge,
+                    gather_s=args.gather_ms / 1000,
                 )
                 record_games(results, specs, stats, None, iteration=0)
                 stats.sims, stats.forwards = rs["sims"], rs["forwards"]
@@ -220,6 +224,7 @@ def main() -> int:
             opponent=",".join(str(p) for p in opponents),
             max_plies_effective=sp.max_plies,
             merge_networks=not args.no_merge,
+            gather_ms=args.gather_ms,
             processes=processes,
             games=stats.games,
             positions=stats.positions,

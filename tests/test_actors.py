@@ -166,6 +166,25 @@ def test_actors_store_exactly_the_in_process_ring(
     assert _stats_view(stats) == _stats_view(ref_stats)
 
 
+def test_a_gather_window_changes_batching_not_games(tmp_path: Path) -> None:
+    """Holding requests to build bigger forwards must not change a single stored byte."""
+    cfg, evaluators, assignments = _scenario(openings=4)
+    sp = cfg.selfplay
+    specs = []
+    for w, start in enumerate(range(0, sp.games_per_iteration, sp.concurrent_games)):
+        n = min(sp.concurrent_games, sp.games_per_iteration - start)
+        specs += wave_specs(1000 + w, n, sp, assignments[start : start + n])
+    rings = []
+    for gather in (0.0, 0.005):
+        buf = ReplayBuffer.create(tmp_path / f"g{gather}", capacity=4096)
+        results, _ = play_specs_parallel(
+            evaluators, specs, cfg, sp.sims_per_move, processes=3, gather_s=gather
+        )
+        record_games(results, specs, SelfPlayStats(), buf, iteration=3)
+        rings.append(_ring_bytes(buf))
+    assert rings[0] == rings[1]
+
+
 def test_phase2_generate_with_actors_matches_in_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

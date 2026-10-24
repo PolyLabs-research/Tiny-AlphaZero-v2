@@ -252,6 +252,7 @@ def play_specs_parallel(
     league: bool = True,
     poll_s: float = 1.0,
     merge_networks: bool = True,
+    gather_s: float = 0.0,
 ) -> tuple[list[GameResult], dict[str, int]]:
     """``selfplay.play_specs`` across ``processes`` actor processes; results in spec order.
 
@@ -322,6 +323,15 @@ def play_specs_parallel(
                             f"self-play actor {w} exited (code {proc.exitcode}) without reporting"
                         ) from None
                 continue
+            # Optionally hold the first request up to ``gather_s`` so more actors'
+            # requests join it: bigger forwards when forwards are launch-bound. The
+            # answers cannot change -- a row's evaluation does not depend on its batch.
+            until = time.perf_counter() + gather_s
+            while (left := until - time.perf_counter()) > 0:
+                try:
+                    batch.append(requests.get(timeout=left))
+                except queue_mod.Empty:
+                    break
             wait_s += time.perf_counter() - t_wait
             while True:
                 try:
