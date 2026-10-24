@@ -136,20 +136,23 @@ def cmd_ssh(rp: cloud.RunPod, args: argparse.Namespace) -> int:
     return subprocess.run([*cloud.ssh_base(*_target(rp, args.pod)), *args.command]).returncode
 
 
-def _rsync(rp: cloud.RunPod, pod_id: str, src: str, dst: str, up: bool) -> int:
+def _rsync(
+    rp: cloud.RunPod, pod_id: str, src: str, dst: str, up: bool, exclude: list[str] | None = None
+) -> int:
     ip, port = _target(rp, pod_id)
     ssh = " ".join(cloud.ssh_base(ip, port)[:-1])  # the -e command, without the user@host
     remote = f"root@{ip}:"
     a, b = (src, remote + dst) if up else (remote + src, dst)
-    return subprocess.run(["rsync", "-az", "--partial", "-e", ssh, a, b]).returncode
+    excludes = [f"--exclude={e}" for e in exclude or []]
+    return subprocess.run(["rsync", "-az", "--partial", *excludes, "-e", ssh, a, b]).returncode
 
 
 def cmd_push(rp: cloud.RunPod, args: argparse.Namespace) -> int:
-    return _rsync(rp, args.pod, args.src, args.dst, up=True)
+    return _rsync(rp, args.pod, args.src, args.dst, up=True, exclude=args.exclude)
 
 
 def cmd_pull(rp: cloud.RunPod, args: argparse.Namespace) -> int:
-    return _rsync(rp, args.pod, args.src, args.dst, up=False)
+    return _rsync(rp, args.pod, args.src, args.dst, up=False, exclude=args.exclude)
 
 
 def cmd_status(rp: cloud.RunPod, args: argparse.Namespace) -> int:
@@ -227,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("pod")
         p.add_argument("src")
         p.add_argument("dst")
+        p.add_argument("--exclude", action="append", default=[], help="rsync pattern; repeatable")
     sub.add_parser("status")
     p = sub.add_parser("terminate")
     g = p.add_mutually_exclusive_group(required=True)
