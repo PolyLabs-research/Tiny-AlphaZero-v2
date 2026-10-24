@@ -350,6 +350,55 @@ class SelfPlayStats:
         }
 
 
+@dataclass(frozen=True)
+class GameSpec:
+    """Everything that decides one self-play game before it is played.
+
+    A game's trajectory is a function of its seed, its resignation flag, which
+    weights search each colour, and the network's answers to its leaves — never of
+    which other games share its batch (the BatchRunner's contract). Fixing these
+    up front is what lets a wave be played in one process or split across many
+    (``actors``) and still store the same rows.
+    """
+
+    seed: int
+    resign_disabled: bool
+    assignment: GameAssignment = GameAssignment()
+
+
+@dataclass
+class GameResult:
+    """One played and scored game: the trace, with outcomes filled, and its verdict."""
+
+    trace: GameTrace
+    winner: int | None
+    would_resign_side: bool | None
+
+
+def wave_specs(
+    seed: int,
+    num_games: int,
+    sp: SelfPlayConfig,
+    assignments: list[GameAssignment] | None = None,
+) -> list[GameSpec]:
+    """The per-game draws for one wave, exactly as ``play_games`` has always made them.
+
+    One ``rng.random(num_games)`` for the resignation flags, then ``game_seed(seed,
+    i)`` per game. The order of those draws is the definition of the wave; it is
+    written once, here, so the in-process and multi-process paths cannot drift.
+    """
+    rng = np.random.default_rng(seed)
+    disabled_flags = rng.random(num_games) < sp.resign_disabled_frac
+    return [
+        GameSpec(
+            seed=game_seed(seed, i),
+            resign_disabled=bool(disabled_flags[i]),
+            assignment=assignments[i] if assignments is not None else GameAssignment(),
+        )
+        for i in range(num_games)
+    ]
+
+
 def play_games(
     evaluate_batch,
     num_games: int,
@@ -372,24 +421,57 @@ def play_games(
     behaviour.
     """
     cfg = cfg or Config()
-    mcts: MCTSConfig = cfg.mcts
     sp: SelfPlayConfig = cfg.selfplay
     num_sims = num_sims if num_sims is not None else sp.sims_per_move
+    specs = wave_specs(seed, num_games, sp, assignments)
 
-    rng = np.random.default_rng(seed)
-    disabled_flags = rng.random(num_games) < sp.resign_disabled_frac
+    stats = SelfPlayStats()
+    t0 = time.perf_counter()
+    results, runner_stats = play_specs(
+        evaluate_batch,
+        specs,
+        cfg,
+        num_sims,
+        device=device,
+        evaluators=evaluators,
+        league=assignments is not None,
+    )
+    record_games(results, specs, stats, buffer, iteration)
+    stats.seconds = time.perf_counter() - t0
+    stats.sims = runner_stats["sims"]
+    stats.forwards = runner_stats["forwards"]
+    if buffer is not None:
+        buffer.flush()
+    return [r.trace for r in results], stats
+
+
+def play_specs(
+    evaluate_batch,
+    specs: list[GameSpec],
+    cfg: Config,
+    num_sims: int,
+    device: str = "cpu",
+    evaluators: dict[str, Any] | None = None,
+    league: bool = False,
+) -> tuple[list[GameResult], dict[str, int]]:
+    """Play ``specs`` concurrently in one runner and score them; store nothing.
+
+    The part of self-play that an actor process can do on its own: it needs the
+    games' specs and something that answers leaves, and returns scored traces in
+    spec order plus the runner's counters. Storing is left to the caller because
+    the ring has exactly one writer (``replay``'s contract, point 1).
+    """
+    mcts: MCTSConfig = cfg.mcts
+    sp: SelfPlayConfig = cfg.selfplay
+    num_games = len(specs)
     trackers = [
         ResignTracker(
             threshold=sp.resign_threshold,
             consecutive=sp.resign_consecutive,
-            disabled=bool(disabled_flags[i]),
+            disabled=spec.resign_disabled,
         )
-        for i in range(num_games)
+        for spec in specs
     ]
-
-    stats = SelfPlayStats()
-    t0 = time.perf_counter()
-    traces: list[GameTrace] = []
 
     # ONE runner for all games, so chunk 7's batching actually applies: with a
     # runner per game every forward is batch 1, which is the exact throughput
@@ -414,32 +496,32 @@ def play_games(
         return tr(trace)
 
     evaluator_for = None
-    if assignments is not None:
+    if league:
         if evaluators is None:
             raise ValueError("league assignments given without an evaluators map")
-        missing = {a.key_for(s) for a in assignments for s in (chess.WHITE, chess.BLACK)} - set(
-            evaluators
-        )
+        missing = {
+            spec.assignment.key_for(s) for spec in specs for s in (chess.WHITE, chess.BLACK)
+        } - set(evaluators)
         if missing:
             raise ValueError(f"no evaluator supplied for league key(s): {sorted(missing)}")
 
         def evaluator_for(gi: int, root_side: bool):  # noqa: F811
-            return evaluators[assignments[gi].key_for(root_side)]
+            return evaluators[specs[gi].assignment.key_for(root_side)]
 
     runner = BatchRunner(evaluate_batch, mcts, device=device, max_plies=sp.max_plies)
     boards = [chess.Board() for _ in range(num_games)]
-    seeds = [game_seed(seed, i) for i in range(num_games)]
 
     # The runner creates its _GameState list up front, so the trackers can be
     # bound before the first committed move.
     produced = runner.play_games(
         num_games,
-        seeds=seeds,
+        seeds=[spec.seed for spec in specs],
         num_sims=num_sims,
         boards=boards,
         stop_fn=stop_fn,
         evaluator_for=evaluator_for,
     )
+    results: list[GameResult] = []
     for i, trace in enumerate(produced):
         gs = runner._games_debug[i]
         tr = trackers[i]
@@ -448,7 +530,26 @@ def play_games(
         fill_outcomes(trace, winner)
         trace.resign_disabled = tr.disabled
         trace.would_resign_ply = tr.would_resign_ply
+        results.append(GameResult(trace, winner, tr.would_resign_side))
 
+    return results, {"sims": int(runner.stats["sims"]), "forwards": int(runner.stats["forwards"])}
+
+
+def record_games(
+    results: list[GameResult],
+    specs: list[GameSpec],
+    stats: SelfPlayStats,
+    buffer: ReplayBuffer | None,
+    iteration: int,
+) -> None:
+    """Fold scored games into ``stats`` and the ring, in spec order.
+
+    Spec order is the order ``play_games`` has always stored in (the runner yields
+    traces by game index), so a ring filled here from games played anywhere is
+    byte-identical to one filled in-process.
+    """
+    for res, spec in zip(results, specs, strict=True):
+        trace, winner = res.trace, res.winner
         stats.games += 1
         stats.positions += len(trace.positions)
         stats.results[trace.result] = stats.results.get(trace.result, 0) + 1
@@ -459,32 +560,24 @@ def play_games(
             first = trace.positions[0]
             stats.move1_entropies.append(gumbel.entropy([e[2] for e in first.improved_policy]))
             stats.move1_prior_entropies.append(first.root_prior_entropy)
-        if tr.disabled:
+        if trace.resign_disabled:
             stats.resign_disabled_games += 1
-            if tr.would_resign_ply is not None:
+            if trace.would_resign_ply is not None:
                 stats.would_have_resigned += 1
                 # "Not ultimately lost by that side" — a draw counts as a false
                 # resign, because resigning a drawn game throws away half a point.
-                lost = winner is not None and winner != tr.would_resign_side
+                lost = winner is not None and winner != res.would_resign_side
                 stats.false_resigns += not lost
 
-        assignment = assignments[i] if assignments is not None else GameAssignment()
         if buffer is not None:
-            stats.pool_positions += _store(buffer, trace, gs, iteration, tr.disabled, assignment)
-        traces.append(trace)
-
-    stats.seconds = time.perf_counter() - t0
-    stats.sims = int(runner.stats["sims"])
-    stats.forwards = int(runner.stats["forwards"])
-    if buffer is not None:
-        buffer.flush()
-    return traces, stats
+            stats.pool_positions += _store(
+                buffer, trace, iteration, trace.resign_disabled, spec.assignment
+            )
 
 
 def _store(
     buffer: ReplayBuffer,
     trace: GameTrace,
-    gs,
     iteration: int,
     resign_disabled: bool,
     assignment: GameAssignment,

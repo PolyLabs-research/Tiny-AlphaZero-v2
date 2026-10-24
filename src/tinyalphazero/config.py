@@ -158,6 +158,11 @@ class SelfPlayConfig:
     resign_disabled_frac: float = 0.10  # fraction of games with resignation disabled
     league_latest_frac: float = 0.80  # fraction of opponents from latest weights
     league_pool_size: int = 20  # snapshots to keep in the league pool
+    # CPU processes that play self-play games (tinyalphazero.actors). 1 plays in the
+    # training process, wave by wave, as every round before p2_g did; N > 1 deals the
+    # iteration's games to N actors that share the GPU through this process. The
+    # games and the ring are the same either way (test_actors.py); only wall clock moves.
+    actor_processes: int = 1
 
 
 @dataclass

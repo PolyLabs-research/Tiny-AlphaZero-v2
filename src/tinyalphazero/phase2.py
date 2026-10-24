@@ -46,6 +46,7 @@ import numpy as np
 import torch
 
 from tinyalphazero import logschema
+from tinyalphazero.actors import play_specs_parallel
 from tinyalphazero.config import Config, config_fingerprint, load_config, save_config
 from tinyalphazero.envinfo import environment_report
 from tinyalphazero.mcts.batch_runner import torch_evaluate_batch
@@ -57,9 +58,12 @@ from tinyalphazero.selfplay import (
     LATEST,
     CheckpointPool,
     GameAssignment,
+    GameSpec,
     SelfPlayStats,
     assign_league,
     play_games,
+    record_games,
+    wave_specs,
 )
 from tinyalphazero.train import load_checkpoint, save_checkpoint, train_step_phase2
 
@@ -498,6 +502,9 @@ class Phase2Run:
         )
         evaluators = self._build_evaluators(assignments)
 
+        if sp.actor_processes > 1:
+            return self._generate_parallel(iteration, assignments, evaluators, wave_size)
+
         merged = SelfPlayStats()
         for w, start in enumerate(range(0, total, wave_size)):
             n = min(wave_size, total - start)
@@ -519,6 +526,38 @@ class Phase2Run:
             )
             merged.absorb(stats)
         return merged
+
+    def _generate_parallel(
+        self,
+        iteration: int,
+        assignments: list[GameAssignment],
+        evaluators: dict[str, Any],
+        wave_size: int,
+    ) -> SelfPlayStats:
+        """The same games as the wave loop above, played by ``actor_processes`` actors.
+
+        Specs are drawn wave by wave with the wave loop's seeds, so each game is the
+        game the in-process path would have played; all of them then play at once,
+        dealt across the actors, and are stored in the wave loop's order.
+        """
+        sp = self.cfg.selfplay
+        specs: list[GameSpec] = []
+        for w, start in enumerate(range(0, sp.games_per_iteration, wave_size)):
+            n = min(wave_size, sp.games_per_iteration - start)
+            seed = iteration_seed(self.state.seed, iteration, _STREAM_WAVE + w)
+            specs += wave_specs(seed, n, sp, assignments[start : start + n])
+
+        stats = SelfPlayStats()
+        t0 = time.perf_counter()
+        results, runner_stats = play_specs_parallel(
+            evaluators, specs, self.cfg, sp.sims_per_move, processes=sp.actor_processes
+        )
+        record_games(results, specs, stats, self.buffer, iteration)
+        self.buffer.flush()
+        stats.seconds = time.perf_counter() - t0
+        stats.sims = runner_stats["sims"]
+        stats.forwards = runner_stats["forwards"]
+        return stats
 
     def _build_evaluators(self, assignments: list[GameAssignment]) -> dict[str, Any]:
         """One ``evaluate_batch`` per distinct opponent this iteration names.

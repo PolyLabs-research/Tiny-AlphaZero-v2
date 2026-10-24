@@ -245,7 +245,7 @@ def test_root_q_shares_the_perspective_of_the_outcome_it_blends_with(
     assert first.outcome == 1, "the mover who mated is labelled +1"
 
     buf = ReplayBuffer.create(tmp_path / "ring", capacity=8)
-    _store(buf, trace, gs, iteration=1, resign_disabled=False, assignment=GameAssignment())
+    _store(buf, trace, iteration=1, resign_disabled=False, assignment=GameAssignment())
     assert len(buf) == len(trace.positions) >= 1
     batch = buf.sample(len(buf), np.random.default_rng(0))
     q, z = batch["root_q"], batch["outcome"].float()
