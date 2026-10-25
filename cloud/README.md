@@ -45,7 +45,8 @@ Ledger of every launch and termination: `~/.local/state/taz-cloud/ledger.jsonl`.
 - **The CUDA 12.4 image is Ubuntu 20.04, whose apt has Stockfish 11.** The skill-0
   instrument is Stockfish 16 (`16-1build1`, Ubuntu 24.04). Real runs use
   `runpod/pytorch:1.4.1-cu1281-torch2121-ubuntu2404` (the default image), which
-  matches the local torch 2.12.1 and gets Stockfish 16 from apt.
+  gets Stockfish 16 from apt. Its torch 2.12.1+cu128 is fine on CUDA; the LayerNorm
+  defect that moved this box to 2.14.1 is ROCm-only (`BRIDGE-2026-10-25-torch-2.14.1.md`).
 - Boot to SSH, including a cold image pull: ~4 min.
 
 ## First cloud benchmark, 2026-10-24 ($0.16)

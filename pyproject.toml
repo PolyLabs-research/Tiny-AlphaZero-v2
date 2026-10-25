@@ -8,7 +8,10 @@ version = "0.1.0"
 description = "A ground-up rebuild of TinyAlphaZero implementing the AlphaZero loop for chess"
 requires-python = ">=3.12"
 dependencies = [
-    "torch>=2.2.0",
+    # >=2.13: earlier ROCm builds drop half of LayerNorm's affine gradients on wave32
+    # GPUs such as this gfx1151 (pytorch#199265; BRIDGE-2026-10-25-torch-2.14.1.md).
+    # CUDA builds are unaffected; pods install with --no-deps on the image's 2.12.1.
+    "torch>=2.13",
     "numpy>=1.26.0",
     "chess>=1.10.0",
     "pyyaml>=6.0",
@@ -25,7 +28,7 @@ dev = [
 # AGENTS.md §2: torch must never resolve from PyPI on this box — those are CUDA
 # wheels that import fine and run CPU-only forever. Pin the ROCm index so
 # `uv pip install -e ".[dev]"` (make install, HOW_TO_TRAIN) cannot drift back.
-# The installed build is 2.12.1+rocm7.2; move the index with the stack, not before.
+# The installed build is 2.14.1+rocm7.2; move the index with the stack, not before.
 [tool.uv.sources]
 torch = { index = "pytorch-rocm" }
 

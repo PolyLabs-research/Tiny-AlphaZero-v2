@@ -1,0 +1,90 @@
+{
+  "ckpt": "runs/p2_f/ckpt_iter0020.pt",
+  "device": "AMD Radeon 8060S",
+  "torch": "2.14.1+rocm7.2",
+  "hip": "7.2.53211",
+  "cuda": null,
+  "tensors_moved": 0,
+  "rows": [
+    {
+      "batch": 0,
+      "loss": 2.354221,
+      "policy_loss": 1.571165,
+      "promo_loss": 0.483837,
+      "value_loss": 0.299218,
+      "legality_loss": 0.0,
+      "grad_norm": 1.760266,
+      "skipped": 0.0
+    },
+    {
+      "batch": 1,
+      "loss": 2.53848,
+      "policy_loss": 1.568745,
+      "promo_loss": 0.653663,
+      "value_loss": 0.316072,
+      "legality_loss": 0.0,
+      "grad_norm": 3.398874,
+      "skipped": 0.0
+    },
+    {
+      "batch": 2,
+      "loss": 2.383153,
+      "policy_loss": 1.498925,
+      "promo_loss": 0.576311,
+      "value_loss": 0.307918,
+      "legality_loss": 0.0,
+      "grad_norm": 2.738886,
+      "skipped": 0.0
+    },
+    {
+      "batch": 3,
+      "loss": 2.235126,
+      "policy_loss": 1.540892,
+      "promo_loss": 0.391046,
+      "value_loss": 0.303188,
+      "legality_loss": 0.0,
+      "grad_norm": 2.045063,
+      "skipped": 0.0
+    },
+    {
+      "batch": 4,
+      "loss": 2.712275,
+      "policy_loss": 1.576094,
+      "promo_loss": 0.84176,
+      "value_loss": 0.29442,
+      "legality_loss": 0.0,
+      "grad_norm": 1.926091,
+      "skipped": 0.0
+    },
+    {
+      "batch": 5,
+      "loss": 3.350264,
+      "policy_loss": 1.525364,
+      "promo_loss": 1.532277,
+      "value_loss": 0.292623,
+      "legality_loss": 0.0,
+      "grad_norm": 13.384461,
+      "skipped": 0.0
+    },
+    {
+      "batch": 6,
+      "loss": 1.806639,
+      "policy_loss": 1.50967,
+      "promo_loss": 0.00191,
+      "value_loss": 0.295059,
+      "legality_loss": 0.0,
+      "grad_norm": 1.298037,
+      "skipped": 0.0
+    },
+    {
+      "batch": 7,
+      "loss": 2.228314,
+      "policy_loss": 1.548239,
+      "promo_loss": 0.376409,
+      "value_loss": 0.303666,
+      "legality_loss": 0.0,
+      "grad_norm": 1.46463,
+      "skipped": 0.0
+    }
+  ]
+}

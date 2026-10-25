@@ -178,6 +178,11 @@ poisons the weights and makes every later step NaN. `train_step` now skips the u
 instead, so a transient costs one batch. Skips are logged per epoch as
 `skipped_steps` in `metrics.jsonl`, and the run aborts if they exceed 1% of steps.
 
+Every round trained here on torch 2.12.1 skipped some steps; p2_g, trained on CUDA, skipped
+none. 2.12.1's ROCm LayerNorm backward is defective (`FINDING-2026-10-24-rocm-layernorm-backward.md`),
+so check `torch.__version__` ≥ 2.13 first (`BRIDGE-2026-10-25-torch-2.14.1.md`); whether the
+defect caused the skips is untested.
+
 An occasional skip is tolerable. A steady trickle is not — see the ROCm SDPA note in
 `PROGRESS.md` and try math-only attention:
 
