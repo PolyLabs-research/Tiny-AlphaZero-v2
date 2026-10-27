@@ -1,4 +1,5 @@
-# p2_i, arm "row" — p2_g's config with the corrected value blend (DRAFT, PREREG-p2_i.md).
+# p2_i, arm "row" — p2_g's config with the corrected value blend (PREREG-p2_i.md, registered
+# 64ef834; closed by RUNLOG-p2_i: K1 failed, -0.040 [-0.070, -0.010], so batch_mean stays).
 #
 # Exactly one field differs from configs/p2_g.yaml (tests/test_rehearsal.py::test_p2i_row_config_is_the_brief):
 #   train.value_q_blend: per_row   rows without a search (the 5% mate-in-1/2 rehearsal rows) keep their value

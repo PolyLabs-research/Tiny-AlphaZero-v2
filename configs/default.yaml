@@ -100,6 +100,9 @@ train:
   # Rows without a root_q keep their outcome CE at full weight when the z/q blend
   # is on (train.value_q_mse_weight > 0). p2_c/p2_d ran "batch_mean", which halved
   # it; see REVIEW-2026-10-21 C1 and the RUNLOG-p2_c erratum.
+  # p2_i then measured per_row against batch_mean from p2_h/0060 (RUNLOG-p2_i):
+  # -0.040 [-0.070, -0.010] on skill-0, mate-in-2 unchanged; the p2 lineage keeps
+  # batch_mean (configs/p2_g.yaml). This default is left as it was.
   value_q_blend: per_row
   weight_decay: 0.0001
 

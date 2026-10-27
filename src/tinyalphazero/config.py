@@ -245,6 +245,9 @@ class TrainConfig:
     #   trained under this; RUNLOG-p2_c carries the erratum.
     # "per_row": masked-off rows keep CE at weight 1, masked-on rows get
     #   (1-w)*CE + w*MSE — what the paragraph above describes.
+    # p2_i measured the two from p2_h/0060, twenty iterations each (RUNLOG-p2_i):
+    #   per_row - batch_mean -0.040 [-0.070, -0.010] on skill-0 (K1 fails), mate-in-2
+    #   unchanged. batch_mean stays the standing protocol; per_row is closed.
     # Legacy default so committed run configs describe what they trained.
     value_q_blend: str = "batch_mean"
     rehearsal_mate1_dir: str = "runs/data/mate1_100k_clean"
