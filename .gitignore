@@ -41,6 +41,8 @@ runs/**
 # One directory holding several checkpoints' reps needs one verdict per checkpoint
 # (PREREG-p2_e Addendum 3, runs/p2_d_midrun/).
 !runs/**/p2_verdict_reps_*.json
+# The arm-against-arm verdict of an A/B round (PREREG-p2_i K1, runs/p2_i_row/).
+!runs/**/p2i_verdict_*.json
 # PREREG-p2_g Step 0b: the training-step numbers from each stack.
 !runs/**/bridge_*.json
 !runs/**/reps_iter*.jsonl
