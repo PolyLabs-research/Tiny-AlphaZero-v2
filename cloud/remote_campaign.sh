@@ -32,7 +32,31 @@ LOG=runs/${RUN}_campaign.console.log
 mkdir -p "runs/$RUN"
 
 log() { echo "$(date -Is) $*" >> "$LOG"; }
-pod_alive() { "$PY" -c "import sys; from tinyalphazero.cloud import RunPod; sys.exit(0 if RunPod().get_pod('$POD') else 1)" 2> /dev/null; }
+# 0: the API lists the pod; 1: the API says there is no such pod (404); 2: the check itself failed (network, API
+# error), which is no evidence either way. p2_i's drivers both read one such failure as "gone" on 2026-10-27 and
+# stopped measuring pods that were training (RUNLOG-p2_i), so a pod now counts as gone only after two "no such pod"
+# answers in a row, and a failed check never counts.
+pod_state() {
+    "$PY" -c "
+import sys
+try:
+    from tinyalphazero.cloud import RunPod
+    sys.exit(0 if RunPod().get_pod('$POD') else 1)
+except Exception:
+    sys.exit(2)
+" 2> /dev/null
+}
+GONE_STRIKES=0
+pod_alive() {
+    pod_state
+    case $? in
+        0) GONE_STRIKES=0; return 0 ;;
+        1) GONE_STRIKES=$((GONE_STRIKES + 1))
+           [ "$GONE_STRIKES" -ge 2 ] && return 1
+           log "pod $POD not found ($GONE_STRIKES of 2 checks); checking again next round"; return 0 ;;
+        *) log "pod $POD status check failed (API or network); not evidence it is gone, retrying next round"; return 0 ;;
+    esac
+}
 committed() { "$PY" -c "import json; print(json.load(open('runs/$RUN/state.json'))['iteration'])" 2> /dev/null || echo -1; }
 pull_run() {
     # seed_* are the donor run's own checkpoints, copied in by --seed-pool; this box has them.
