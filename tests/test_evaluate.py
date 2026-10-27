@@ -1185,3 +1185,65 @@ def test_ladder_rows_stamp_the_launch_sha_and_the_config_fingerprint() -> None:
         assert r["config_fingerprint"] == config_fingerprint(cfg)
         assert r["nondeterministic"] is False and r["anchor_digest"] is None
         assert r["schema_version"] == logschema.LADDER_SCHEMA_VERSION
+
+
+def test_one_sample_rep_interval_reproduces_runlog_p2h_m4_at_0060() -> None:
+    """M4's interval on p2_h/0060's committed reps is RUNLOG-p2_h §3's 0.697 [0.663, 0.729].
+
+    The one-sample statistic was computed by hand at p2_g's, p2_h's and p2_i's
+    scoring; it is a library function now, pinned to the committed rep rows the
+    way ``paired_rep_verdict`` is pinned to p2_d's. 0060 is the checkpoint where
+    RUNLOG-p2_h scored M4 as NOT met (lower bound 0.663 against the bar 0.675).
+    """
+    from tinyalphazero.evaluate import one_sample_rep_interval
+
+    rows = [
+        logschema.read_jsonl(REPO / "runs" / "p2_h" / f"reps_iter0060_r{k}.jsonl")[0]
+        for k in (1, 2, 3)
+    ]
+    got = one_sample_rep_interval(rows, "p2_h_0060")
+    assert got["p2_h_0060_reps"] == [0.71, 0.685, 0.695]
+    assert got["openings"] == 100
+    assert got["p2_h_0060_mean"] == pytest.approx(0.6966666666666665, abs=1e-12)
+    assert got["ci95"] == pytest.approx([0.6633333333333334, 0.7291666666666665], abs=1e-12)
+    assert got["se"] == pytest.approx(0.016897770537309943, abs=1e-12)
+    assert [round(x, 3) for x in got["ci95"]] == [0.663, 0.729]
+    assert not got["ci95"][0] > 0.675, "RUNLOG-p2_h §3: M4 NOT met at 0060"
+
+
+def test_book_rows_in_ring_keys_on_the_position_not_the_clocks(tmp_path: Path) -> None:
+    """L2's counter: a book position stored with another halfmove bucket and repetition
+    count still counts; the initial position and a non-book position do not."""
+    import chess
+    import numpy as np
+
+    from tinyalphazero.encoding import encode_board, halfmove_bucket
+    from tinyalphazero.evaluate import book_rows_in_ring, load_openings
+    from tinyalphazero.replay import ReplayBuffer
+
+    book = load_openings()[:3]
+    stored = chess.Board()
+    stored.set_epd(book[1][0])
+    tokens = encode_board(stored, 2)  # the clocks a game reaching this position carries
+    tokens[70] = halfmove_bucket(45)
+    other = chess.Board()
+    other.push_san("e4")
+    legals = np.zeros(512, dtype=np.uint8)
+    buf = ReplayBuffer.create(tmp_path / "replay", capacity=8)
+    for i, tok in enumerate((tokens, encode_board(chess.Board(), 0), encode_board(other, 0))):
+        buf.add(
+            tokens=tok,
+            legals=legals,
+            move_ft=0,
+            promo=0,
+            outcome=0,
+            improved_policy=[(0, 0, 1.0)],
+            iteration=7 + i,
+        )
+    buf.flush()
+
+    res = book_rows_in_ring(tmp_path / "replay", book)
+    assert res["rows"] == 3 and res["total_written"] == 3
+    assert res["book_rows"] == [(0, book[1][1], 7)]
+    assert res["rows_at_initial_position"] == 1
+    assert res["distinct_positions"] == 3

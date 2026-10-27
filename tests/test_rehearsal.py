@@ -480,7 +480,10 @@ def test_p2i_row_config_is_the_brief() -> None:
     assert not differences, "p2_i_row moves more than registered:\n  " + "\n  ".join(differences)
     row = dataclasses.asdict(load_config(str(p2i)))
     base = dataclasses.asdict(load_config(str(p2g)))
-    assert base["train"]["value_q_blend"] == "batch_mean" and row["train"]["value_q_blend"] == "per_row"
+    assert (
+        base["train"]["value_q_blend"] == "batch_mean"
+        and row["train"]["value_q_blend"] == "per_row"
+    )
     assert row["train"]["value_q_mse_weight"] == base["train"]["value_q_mse_weight"] == 0.5
     assert row["train"]["rehearsal_frac"] == base["train"]["rehearsal_frac"] == 0.05
 

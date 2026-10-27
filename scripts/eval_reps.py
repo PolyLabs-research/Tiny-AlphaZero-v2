@@ -34,7 +34,12 @@ from pathlib import Path
 
 from tinyalphazero import logschema
 from tinyalphazero.config import load_config
-from tinyalphazero.evaluate import format_ladder_event, paired_rep_verdict, run_ladder_pass
+from tinyalphazero.evaluate import (
+    format_ladder_event,
+    one_sample_rep_interval,
+    paired_rep_verdict,
+    run_ladder_pass,
+)
 
 
 def _report(kind: str, payload: dict) -> None:
@@ -113,6 +118,21 @@ def cmd_verdict(args: argparse.Namespace) -> int:
     return 0 if verdict["excludes_zero"] else 1
 
 
+def cmd_m4(args: argparse.Namespace) -> int:
+    name, *paths = args.rows
+    stat = one_sample_rep_interval(
+        _read_rows(paths), name, resamples=args.resamples, seed=args.seed
+    )
+    stat["bar"] = args.bar
+    stat["met"] = bool(stat["ci95"][0] > args.bar)
+    text = json.dumps(stat, indent=2)
+    print(text)
+    if args.out is not None:
+        Path(args.out).write_text(text)
+        print(f"wrote {args.out}")
+    return 0 if stat["met"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -146,6 +166,16 @@ def main(argv: list[str] | None = None) -> int:
     ver.add_argument("--seed", type=int, default=0)
     ver.add_argument("--out", type=Path, default=None)
     ver.set_defaults(fn=cmd_verdict)
+
+    m4 = sub.add_parser(
+        "m4", help="one-sample bootstrap of the mean-over-reps book score against a bar (M4)"
+    )
+    m4.add_argument("--rows", nargs="+", required=True, metavar="NAME ROWS", help="label then rows")
+    m4.add_argument("--bar", type=float, default=0.675, help="RUNLOG-p2_g §4's bar")
+    m4.add_argument("--resamples", type=int, default=10_000)
+    m4.add_argument("--seed", type=int, default=0)
+    m4.add_argument("--out", type=Path, default=None)
+    m4.set_defaults(fn=cmd_m4)
 
     args = ap.parse_args(argv)
     return args.fn(args)

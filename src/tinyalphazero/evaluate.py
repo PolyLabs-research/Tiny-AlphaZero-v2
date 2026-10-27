@@ -159,6 +159,39 @@ def paired_rep_verdict(
     }
 
 
+def one_sample_rep_interval(
+    rows: list[dict], name: str, resamples: int = 10_000, seed: int = 0
+) -> dict[str, Any]:
+    """M4's interval: the mean-over-reps book score with a one-sample bootstrap CI.
+
+    RUNLOG-p2_g §4 defined it at scoring (the registration had named the bar,
+    0.675, but not the interval): per-opening rep-means bootstrapped over the 100
+    openings, 10,000 resamples, seed 0, percentile interval — the one-sample
+    counterpart of :func:`paired_rep_verdict`, and it draws the same opening
+    indices for the same seed (``default_rng(seed).integers(0, n, size=(R, n))``).
+    RUNLOG-p2_h and RUNLOG-p2_i report it at every judged checkpoint; a test pins
+    p2_h/0060's value to the committed rep rows.
+    """
+    if not rows:
+        raise ValueError(f"{name}: no repetition rows")
+    ps = np.array([r["pair_scores"] for r in rows], dtype=np.float64)
+    if ps.ndim != 2 or ps.shape[1] == 0:
+        raise ValueError(f"{name}: rows must carry equal-length pair_scores (schema >= 3)")
+    n = ps.shape[1]
+    per_opening = ps.mean(axis=0)
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, n, size=(resamples, n))
+    boot = per_opening[idx].mean(axis=1)
+    lo, hi = np.percentile(boot, [2.5, 97.5])
+    return {
+        f"{name}_reps": [float(r["score"]) for r in rows],
+        f"{name}_mean": float(per_opening.mean()),
+        "ci95": [float(lo), float(hi)],
+        "se": float(boot.std(ddof=1)),
+        "openings": int(n),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Matches
 # ---------------------------------------------------------------------------
@@ -196,6 +229,54 @@ class MatchResult:
 def load_openings(path: str | Path = OPENINGS) -> list[tuple[str, str]]:
     """The frozen book as ``[(epd, id)]``."""
     return load_epd(path)
+
+
+def book_rows_in_ring(
+    ring_dir: str | Path, openings: list[tuple[str, str]] | None = None
+) -> dict[str, Any]:
+    """L2, the contamination check: rows of a replay ring equal to a book position.
+
+    PREREG-p2_h registered the count (expected 0) and RUNLOG-p2_h §2 scored it by a
+    script that was never committed; RUNLOG-p2_i §2 reports it per arm. The key is
+    the position proper — squares, side to move, castling rights and the en passant
+    file, ``encode_board()[:70]`` — not the halfmove bucket or the repetition
+    count, which a stored row carries and an EPD does not. Every stored row is
+    compared, so a game that starts off the book and plays into a book position
+    counts: that is the mechanism RUNLOG-p2_h §2 found behind its four rows. The
+    ring is opened read-only; ``book_rows`` lists ``(row, opening_id, iteration)``.
+    """
+    from tinyalphazero.encoding import encode_board
+    from tinyalphazero.replay import ReplayBuffer
+
+    book = load_openings() if openings is None else openings
+    keys: dict[bytes, str] = {}
+    for epd, ident in book:
+        b = chess.Board()
+        b.set_epd(epd)
+        keys[encode_board(b, 0)[:70].tobytes()] = ident
+    start_key = encode_board(chess.Board(), 0)[:70].tobytes()
+    buf = ReplayBuffer.open(ring_dir, readonly=True)
+    n = len(buf)
+    boards = buf._arr["boards"][:n]
+    iterations = buf._arr["iteration"][:n]
+    hits: list[tuple[int, str, int]] = []
+    at_start = 0
+    distinct: set[bytes] = set()
+    for i in range(n):
+        key = boards[i, :70].tobytes()
+        distinct.add(key)
+        if key == start_key:
+            at_start += 1
+        ident = keys.get(key)
+        if ident is not None:
+            hits.append((i, ident, int(iterations[i])))
+    return {
+        "rows": int(n),
+        "total_written": int(buf.total_written),
+        "book_rows": hits,
+        "rows_at_initial_position": at_start,
+        "distinct_positions": len(distinct),
+    }
 
 
 def _score_for_learner(trace: GameTrace, board: chess.Board, learner_white: bool) -> float:
