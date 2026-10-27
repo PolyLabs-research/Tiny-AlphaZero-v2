@@ -464,6 +464,27 @@ def test_p2g_config_is_the_brief() -> None:
     assert g["phase2"]["iterations"] == 60
 
 
+def test_p2i_row_config_is_the_brief() -> None:
+    """configs/p2_i_row.yaml is configs/p2_g.yaml with ``value_q_blend: per_row`` and nothing else (PREREG-p2_i).
+
+    The continuation arm runs configs/p2_g.yaml unchanged, so the A/B's two arms differ in this one field; the round
+    length is the invocation's ``--iterations``, not the file's.
+    """
+    import dataclasses
+
+    p2g = REPO / "configs" / "p2_g.yaml"
+    p2i = REPO / "configs" / "p2_i_row.yaml"
+    if not (p2g.exists() and p2i.exists()):
+        pytest.skip("p2_g or p2_i_row config not present")
+    differences = _config_deltas(p2g, p2i, "p2_g", "p2_i_row", allowed={"value_q_blend"})
+    assert not differences, "p2_i_row moves more than registered:\n  " + "\n  ".join(differences)
+    row = dataclasses.asdict(load_config(str(p2i)))
+    base = dataclasses.asdict(load_config(str(p2g)))
+    assert base["train"]["value_q_blend"] == "batch_mean" and row["train"]["value_q_blend"] == "per_row"
+    assert row["train"]["value_q_mse_weight"] == base["train"]["value_q_mse_weight"] == 0.5
+    assert row["train"]["rehearsal_frac"] == base["train"]["rehearsal_frac"] == 0.05
+
+
 def test_p2c_config_is_the_brief() -> None:
     """configs/p2_c.yaml differs from p2_b's resolved config in exactly one field.
 
