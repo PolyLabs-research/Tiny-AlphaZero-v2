@@ -2,8 +2,8 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-10-27.** Awaiting Michael's cost OK; nothing under this file has run.
-> Registration is the commit that changes this line.
+> **STATUS: REGISTERED 2026-10-27** (see Sign-off), at Michael's instruction. Nothing under this file
+> has run.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that
 has not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -134,8 +134,10 @@ The driver's own verdicts (three reps against the six-rep start) land in
 Checked for the draft, 2026-10-27, on this box: p2_i_cont's `state.json` iteration 20, 0 skipped steps,
 pool `ckpt_iter0001`–`0020` (all twenty present), `replay_total_written` 1,551,304 = the ring's
 `total_written`; the six start-reference book reps and three initial-position reps present; L2 counter
-reproduces p2_h's four rows. Read at drafting, 2026-10-27 ~17:30 UTC: RunPod balance $22.67, no pods of
-ours running; secure RTX 4090 at $0.89/h, stock low; per-pod ceiling $15 (`~/.config/taz-cloud/limits.json`),
+reproduces p2_h's four rows. Read at registration, 2026-10-27 17:31 UTC: RunPod balance $22.67, no pods
+of ours running; secure RTX 4090 listed at $0.89/h (stock not reported at that read); per-pod ceiling $15 (`~/.config/taz-cloud/limits.json`),
 so 12 h × $0.89 = $10.68 passes, and leaves $11.99, above the $5 margin.
 
-**Not signed.** Registration follows Michael's cost OK.
+**Signed: the Claude Code session, at Michael's instruction ("ok given", 2026-10-27, after the draft and
+its cost — expected about $7, worst case $10.68 — were put to him).** The commit carrying this line is the
+registration.
