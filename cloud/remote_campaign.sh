@@ -15,6 +15,11 @@
 # final iteration, write PULLED on the pod (its job then deletes it), finish the
 # measurements, compute the verdicts. The pod's deadline and the sweeper still cap
 # everything if this box is down. Log: runs/RUN_campaign.console.log.
+#
+# MEASURE_AFTER_PULL=1: measure nothing until the final pull is complete (or the pod is
+# gone), so this box only pulls while the pod holds the only copy. p2_j's first attempt
+# lost checkpoints 22-40: the box froze during the 0020 measurement (measuring blocks
+# pulling) and the pod deleted itself after its PULL_WAIT. Costs the interim readings.
 set -u
 POD=$1
 RUN=$2
@@ -23,6 +28,7 @@ FINAL=$4
 START_REPS=${START_REPS:-runs/p2_f/reps_iter0020_r*.jsonl}
 START_STARTPOS=${START_STARTPOS:-runs/p2_f/startpos/reps_iter0020_r*.jsonl}
 PULL_EVERY=${PULL_EVERY:-300}
+MEASURE_AFTER_PULL=${MEASURE_AFTER_PULL:-0}
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 cd "$REPO" || exit 1
 PY=.venv/bin/python
@@ -114,7 +120,7 @@ finish_pod() {  # the job is done: everything back, then release the pod
     fi
 }
 
-log "armed: pod $POD run $RUN judged [$JUDGED] final $FINAL"
+log "armed: pod $POD run $RUN judged [$JUDGED] final $FINAL measure_after_pull $MEASURE_AFTER_PULL"
 while :; do
     if [ ! -e "runs/$RUN/.remote_done" ] && pod_alive; then
         pull_run --exclude=replay/ --exclude='*.tmp'
@@ -128,7 +134,8 @@ while :; do
 
     c=$(committed)
     for n in $JUDGED; do
-        if [ "$n" -lt "$c" ] || [ -e "runs/$RUN/.remote_done" ] || [ -e "runs/$RUN/.pod_gone" ]; then
+        if { [ "$MEASURE_AFTER_PULL" = 0 ] && [ "$n" -lt "$c" ]; } || [ -e "runs/$RUN/.remote_done" ] \
+            || [ -e "runs/$RUN/.pod_gone" ]; then
             measure "$n"
             # Between measurements, release a finished pod first: it bills while it waits.
             if [ ! -e "runs/$RUN/.remote_done" ] && pod_alive \

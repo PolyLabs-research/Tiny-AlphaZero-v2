@@ -141,3 +141,41 @@ so 12 h × $0.89 = $10.68 passes, and leaves $11.99, above the $5 margin.
 **Signed: the Claude Code session, at Michael's instruction ("ok given", 2026-10-27, after the draft and
 its cost — expected about $7, worst case $10.68 — were put to him).** The commit carrying this line is the
 registration.
+
+---
+
+## Addendum A — 2026-10-28: attempt 1 lost; the registered run is attempt 2
+
+**What happened.** Attempt 1 (pod `8lltzivl3qys40`, launched 2026-10-27 17:32:55 UTC; L1 held) trained
+on the pod, but this box froze silently at about 22:04 UTC (the journal ends mid-stream with no kernel
+warning; the second such freeze, both under chess compute on this box), during the 0020 measurement,
+and was restarted 2026-10-28 08:55 UTC. With nothing pulling, the pod's job waited its `PULL_WAIT`
+(4 h) after training and deleted itself, about 04:40 UTC ($9.91 spent, within the $10.68 worst case).
+Checkpoints 0022–0040, the ring and the log past iteration 21 went with it, so attempt 1 has no K1, no
+K2 at 30 or 40, no K3, N or ECE at 40, and no L2. The "Losing the final pull" clause above assumed this
+box alive to pull every five minutes; measuring blocks pulling, and the box was down.
+
+**What is kept.** `runs/p2_j_attempt1/`: checkpoints 0000–0021, `state.json` at 21, the 0010
+measurement, the 0020 ladder row and book rep 1, the consoles (`console/`). RUNLOG-p2_j reports it as
+the lost attempt. It is not pooled with attempt 2 and none of its readings enters a decision. Its
+three-rep 0010 reading (−0.0325 [−0.065, −0.000] against the six-rep start) has been seen; no rule
+above is added, weakened or reworded.
+
+**Attempt 2 is the registered run**, into `runs/p2_j`, exactly per the Contract and the Measurement
+protocol above (config, warm start, continuity, seed, GPU class, image, 12 h deadline, $10.68 worst
+case, judged 10/20/30/40, six-against-six K1 at 40), with one change to *when* this box measures, not
+what or how:
+
+- The driver runs with `MEASURE_AFTER_PULL=1` (`cloud/remote_campaign.sh`, this commit): no judged
+  checkpoint is measured until the final pull, ring included, is complete, so this box only pulls
+  while the pod holds the only copy. The instrument (the scripts, torch 2.14.1, this box, `gpu hold`)
+  is unchanged; the readings at 10/20/30 arrive after training instead of during it.
+- The launch bundle is clean, pushed `main` at this addendum's commit, so L1's `git_sha` is this
+  commit rather than `d94b30c`.
+
+Read before launch, 2026-10-28 09:51 UTC: RunPod balance $62.76 (Michael topped up $50), no pods of
+ours; secure RTX 4090 listed at $0.89/h (stock "Low"); 12 h × $0.89 = $10.68 passes the $15 per-pod
+ceiling and leaves $52.08, above the $5 margin.
+
+**Signed: the Claude Code session, at Michael's instruction ("Option 1 please", 2026-10-28, after the
+loss and the re-run's cost — expected about $7, worst case $10.68 — were put to him).**
