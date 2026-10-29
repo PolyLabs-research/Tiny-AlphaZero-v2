@@ -99,6 +99,10 @@ MUST_REACH: list[str] = [
     "runs/p2_g/p2_verdict_reps_iter0010.json",
     "runs/p2_g/p2_verdict_reps.json",
     "runs/p2_g/startpos/p2_verdict_reps.json",
+    # p2_k (PREREG-p2_k): the arm-against-arm K1, and each arm's M4 and L2.
+    "runs/p2_k_lr/p2k_verdict_lr_vs_cont.json",
+    "runs/p2_k_cont/p2_m4_iter0020.json",
+    "runs/p2_k_lr/book_rows.json",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that

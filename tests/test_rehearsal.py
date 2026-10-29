@@ -488,6 +488,26 @@ def test_p2i_row_config_is_the_brief() -> None:
     assert row["train"]["rehearsal_frac"] == base["train"]["rehearsal_frac"] == 0.05
 
 
+def test_p2k_lr_config_is_the_brief() -> None:
+    """configs/p2_k_lr.yaml is configs/p2_g.yaml with ``lr`` stepped down tenfold and nothing else (PREREG-p2_k).
+
+    The continuation arm runs configs/p2_g.yaml unchanged, so the A/B's two arms differ in this one field; the
+    phase 1 schedule's fields (``phase1_lr_start``/``_end``) are other leaves and must not move.
+    """
+    import dataclasses
+
+    p2g = REPO / "configs" / "p2_g.yaml"
+    p2k = REPO / "configs" / "p2_k_lr.yaml"
+    if not (p2g.exists() and p2k.exists()):
+        pytest.skip("p2_g or p2_k_lr config not present")
+    differences = _config_deltas(p2g, p2k, "p2_g", "p2_k_lr", allowed={"lr"})
+    assert not differences, "p2_k_lr moves more than registered:\n  " + "\n  ".join(differences)
+    lr = dataclasses.asdict(load_config(str(p2k)))
+    base = dataclasses.asdict(load_config(str(p2g)))
+    assert base["train"]["lr"] == 2e-4 and lr["train"]["lr"] == 2e-5
+    assert lr["train"]["weight_decay"] == base["train"]["weight_decay"]
+
+
 def test_p2c_config_is_the_brief() -> None:
     """configs/p2_c.yaml differs from p2_b's resolved config in exactly one field.
 
