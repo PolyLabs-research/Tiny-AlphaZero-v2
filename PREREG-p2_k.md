@@ -2,8 +2,8 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-10-29 — not registered.** Nothing launches until Michael's cost OK; the
-> registration commit flips this line and carries the sign-off.
+> **STATUS: REGISTERED 2026-10-29** (see Sign-off), at Michael's instruction. Nothing under this file
+> has run.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -161,8 +161,10 @@ Checked for the draft, 2026-10-29, on this box: p2_j's `state.json` iteration 40
 `8ab654e2721decee87b6af33b3ea2c444bb19f8ecd1463f539234233895c298c`. Read for the draft: RunPod balance
 $45.78 (the account also carries Michael's own pods, about $1/h, not this round's), no pods of ours;
 secure RTX 4090 listed at $0.89/h (stock "Low"); per-pod ceiling $15 (`~/.config/taz-cloud/limits.json`),
-so 8 h × $0.89 = $7.12 per pod passes, and $14.24 for both leaves $31.54, above the $5 margin. Price and
-balance are read again at registration.
+so 8 h × $0.89 = $7.12 per pod passes, and $14.24 for both leaves $31.54, above the $5 margin. Read at
+registration, 2026-10-29 10:00 UTC: balance $44.70, no pods of ours, secure RTX 4090 at $0.89/h (stock
+"Low"); $14.24 for both leaves $30.46, above the $5 margin. `make test` passed on this commit's tree.
 
-**Not signed.** Registration waits for Michael's OK on the round and its cost — expected about $7.5,
-worst case $14.24.
+**Signed: the Claude Code session, at Michael's instruction ("ok given, go with 2e-5", 2026-10-29, after
+the draft, the step size and its cost — expected about $7.5, worst case $14.24 — were put to him).** The
+commit carrying this line is the registration.
