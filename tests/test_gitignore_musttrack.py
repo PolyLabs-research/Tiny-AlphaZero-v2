@@ -46,6 +46,9 @@ MUST_TRACK: list[str] = [
     "runs/p2_d/p2_verdict_reps.json",
     "runs/p2_*/reps_iter*.jsonl",
     "runs/p2_c/ladder_pairscores.jsonl",
+    # p2_j's K3 and L2 records (RUNLOG-p2_j).
+    "runs/p2_*/p2_m4_iter*.json",
+    "runs/p2_*/book_rows.json",
 ]
 
 # Records that do not exist yet but must be reachable when they do. MUST_TRACK

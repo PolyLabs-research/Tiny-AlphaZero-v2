@@ -44,6 +44,9 @@ runs/**
 !runs/**/p2_verdict_reps_*.json
 # The arm-against-arm verdict of an A/B round (PREREG-p2_i K1, runs/p2_i_row/).
 !runs/**/p2i_verdict_*.json
+# PREREG-p2_j's K3 (`eval_reps.py m4`) and L2 (`ring_book_rows.py --json`) records.
+!runs/**/p2_m4_*.json
+!runs/**/book_rows.json
 # PREREG-p2_g Step 0b: the training-step numbers from each stack.
 !runs/**/bridge_*.json
 !runs/**/reps_iter*.jsonl

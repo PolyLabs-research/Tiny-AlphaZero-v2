@@ -1,0 +1,20 @@
+{
+  "runs/p2_j": {
+    "rows": 500000,
+    "total_written": 2566550,
+    "book_rows": [
+      [
+        79935,
+        "open_027",
+        31
+      ],
+      [
+        460611,
+        "open_027",
+        38
+      ]
+    ],
+    "rows_at_initial_position": 546,
+    "distinct_positions": 482137
+  }
+}
