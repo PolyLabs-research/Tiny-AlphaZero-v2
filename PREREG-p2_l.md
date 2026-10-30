@@ -2,8 +2,8 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-10-30 — not registered.** Nothing runs (Step 0 included) until Michael's cost OK;
-> the registration commit flips this line and carries the sign-off.
+> **STATUS: REGISTERED 2026-10-30** (see Sign-off), at Michael's instruction. Nothing under this file
+> has run, Step 0 included.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -195,7 +195,10 @@ pool `ckpt_iter0001`–`0020` (all twenty present), `replay_total_written` 1,555
 fingerprint `8ab654e2…298c`. Read for the draft: RunPod balance $30.42 (the account also carries
 Michael's own pods, about $1.1/h, not this round's), no pods of ours; secure RTX 4090 listed at $0.89/h
 (stock "Low"); 12 h × $0.89 = $10.68 passes the $15 per-pod ceiling and leaves $19.74, above the $5
-margin. Price and balance are read again at registration.
+margin. Read at registration, 2026-10-30 19:19 UTC: balance $30.01, no pods of ours, secure RTX 4090 at
+$0.89/h (stock "Low"); $10.68 leaves $19.33, above the $5 margin. `make test` passed on this commit's
+tree (879 passed, 2 skipped).
 
-**Not signed.** Registration waits for Michael's OK on the round, the rung rule, the ECE rule and the
-cost — expected about $7.5, worst case $10.68.
+**Signed: the Claude Code session, at Michael's instruction ("ok given, go", 2026-10-30, after the
+draft, the rung rule, the ECE rule and its cost — expected about $7.5, worst case $10.68 — were put to
+him).** The commit carrying this line is the registration.
