@@ -1049,6 +1049,21 @@ def test_rep_verdict_reproduces_the_committed_p2_d_statistic() -> None:
     assert got["excludes_zero"] is True
 
 
+def test_rep_verdict_refuses_rows_from_two_anchors() -> None:
+    """Skill-0 rows against skill-N rows would compute a difference of nothing (PREREG-p2_l's two rungs)."""
+    from tinyalphazero.evaluate import paired_rep_verdict
+
+    def row(anchor: str, scores: list[float]) -> dict:
+        return {"anchor": anchor, "pair_scores": scores, "score": sum(scores) / len(scores)}
+
+    s0, s5 = row("stockfish_s0", [1.0, 0.5, 1.0]), row("stockfish_s5", [0.5, 0.5, 0.0])
+    with pytest.raises(ValueError, match="more than one anchor"):
+        paired_rep_verdict([s0], [s5], "a", "b")
+    with pytest.raises(ValueError, match="more than one anchor"):
+        paired_rep_verdict([s0, s5], [s0], "a", "b")
+    assert paired_rep_verdict([s0], [s0], "a", "b")["paired_difference"] == 0.0
+
+
 def test_phase1_rung_refuses_a_checkpoint_with_the_wrong_digest() -> None:
     """The anchor is pinned by digest in the code, not only in a document.
 

@@ -138,6 +138,11 @@ def paired_rep_verdict(
     pa, pb = _stack(a_rows, a_name), _stack(b_rows, b_name)
     if pa.shape[1] != pb.shape[1]:
         raise ValueError(f"openings differ: {a_name} {pa.shape[1]} vs {b_name} {pb.shape[1]}")
+    # A difference of rep-means against two different opponents is a number about nothing; from p2_l on, a run's
+    # directory holds reps against more than one Stockfish skill (PREREG-p2_l), so the mix is refused, not computed.
+    anchors = {str(r.get("anchor")) for r in a_rows + b_rows}
+    if len(anchors) != 1:
+        raise ValueError(f"rows from more than one anchor: {sorted(anchors)}")
     n = pa.shape[1]
     diff = pb.mean(axis=0) - pa.mean(axis=0)  # per-opening difference of rep-means
     rng = np.random.default_rng(seed)
