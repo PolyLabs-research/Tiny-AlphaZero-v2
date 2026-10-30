@@ -1,4 +1,6 @@
-# p2_k, arm "lr" — p2_g's config with the learning rate stepped down tenfold (PREREG-p2_k.md, DRAFT).
+# p2_k, arm "lr" — p2_g's config with the learning rate stepped down tenfold (PREREG-p2_k.md, registered
+# 6cba16e; closed by RUNLOG-p2_k: K1 +0.117 [+0.093, +0.140] against the continuation arm, so 2e-5 is
+# standing protocol from p2_k_lr/0020).
 #
 # Exactly one field differs from configs/p2_g.yaml (tests/test_rehearsal.py::test_p2k_lr_config_is_the_brief):
 #   train.lr: 2.0e-05   constant, like p2_g's 2e-4; --init starts a fresh AdamW at it. AdamW's
