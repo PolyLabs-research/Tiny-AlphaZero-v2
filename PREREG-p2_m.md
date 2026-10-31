@@ -2,8 +2,8 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-10-31 — not registered.** Nothing launches until Michael's cost OK; the
-> registration commit flips this line and carries the sign-off.
+> **STATUS: REGISTERED 2026-10-31** (see Sign-off), at Michael's instruction. Nothing under this file
+> has run.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -183,8 +183,11 @@ steps, pool `ckpt_iter0021`–`0040` (all present), `replay_total_written` 2,644
 initial-position reps present; `--resume` reloads the optimizer from the last checkpoint and continues
 the iteration counter (`Phase2Run.resume`), and per-iteration seeds are `iteration_seed(seed, iteration,
 stream)`. Read for the draft: RunPod balance $54.64, auto-top-up on (Michael, 2026-10-31), no pods of
-ours; secure RTX 4090 at $0.89/h; 8 h × $0.89 = $7.12 per pod passes the $15 ceiling. Price and balance
-are read again at registration.
+ours; secure RTX 4090 at $0.89/h; 8 h × $0.89 = $7.12 per pod passes the $15 ceiling. Read at
+registration, 2026-10-31 13:53 UTC: balance $51.77, no pods of ours, secure RTX 4090 at $0.89/h (stock
+"Medium"); $14.24 for both leaves $37.53, above the $5 margin. `make test` passed on this commit's tree
+(897 passed, 2 skipped). Disk at registration: 9.1 GB free.
 
-**Not signed.** Registration waits for Michael's OK on the design and its cost — expected about $7.7,
-worst case $14.24.
+**Signed: the Claude Code session, at Michael's instruction ("Ok, go", 2026-10-31, after the draft and
+its cost — expected about $7.7, worst case $14.24 — were put to him).** The commit carrying this line is
+the registration.
