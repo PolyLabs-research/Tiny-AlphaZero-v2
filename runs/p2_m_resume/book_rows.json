@@ -1,0 +1,15 @@
+{
+  "runs/p2_m_resume": {
+    "rows": 500000,
+    "total_written": 3718407,
+    "book_rows": [
+      [
+        210047,
+        "open_027",
+        60
+      ]
+    ],
+    "rows_at_initial_position": 535,
+    "distinct_positions": 478247
+  }
+}
