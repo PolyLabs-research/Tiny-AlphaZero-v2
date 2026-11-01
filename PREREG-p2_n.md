@@ -2,8 +2,8 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-11-01 — not registered.** Nothing launches until Michael's cost OK; the
-> registration commit flips this line and carries the sign-off.
+> **STATUS: REGISTERED 2026-11-01** (see Sign-off), at Michael's instruction. Nothing under this file
+> has run.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -149,5 +149,13 @@ about $1.42/h), no pods of ours; secure RTX 4090 at $0.89/h (stock "Low"). **$10
 below the $5 margin**: the launch's budget check refuses until the balance is above $15.68. Price and
 balance are read again at registration.
 
-**Not signed.** Registration waits for Michael's OK on the round and its cost — expected about $7.5,
-worst case $10.68.
+**The margin, changed at registration:** the account auto-reloads when its balance reaches $10
+(Michael), so the $5 margin no longer guards against running dry; at Michael's instruction ("lower the
+margin to $2") `~/.config/taz-cloud/limits.json` `balance_margin` is now 2.0 (per-pod ceiling $15
+unchanged). Read at registration, 2026-11-01 11:54 UTC: balance $13.54, no pods of ours, secure RTX 4090
+at $0.89/h (stock "Low"); $10.68 leaves $2.86, above the $2 margin. `make test` passed on this commit's
+tree (916 passed, 2 skipped).
+
+**Signed: the Claude Code session, at Michael's instruction ("go", 2026-11-01, after the draft and its
+cost — expected about $7.5, worst case $10.68 — were put to him).** The commit carrying this line is the
+registration.
