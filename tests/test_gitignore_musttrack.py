@@ -122,6 +122,10 @@ MUST_REACH: list[str] = [
     "runs/p2_o_lr/sf3/p2o_verdict_lr_vs_cont.json",
     "runs/p2_o_cont/sf3/reps_iter0020_r6.jsonl",
     "runs/p2_o_lr/p2_m4_iter0020.json",
+    # p2_p (PREREG-p2_p): the replication's K1 and the two seeds pooled.
+    "runs/p2_p_lr/sf3/p2p_verdict_lr_vs_cont.json",
+    "runs/p2_p_lr/sf3/p2p_verdict_pooled_o_and_p.json",
+    "runs/p2_p_cont/sf3/reps_iter0020_r6.jsonl",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that
