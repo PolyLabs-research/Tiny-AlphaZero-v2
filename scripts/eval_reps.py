@@ -35,6 +35,7 @@ from pathlib import Path
 from tinyalphazero import logschema
 from tinyalphazero.config import load_config
 from tinyalphazero.evaluate import (
+    CI_BOUND_TOL,
     format_ladder_event,
     one_sample_rep_interval,
     paired_rep_verdict,
@@ -124,7 +125,7 @@ def cmd_m4(args: argparse.Namespace) -> int:
         _read_rows(paths), name, resamples=args.resamples, seed=args.seed
     )
     stat["bar"] = args.bar
-    stat["met"] = bool(stat["ci95"][0] > args.bar)
+    stat["met"] = bool(stat["ci95"][0] > args.bar + CI_BOUND_TOL)
     text = json.dumps(stat, indent=2)
     print(text)
     if args.out is not None:

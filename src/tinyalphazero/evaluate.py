@@ -103,6 +103,14 @@ def paired_bootstrap_elo(
     return elo, float(lo), float(hi), clamped
 
 
+#: An interval end within this distance of a bound counts as *on* the bound, not past it. The rep statistics live on
+#: a lattice (pair scores in quarters, so a six-rep mean over 100 openings moves in steps of 1/2,400) and their
+#: percentile ends are lattice points or interpolations between them; floating point renders an exact zero as
+#: about 1e-17 of either sign, which compared with 0.0 read "excludes zero" for p2_o's K1 (+5.55e-18) and p2_j
+#: attempt 1's 0010 (−8.9e-18) (RUNLOG-p2_o §3). 1e-9 is far below the lattice and far above the rounding.
+CI_BOUND_TOL = 1e-9
+
+
 def paired_rep_verdict(
     a_rows: list[dict],
     b_rows: list[dict],
@@ -160,7 +168,7 @@ def paired_rep_verdict(
         "ci95": [float(lo), float(hi)],
         "se": float(boot.std(ddof=1)),
         "openings": int(n),
-        "excludes_zero": bool(lo > 0.0 or hi < 0.0),
+        "excludes_zero": bool(lo > CI_BOUND_TOL or hi < -CI_BOUND_TOL),
     }
 
 

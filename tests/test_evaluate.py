@@ -1049,6 +1049,28 @@ def test_rep_verdict_reproduces_the_committed_p2_d_statistic() -> None:
     assert got["excludes_zero"] is True
 
 
+def test_rep_verdict_reads_an_exact_zero_end_as_on_zero() -> None:
+    """p2_o's K1: the interval's lower end is exactly 0, which floating point renders as +5.55e-18 (RUNLOG-p2_o §3).
+
+    In exact arithmetic over the same bootstrap draws the 2.5th percentile interpolates between two bootstrap means
+    that are both exactly zero, so the interval touches zero and must not read as excluding it.
+    """
+    from tinyalphazero.evaluate import paired_rep_verdict
+
+    def rows(arm: str) -> list[dict]:
+        return [
+            logschema.read_jsonl(REPO / "runs" / arm / "sf3" / f"reps_iter0020_r{k}.jsonl")[0]
+            for k in range(1, 7)
+        ]
+
+    if not (REPO / "runs" / "p2_o_lr" / "sf3" / "reps_iter0020_r6.jsonl").exists():
+        pytest.skip("p2_o rep rows not present")
+    got = paired_rep_verdict(rows("p2_o_cont"), rows("p2_o_lr"), "cont", "lr")
+    assert got["ci95"][0] == pytest.approx(0.0, abs=1e-15)
+    assert got["paired_difference"] == pytest.approx(1 / 32, abs=1e-12)
+    assert got["excludes_zero"] is False
+
+
 def test_rep_verdict_refuses_rows_from_two_anchors() -> None:
     """Skill-0 rows against skill-N rows would compute a difference of nothing (PREREG-p2_l's two rungs)."""
     from tinyalphazero.evaluate import paired_rep_verdict
