@@ -146,3 +146,12 @@ $16.00, above the $2 margin. The 50 staged inputs' sha256 re-checked against p2_
 **Signed: the Claude Code session, at Michael's instruction ("happy, go", 2026-11-03, after the draft and
 its cost — expected about $7.7, worst case $14.24 — were put to him).** The commit carrying this line is
 the registration.
+
+---
+
+## Addendum A — 2026-11-03: the registration's date
+
+The status line ("REGISTERED 2026-11-04") and the sign-off's read ("2026-11-04 08:52 UTC") carry the wrong
+day. The registration commit `0781889` is timed 2026-11-03 08:54:32 UTC, and the balance, price and stock
+were read on 2026-11-03 at 08:52 UTC. Both lines mean 2026-11-03. Nothing else in this file changes; the
+pods run the bundle of `0781889`.
