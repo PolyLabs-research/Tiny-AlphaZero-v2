@@ -2,8 +2,8 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-11-03 — not registered.** Nothing launches until Michael's cost OK; the
-> registration commit flips this line and carries the sign-off.
+> **STATUS: REGISTERED 2026-11-04** (see Sign-off), at Michael's instruction. Nothing under this file
+> has run.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -138,7 +138,11 @@ seed-43 fingerprints computed from `configs/p2_k_lr.yaml` and `configs/p2_o_lr.y
 `d42a6d33037e6f7c763efd52e7ef22417303bbbd2c7a08389da0b62fbfe2346e` (cont),
 `86fcc672d739acc598d681f279bed714aa845af3951cecdeb8add69892d17d65` (lr). Read for the draft: RunPod balance
 $30.62 (auto-reload at $10), no pods of ours; secure RTX 4090 at $0.89/h (stock "None"); $14.24 leaves
-$16.38, above the $2 margin. Price, stock and balance are read again at registration.
+$16.38, above the $2 margin. Read at registration, 2026-11-04 08:52 UTC: balance $30.24, no pods of ours,
+secure RTX 4090 at $0.89/h (stock "None"; the registered launch is retried until offered); $14.24 leaves
+$16.00, above the $2 margin. The 50 staged inputs' sha256 re-checked against p2_o's list: unchanged.
+`make test` passed on this commit's tree (954 passed, 2 skipped).
 
-**Not signed.** Registration waits for Michael's OK on the round and its cost — expected about $7.7,
-worst case $14.24.
+**Signed: the Claude Code session, at Michael's instruction ("happy, go", 2026-11-03, after the draft and
+its cost — expected about $7.7, worst case $14.24 — were put to him).** The commit carrying this line is
+the registration.
