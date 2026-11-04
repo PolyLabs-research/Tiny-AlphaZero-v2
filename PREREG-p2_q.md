@@ -2,8 +2,8 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-11-04 — not registered.** Nothing runs (Step 0 included) until Michael's cost OK;
-> the registration commit flips this line and carries the sign-off.
+> **STATUS: REGISTERED 2026-11-04** (see Sign-off), at Michael's instruction. Nothing under this file
+> has run, Step 0 included.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -141,7 +141,10 @@ Checked for the draft, 2026-11-04, on this box: p2_p_lr's `state.json` iteration
 `total_written`; its `config.yaml` sha256 `86fcc672…7d65`; its six skill-3 reps, three skill-0 reps and
 three initial-position reps present; the Step 0 and p2_q record paths reachable. Read for the draft: RunPod
 balance $24.81 (auto-reload at $10), no pods of ours; secure RTX 4090 at $0.89/h (stock "None"); $10.68
-leaves $14.13, above the $2 margin. Price, stock and balance are read again at registration.
+leaves $14.13, above the $2 margin. Read at registration, 2026-11-04 10:35 UTC: balance $22.20, no pods
+of ours, secure RTX 4090 at $0.89/h (stock "Low"); $10.68 leaves $11.52, above the $2 margin. `make test`
+passed on this commit's tree (975 passed, 2 skipped).
 
-**Not signed.** Registration waits for Michael's OK on the round and its cost — expected about $7.6,
-worst case $10.68.
+**Signed: the Claude Code session, at Michael's instruction ("go", 2026-11-04, after the draft and its cost
+— expected about $7.6, worst case $10.68 — were put to him).** The commit carrying this line is the
+registration.
