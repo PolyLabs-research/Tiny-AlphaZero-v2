@@ -126,6 +126,12 @@ MUST_REACH: list[str] = [
     "runs/p2_p_lr/sf3/p2p_verdict_lr_vs_cont.json",
     "runs/p2_p_lr/sf3/p2p_verdict_pooled_o_and_p.json",
     "runs/p2_p_cont/sf3/reps_iter0020_r6.jsonl",
+    # p2_q (PREREG-p2_q): Step 0's climb from skill 5, the start reference at the rung, and the round at it.
+    "runs/p2_p_lr/climb_s5/reps_iter0020_r1.jsonl",
+    "runs/p2_p_lr/sf5/reps_iter0020_r6.jsonl",
+    "runs/p2_q/sf5/p2_verdict_reps.json",
+    "runs/p2_q/sf5/p2_verdict_reps_0040_vs_0010.json",
+    "runs/p2_q/sf3/reps_iter0040_r3.jsonl",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that
