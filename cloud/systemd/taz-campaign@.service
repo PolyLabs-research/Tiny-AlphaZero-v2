@@ -1,0 +1,17 @@
+# One run's cloud/remote_campaign.sh under the user manager, so a reboot of this box restarts it (loginctl Linger=yes).
+# %i is the run; ~/.config/taz-cloud/campaigns/%i.env holds POD, JUDGED, FINAL, START_REPS, START_STARTPOS and
+# MEASURE_AFTER_PULL. The driver is safe to restart: it pulls again and skips what is measured (RUNLOG-p2_r §5).
+# After a run closes: systemctl --user disable --now taz-campaign@RUN.service, and remove its .env.
+[Unit]
+Description=RunPod campaign driver for %i
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/dev/chess
+EnvironmentFile=%h/.config/taz-cloud/campaigns/%i.env
+ExecStart=/bin/bash cloud/remote_campaign.sh ${POD} %i ${JUDGED} ${FINAL}
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target

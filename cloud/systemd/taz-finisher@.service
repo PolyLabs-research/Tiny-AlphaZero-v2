@@ -1,0 +1,15 @@
+# A round's runs/%i_finish.sh under the user manager, for the same reason as taz-campaign@.service. %i is the round
+# (p2_r). A finisher is safe to restart: eval_reps skips reps already logged and the verdicts are pure functions of them.
+# After the round closes: systemctl --user disable --now taz-finisher@ROUND.service
+[Unit]
+Description=Round finisher runs/%i_finish.sh
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Documents/dev/chess
+ExecStart=/bin/bash runs/%i_finish.sh
+Restart=on-failure
+RestartSec=60
+
+[Install]
+WantedBy=default.target

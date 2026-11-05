@@ -19,6 +19,28 @@ Setup on this box: API key in `~/.config/runpod/api_key` (0600), SSH key
 Limits: `~/.config/taz-cloud/limits.json` (defaults: $10/session, 30 h, $5 margin).
 Ledger of every launch and termination: `~/.local/state/taz-cloud/ledger.jsonl`.
 
+**Drivers and finishers run as user units, so a reboot of this box restarts them.** A pod cannot push, so a driver
+that dies with this box leaves the pod to wait out its `PULL_WAIT` and delete itself with the run (p2_j's first attempt;
+RUNLOG-p2_j §5). Both are safe to restart: a driver pulls again and skips what is measured, a finisher's reps are
+skipped once logged. For a run `RUN` and a round `ROUND`:
+
+```bash
+systemctl --user link "$PWD"/cloud/systemd/taz-campaign@.service "$PWD"/cloud/systemd/taz-finisher@.service   # once
+cat > ~/.config/taz-cloud/campaigns/RUN.env <<EOF
+POD=<pod id>
+JUDGED="10 20"
+FINAL=20
+MEASURE_AFTER_PULL=1
+START_REPS=runs/<start>/reps_iter00NN_r*.jsonl
+START_STARTPOS=runs/<start>/startpos/reps_iter00NN_r*.jsonl
+EOF
+systemctl --user enable --now taz-campaign@RUN.service taz-finisher@ROUND.service
+# when the run is closed: systemctl --user disable --now taz-campaign@RUN.service taz-finisher@ROUND.service
+```
+
+`Restart=on-failure` covers a killed driver (proven 2026-11-05: `kill -9`, back in 60 s, re-armed); `WantedBy=default.target`
+with `loginctl` Linger covers a reboot, with no login needed.
+
 ## Lifecycle proof, 2026-10-24 (total $0.18)
 
 | pod | guard isolated | result |
