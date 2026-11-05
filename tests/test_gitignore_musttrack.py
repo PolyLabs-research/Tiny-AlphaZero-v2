@@ -132,6 +132,10 @@ MUST_REACH: list[str] = [
     "runs/p2_q/sf5/p2_verdict_reps.json",
     "runs/p2_q/sf5/p2_verdict_reps_0040_vs_0010.json",
     "runs/p2_q/sf3/reps_iter0040_r3.jsonl",
+    # p2_r (PREREG-p2_r): self-play search 128 against 48, K1 at skill 5 and each arm's readings.
+    "runs/p2_r_sims/sf5/p2r_verdict_sims_vs_cont.json",
+    "runs/p2_r_cont/sf5/reps_iter0020_r6.jsonl",
+    "runs/p2_r_sims/sf3/reps_iter0020_r3.jsonl",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that

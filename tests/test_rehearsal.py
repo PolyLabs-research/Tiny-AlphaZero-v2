@@ -528,6 +528,26 @@ def test_p2o_lr_config_is_the_brief() -> None:
     assert lr["train"]["weight_decay"] == base["train"]["weight_decay"]
 
 
+def test_p2r_sims_config_is_the_brief() -> None:
+    """configs/p2_r_sims.yaml is configs/p2_o_lr.yaml with self-play at 128 sims and nothing else (PREREG-p2_r).
+
+    The measuring instrument reads eval.eval_match_sims and eval.suite_sims, which must not move with the lever.
+    """
+    import dataclasses
+
+    p2o = REPO / "configs" / "p2_o_lr.yaml"
+    p2r = REPO / "configs" / "p2_r_sims.yaml"
+    if not (p2o.exists() and p2r.exists()):
+        pytest.skip("p2_o_lr or p2_r_sims config not present")
+    differences = _config_deltas(p2o, p2r, "p2_o_lr", "p2_r_sims", allowed={"sims_per_move"})
+    assert not differences, "p2_r_sims moves more than registered:\n  " + "\n  ".join(differences)
+    sims = dataclasses.asdict(load_config(str(p2r)))
+    base = dataclasses.asdict(load_config(str(p2o)))
+    assert base["selfplay"]["sims_per_move"] == 48 and sims["selfplay"]["sims_per_move"] == 128
+    assert sims["eval"]["eval_match_sims"] == base["eval"]["eval_match_sims"] == 48
+    assert sims["eval"]["suite_sims"] == base["eval"]["suite_sims"] == 128
+
+
 def test_p2c_config_is_the_brief() -> None:
     """configs/p2_c.yaml differs from p2_b's resolved config in exactly one field.
 
