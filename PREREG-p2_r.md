@@ -2,8 +2,8 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-11-05 — not registered.** Nothing launches until Michael's cost OK; the
-> registration commit flips this line and carries the sign-off.
+> **STATUS: REGISTERED 2026-11-05** (see Sign-off), at Michael's instruction. Nothing under this file
+> has run.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -140,7 +140,11 @@ reps present; self-play reads `selfplay.sims_per_move` (`phase2.py`) and the ins
 `1c2841712f292f5b866a6be5a767c751eb21f16c8add71f871f3a09aa4d06a08` (sims). Read for the draft: RunPod
 balance $17.34 (auto-reload at $10), no pods of ours; secure RTX 4090 at $0.89/h (stock "Medium"); each pod's
 worst case passes the $15 ceiling and the $2 margin on its own; the combined $19.58 is above the balance and
-is covered by the auto-reload. Price, stock and balance are read again at registration.
+is covered by the auto-reload. Read at registration, 2026-11-05 10:04 UTC: balance $17.18, no pods of
+ours, secure RTX 4090 at $0.89/h (stock "Medium"); each pod's worst case passes the $2 margin on its own
+($12.46 leaves $4.72, $7.12 leaves $10.06). `make test` passed on this commit's tree (993 passed, 2
+skipped).
 
-**Not signed.** Registration waits for Michael's OK on the round and its cost — expected about $12.5,
-worst case $19.58.
+**Signed: the Claude Code session, at Michael's instruction ("ok given, go", 2026-11-05, after the draft
+and its cost — expected about $12.5, worst case $19.58 — were put to him).** The commit carrying this line
+is the registration.
