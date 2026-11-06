@@ -2,8 +2,8 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-11-06 — not registered.** Nothing launches until Michael's cost OK; the
-> registration commit flips this line and carries the sign-off.
+> **STATUS: REGISTERED 2026-11-06** (see Sign-off), at Michael's instruction. Nothing under this file
+> has run.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -127,8 +127,10 @@ seed 43, 0 skipped steps, pool `ckpt_iter0001`–`0020` (all present), ring head
 `configs/p2_s_hot.yaml` differs from `configs/p2_r_sims.yaml` in `lr` only (test passes), seed-43 fingerprint
 `75bbaeb58b18812d7576c62c4925fe08b0cdda4949d5b7668f2981a626a313eb`. Read for the draft: RunPod balance $37.22
 (auto-reload at $10), no pods of ours; secure RTX 4090 at $0.89/h (stock "Low"); each pod's worst case passes the $15
-ceiling and the $2 margin. Disk 25 GB free; the round adds about 6 GB. Price, stock and balance are read again at
-registration.
+ceiling and the $2 margin. Disk 25 GB free; the round adds about 6 GB. Read at registration, 2026-11-06 14:54 UTC:
+balance $37.22, no pods of ours, secure RTX 4090 at $0.89/h (stock "Low"); each pod's worst case passes the ceiling
+and the margin, and the combined $26.70 leaves $10.52 before any reload. `cloud/launch_run.sh` (`45915fd`, tested against
+a stub) carries the launches. `make test` passed on this commit's tree (1,018 passed, 2 skipped).
 
-**Not signed.** Registration waits for Michael's OK on the round and its cost — expected about $18.5, worst case
-$26.70.
+**Signed: the Claude Code session, at Michael's instruction ("Go", 2026-11-06, after the draft and its cost — expected
+about $18.5, worst case $26.70 — were put to him).** The commit carrying this line is the registration.

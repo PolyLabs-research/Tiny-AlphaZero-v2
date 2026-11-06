@@ -41,6 +41,11 @@ systemctl --user enable --now taz-campaign@RUN.service taz-finisher@ROUND.servic
 `Restart=on-failure` covers a killed driver (proven 2026-11-05: `kill -9`, back in 60 s, re-armed); `WantedBy=default.target`
 with `loginctl` Linger covers a reboot, with no login needed.
 
+`cloud/launch_run.sh` does all of this for one run, unattended: it retries a refused launch, stages, checks every
+input's sha256 on the pod, starts the job, writes the `.env` and enables the driver. A pod it launched ends up training or
+terminated (`tests/test_launch_run.py`). `WAIT_FOR=PATH` holds a stage until a file exists, such as the previous
+stage's `runs/RUN/.remote_done`.
+
 ## Lifecycle proof, 2026-10-24 (total $0.18)
 
 | pod | guard isolated | result |
