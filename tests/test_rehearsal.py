@@ -548,6 +548,23 @@ def test_p2r_sims_config_is_the_brief() -> None:
     assert sims["eval"]["suite_sims"] == base["eval"]["suite_sims"] == 128
 
 
+def test_p2s_hot_config_is_the_brief() -> None:
+    """configs/p2_s_hot.yaml is configs/p2_r_sims.yaml at 2e-5 and nothing else (PREREG-p2_s's first stage)."""
+    import dataclasses
+
+    p2r = REPO / "configs" / "p2_r_sims.yaml"
+    p2s = REPO / "configs" / "p2_s_hot.yaml"
+    if not (p2r.exists() and p2s.exists()):
+        pytest.skip("p2_r_sims or p2_s_hot config not present")
+    differences = _config_deltas(p2r, p2s, "p2_r_sims", "p2_s_hot", allowed={"lr"})
+    assert not differences, "p2_s_hot moves more than registered:\n  " + "\n  ".join(differences)
+    hot = dataclasses.asdict(load_config(str(p2s)))
+    base = dataclasses.asdict(load_config(str(p2r)))
+    assert base["train"]["lr"] == 2e-6 and hot["train"]["lr"] == 2e-5
+    assert hot["selfplay"]["sims_per_move"] == base["selfplay"]["sims_per_move"] == 128
+    assert hot["eval"]["eval_match_sims"] == 48
+
+
 def test_p2c_config_is_the_brief() -> None:
     """configs/p2_c.yaml differs from p2_b's resolved config in exactly one field.
 
