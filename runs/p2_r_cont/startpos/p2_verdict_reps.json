@@ -1,0 +1,22 @@
+{
+  "start_startpos_reps": [
+    0.965,
+    0.9825,
+    0.97
+  ],
+  "p2_r_cont_startpos_reps": [
+    0.975,
+    0.985,
+    0.9675
+  ],
+  "start_startpos_mean": 0.9725,
+  "p2_r_cont_startpos_mean": 0.9758333333333334,
+  "paired_difference": 0.0033333333333333327,
+  "ci95": [
+    -0.012499999999999994,
+    0.018333333333333333
+  ],
+  "se": 0.007909953420738726,
+  "openings": 100,
+  "excludes_zero": false
+}

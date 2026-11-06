@@ -1,0 +1,20 @@
+{
+  "runs/p2_r_cont": {
+    "rows": 500000,
+    "total_written": 1549359,
+    "book_rows": [
+      [
+        71779,
+        "open_001",
+        11
+      ],
+      [
+        385612,
+        "open_028",
+        17
+      ]
+    ],
+    "rows_at_initial_position": 530,
+    "distinct_positions": 476745
+  }
+}
