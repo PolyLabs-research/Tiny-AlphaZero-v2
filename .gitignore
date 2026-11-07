@@ -50,6 +50,14 @@ runs/**
 !runs/**/p2p_verdict_*.json
 !runs/**/p2r_verdict_*.json
 !runs/**/p2s_verdict_*.json
+!runs/**/p2t_verdict_*.json
+# p2_t's teacher ring: its settings and outcome fit (the .dat arrays and label shards stay ignored),
+# and the network's agreement with it on the held-out positions.
+!runs/**/teacher.json
+!runs/**/teacher_agreement*.json
+# DIAG-2026-11-07-where-points-go: the recorded games and the report (the gradings regenerate from the games).
+!runs/diag_points/**/games_r*.jsonl
+!runs/diag_points/**/where_points_go.json
 # PREREG-p2_j's K3 (`eval_reps.py m4`) and L2 (`ring_book_rows.py --json`) records.
 !runs/**/p2_m4_*.json
 !runs/**/book_rows.json

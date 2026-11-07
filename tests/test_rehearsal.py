@@ -617,3 +617,112 @@ def test_rehearsal_rows_declare_they_have_no_search_q(anchors: Path) -> None:
     is_anchor = batch["iteration"] == ANCHOR_ITERATION
     assert not bool(batch["root_q_mask"][is_anchor].any()), "anchor rows claimed a search-Q"
     assert bool(batch["root_q_mask"][~is_anchor].all()), "ring rows lost their search-Q"
+
+
+# ---------------------------------------------------------------------------
+# The teacher (p2_t's lever): Stockfish-labelled ring rows in the same batch
+# ---------------------------------------------------------------------------
+
+
+def _teacher_ring(path: Path, n: int = 32) -> Path:
+    import chess
+
+    from tinyalphazero.encoding import encode_board, legal_moves_packed
+    from tinyalphazero.replay import ReplayBuffer
+    from tinyalphazero.teacher import TEACHER_ITERATION
+
+    ring = ReplayBuffer.create(path, capacity=n)
+    board = chess.Board()
+    for i in range(n):
+        move = list(board.legal_moves)[i % 20]
+        ft = move.from_square * 64 + move.to_square
+        ring.add(
+            tokens=encode_board(board, 0), legals=legal_moves_packed(board), move_ft=ft, promo=0,
+            outcome=1, improved_policy=[(ft, 0, 1.0)], iteration=TEACHER_ITERATION,
+            mover_is_latest=False, root_q=-0.3,
+        )  # fmt: skip
+    ring.flush()
+    (path / "teacher.json").write_text("{}\n")
+    return path
+
+
+def test_plan_mix_with_a_teacher_preserves_batch_size() -> None:
+    for bs in (1, 64, 1024):
+        for ft in (0.0, 0.25, 0.5):
+            mix = plan_mix(bs, 0.02, 0.03, ft)
+            assert mix.total == bs and mix.teacher == int(round(bs * ft))
+    assert plan_mix(1024, 0.02, 0.03, 0.25) == plan_mix(1024, 0.02, 0.03, 0.25)
+    assert plan_mix(1024, 0.02, 0.03).teacher == 0
+
+
+def test_teacher_rows_are_the_configured_share_and_keep_their_search_q(
+    anchors: Path, tmp_path: Path
+) -> None:
+    from tinyalphazero.teacher import TEACHER_ITERATION
+
+    t = _cfg_train(anchors)
+    t.teacher_frac = 0.25
+    t.teacher_dir = str(_teacher_ring(tmp_path / "teacher"))
+    ring = _FakeRing()
+    sampler = RehearsalSampler(ring, t, seed=42)
+    batch = sampler.sample(1024, np.random.default_rng(0), iteration=3, step=7)
+    is_teacher = batch["iteration"] == TEACHER_ITERATION
+    assert int(is_teacher.sum()) == 256
+    assert int((batch["iteration"] == ANCHOR_ITERATION).sum()) == 51
+    assert ring.last_n == 1024 - 256 - 51
+    assert bool(batch["root_q_mask"][is_teacher].all())
+    assert torch.allclose(batch["root_q"][is_teacher], torch.tensor(-0.3), atol=1e-3)
+    assert all(v.shape[0] == 1024 for v in batch.values())
+
+    # The anchors drawn are the ones a run without the teacher draws at the same step.
+    plain = RehearsalSampler(_FakeRing(), _cfg_train(anchors), seed=42)
+    base = plain.sample(1024, np.random.default_rng(0), iteration=3, step=7)
+    a_with = batch["tokens"][batch["iteration"] == ANCHOR_ITERATION]
+    a_base = base["tokens"][base["iteration"] == ANCHOR_ITERATION]
+    assert torch.equal(a_with, a_base)
+
+
+def test_a_missing_teacher_ring_fails_at_construction(anchors: Path, tmp_path: Path) -> None:
+    t = _cfg_train(anchors)
+    t.teacher_frac = 0.25
+    t.teacher_dir = str(tmp_path / "nowhere")
+    with pytest.raises(FileNotFoundError):
+        RehearsalSampler(_FakeRing(), t, seed=42)
+
+
+def test_teacher_config_is_validated_at_load(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("train:\n  teacher_frac: 0.25\n")
+    with pytest.raises(ValueError, match="teacher_dir"):
+        load_config(str(bad))
+    bad.write_text(
+        "train:\n  teacher_frac: 0.96\n  teacher_dir: x\n  rehearsal_frac: 0.05\n"
+        "  rehearsal_mate1_frac: 0.02\n  rehearsal_mate2_frac: 0.03\n"
+    )
+    with pytest.raises(ValueError, match="no batch rows"):
+        load_config(str(bad))
+
+
+def test_p2t_teach_configs_are_the_brief() -> None:
+    """Line A's two stages are line B's configs plus the teacher and nothing else (PREREG-p2_t)."""
+    import dataclasses
+
+    for base_name, teach_name, lr in (
+        ("p2_k_lr", "p2_t_teach_hot", 2e-5),
+        ("p2_o_lr", "p2_t_teach_down", 2e-6),
+    ):
+        base, teach = (
+            REPO / "configs" / f"{base_name}.yaml",
+            REPO / "configs" / f"{teach_name}.yaml",
+        )
+        differences = _config_deltas(
+            base, teach, base_name, teach_name, allowed={"teacher_frac", "teacher_dir"}
+        )
+        assert not differences, f"{teach_name} moves more than registered:\n  " + "\n  ".join(
+            differences
+        )
+        t = dataclasses.asdict(load_config(str(teach)))["train"]
+        b = dataclasses.asdict(load_config(str(base)))["train"]
+        assert t["teacher_frac"] == 0.25 and t["teacher_dir"] == "runs/p2_t_teach/teacher"
+        assert b["teacher_frac"] == 0.0 and t["lr"] == b["lr"] == lr
+        assert t["rehearsal_frac"] == b["rehearsal_frac"] == 0.05

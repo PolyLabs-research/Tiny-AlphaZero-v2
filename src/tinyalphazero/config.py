@@ -252,6 +252,15 @@ class TrainConfig:
     value_q_blend: str = "batch_mean"
     rehearsal_mate1_dir: str = "runs/data/mate1_100k_clean"
     rehearsal_mate2_dir: str = "runs/data/mate2_50k_clean"
+    # p2_t's lever: distillation from Stockfish. ``teacher_frac`` of every Phase 2
+    # batch is drawn from ``teacher_dir``, a replay ring whose rows are self-play
+    # positions relabelled by Stockfish (tinyalphazero.teacher): the policy target is
+    # a softmax over the engine's lines and root_q its evaluation on our outcome
+    # scale; the position, legal mask and game outcome are the original row's. 0.0
+    # is every run before p2_t. Not part of ``rehearsal_frac``: rehearsal replays
+    # frozen anchors, the teacher replaces the search.
+    teacher_frac: float = 0.0
+    teacher_dir: str = ""
 
 
 @dataclass
@@ -574,6 +583,15 @@ def _validate_rehearsal(t: TrainConfig) -> None:
             f"train.rehearsal_mate1_frac + train.rehearsal_mate2_frac = {parts} "
             f"but train.rehearsal_frac = {t.rehearsal_frac}. The split and the "
             "total must agree — one of the three is a typo."
+        )
+    if not 0.0 <= t.teacher_frac < 1.0:
+        raise ValueError(f"train.teacher_frac must be in [0, 1); got {t.teacher_frac}")
+    if t.teacher_frac > 0.0 and not t.teacher_dir:
+        raise ValueError("train.teacher_frac is set but train.teacher_dir is empty")
+    if t.teacher_frac + t.rehearsal_frac >= 1.0:
+        raise ValueError(
+            f"train.teacher_frac + train.rehearsal_frac = {t.teacher_frac + t.rehearsal_frac}"
+            ": no batch rows left for the replay ring"
         )
 
 

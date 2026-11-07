@@ -54,24 +54,31 @@ class RehearsalMix:
     ring: int
     mate1: int
     mate2: int
+    teacher: int = 0
 
     @property
     def total(self) -> int:
-        return self.ring + self.mate1 + self.mate2
+        return self.ring + self.mate1 + self.mate2 + self.teacher
 
 
-def plan_mix(batch_size: int, mate1_frac: float, mate2_frac: float) -> RehearsalMix:
+def plan_mix(
+    batch_size: int, mate1_frac: float, mate2_frac: float, teacher_frac: float = 0.0
+) -> RehearsalMix:
     """Row counts for one batch, rounded so the total is always ``batch_size``.
 
-    The anchor counts round to nearest and the ring takes the remainder, so the
-    batch size the optimiser sees never depends on the mix — a rehearsal run and
-    the control it is compared against take identically-shaped steps.
+    The anchor and teacher counts round to nearest and the ring takes the
+    remainder, so the batch size the optimiser sees never depends on the mix — a
+    rehearsal run and the control it is compared against take identically-shaped
+    steps.
     """
     n1 = int(round(batch_size * mate1_frac))
     n2 = int(round(batch_size * mate2_frac))
-    if n1 + n2 > batch_size:
-        raise ValueError(f"rehearsal fractions ask for {n1 + n2} rows of a {batch_size}-row batch")
-    return RehearsalMix(ring=batch_size - n1 - n2, mate1=n1, mate2=n2)
+    nt = int(round(batch_size * teacher_frac))
+    if n1 + n2 + nt > batch_size:
+        raise ValueError(
+            f"rehearsal and teacher fractions ask for {n1 + n2 + nt} rows of a {batch_size}-row batch"
+        )
+    return RehearsalMix(ring=batch_size - n1 - n2 - nt, mate1=n1, mate2=n2, teacher=nt)
 
 
 class RehearsalSampler:
@@ -96,7 +103,22 @@ class RehearsalSampler:
 
         self.mate1_frac = float(cfg_train.rehearsal_mate1_frac)
         self.mate2_frac = float(cfg_train.rehearsal_mate2_frac)
-        self.enabled = (self.mate1_frac + self.mate2_frac) > 0.0
+        self.teacher_frac = float(getattr(cfg_train, "teacher_frac", 0.0))
+        self.enabled = (self.mate1_frac + self.mate2_frac + self.teacher_frac) > 0.0
+        self.teacher: Any = None
+        if self.teacher_frac > 0.0:
+            from tinyalphazero.replay import ReplayBuffer
+
+            path = Path(cfg_train.teacher_dir)
+            if not path.is_absolute():
+                path = repo / path
+            if not (path / "meta.json").exists() or not (path / "teacher.json").exists():
+                raise FileNotFoundError(
+                    f"the teacher is on (train.teacher_frac={self.teacher_frac}) but its ring "
+                    f"is missing or unfinished: {path}. Build it (scripts/label_teacher.py) or "
+                    "set the fraction to 0."
+                )
+            self.teacher = ReplayBuffer.open(path, readonly=True)
 
         self._sets: dict[str, Phase1Dataset] = {}
         if self.enabled:
@@ -119,7 +141,7 @@ class RehearsalSampler:
                 self._sets[name] = Phase1Dataset(path)
 
     def mix_for(self, batch_size: int) -> RehearsalMix:
-        return plan_mix(batch_size, self.mate1_frac, self.mate2_frac)
+        return plan_mix(batch_size, self.mate1_frac, self.mate2_frac, self.teacher_frac)
 
     def sample(
         self,
@@ -140,6 +162,10 @@ class RehearsalSampler:
         for name, count in (("mate1", mix.mate1), ("mate2", mix.mate2)):
             if count > 0:
                 parts.append(self._anchor_rows(self._sets[name], count, anchor_rng))
+        if mix.teacher > 0:
+            # Drawn after the anchors from the same per-step stream, so a run without
+            # the teacher draws exactly the anchors it always drew.
+            parts.append(self.teacher.sample(mix.teacher, anchor_rng))
         if len(parts) == 1:
             return batch
         return {k: torch.cat([p[k] for p in parts], dim=0) for k in batch}

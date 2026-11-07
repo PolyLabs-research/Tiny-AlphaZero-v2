@@ -140,6 +140,14 @@ MUST_REACH: list[str] = [
     "runs/p2_s_down/sf5/p2s_verdict_down_vs_cont.json",
     "runs/p2_s_cont/sf5/reps_iter0030_r6.jsonl",
     "runs/p2_s_sims/sf5/reps_iter0020_r3.jsonl",
+    # DIAG-2026-11-07-where-points-go: the games and the report.
+    "runs/diag_points/p2_s_cont_0030/games_r1.jsonl",
+    "runs/diag_points/p2_s_cont_0030/where_points_go.json",
+    # p2_t (PREREG-p2_t): the teacher ring's description, the agreement readings, K1.
+    "runs/p2_t_teach/teacher/teacher.json",
+    "runs/p2_t_teach/teacher/meta.json",
+    "runs/p2_t_teach_down/teacher_agreement_iter0010.json",
+    "runs/p2_t_teach_down/sf5/p2t_verdict_teach_vs_ctl.json",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that
@@ -148,6 +156,9 @@ MUST_IGNORE: list[str] = [
     "runs/phase1_anchor.pt",
     "runs/phase1_c/final.pt",
     "runs/data/mate2_tune_500/keymoves.dat",  # the .epd negation must not widen to data
+    "runs/p2_t_teach/teacher/boards.dat",  # the teacher ring's arrays (about 0.5 GB)
+    "runs/p2_t_teach/teacher_labels/shard_000.jsonl",  # the raw engine readings (about 0.1 GB)
+    "runs/diag_points/p2_s_cont_0030/annot_r1.jsonl",  # regenerable from the games
     ".venv/bin/python",
 ]
 
