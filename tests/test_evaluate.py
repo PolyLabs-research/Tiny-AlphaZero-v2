@@ -269,6 +269,31 @@ def test_only_the_searching_side_writes_trace_rows() -> None:
         assert all(p.side_to_move == learner_side for p in trace.positions)
 
 
+def test_match_moves_replay_to_each_game_from_its_opening() -> None:
+    """The recorded moves are the game: legal from the opening, one per ply, both sides."""
+    cfg = Config()
+    cfg.eval.eval_match_max_plies = 10
+    book = load_openings()[:2]
+    result = play_match(uniform_stub_batch, RandomMover(), cfg, sims=4, openings=book, seed=1)
+    assert len(result.moves) == result.games == 4
+    for gi, (moves, outcome) in enumerate(zip(result.moves, result.outcomes, strict=True)):
+        board = chess.Board()
+        board.set_epd(book[gi // 2][0])
+        for uci in moves:
+            move = chess.Move.from_uci(uci)
+            assert move in board.legal_moves
+            board.push(move)
+        assert len(moves) == outcome.plies
+        # A trace row's ply indexes the moves: the learner is to move after moves[:ply].
+        learner_side = chess.WHITE if outcome.learner_white else chess.BLACK
+        for pos in result.traces[gi].positions:
+            replay = chess.Board()
+            replay.set_epd(book[gi // 2][0])
+            for uci in moves[: pos.ply]:
+                replay.push_uci(uci)
+            assert replay.turn == learner_side
+
+
 # ---------------------------------------------------------------------------
 # The frozen opening book
 # ---------------------------------------------------------------------------

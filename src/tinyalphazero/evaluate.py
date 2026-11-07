@@ -237,6 +237,9 @@ class MatchResult:
     pair_scores: list[float] = field(default_factory=list)
     outcomes: list[GameOutcome] = field(default_factory=list)
     traces: list[GameTrace] = field(default_factory=list, repr=False)
+    # Each game's moves in UCI from its opening position, in game order. Nothing in
+    # the ladder reads them; the error analysis (DIAG-2026-11-07) replays them.
+    moves: list[list[str]] = field(default_factory=list, repr=False)
 
 
 def load_openings(path: str | Path = OPENINGS) -> list[tuple[str, str]]:
@@ -486,6 +489,9 @@ def _summarise(
         pair_scores=[float(p) for p in pair_scores],
         outcomes=outcomes,
         traces=traces,
+        moves=[
+            [m.uci() for m in runner._games_debug[i].board.move_stack] for i in range(len(traces))
+        ],
     )
 
 

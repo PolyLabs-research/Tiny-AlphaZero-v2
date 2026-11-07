@@ -1,0 +1,60 @@
+{
+  "games": 400,
+  "points": 135.0,
+  "score": 0.3375,
+  "learner_moves": 31328,
+  "mistakes": 2678,
+  "blunders": 1778,
+  "expected_lost_on_mistakes": 829.137,
+  "expected_lost_all_drops": 955.2384999999999,
+  "opponent_gifts": 874.9379999999999,
+  "e_start_mean": 0.5,
+  "end_adjustment": 15.4585,
+  "share_by_kind": {
+    "other": 0.4938297289832683,
+    "slip_while_winning": 0.30944041816973544,
+    "material": 0.18523597427204436,
+    "allowed_mate": 0.010863705274279161,
+    "missed_mate": 0.0006301733006728683
+  },
+  "count_by_kind": {
+    "other": 1542,
+    "material": 374,
+    "slip_while_winning": 746,
+    "allowed_mate": 15,
+    "missed_mate": 1
+  },
+  "share_by_phase": {
+    "middlegame": 0.6162389327698558,
+    "opening": 0.20347843601238375,
+    "endgame": 0.18028263121776023
+  },
+  "share_by_cell": {
+    "other/middlegame": 0.2974074248284666,
+    "slip_while_winning/middlegame": 0.18549407395882722,
+    "material/middlegame": 0.12516990557652113,
+    "other/opening": 0.11556654690358766,
+    "other/endgame": 0.08085575725121422,
+    "slip_while_winning/opening": 0.06255299184573843,
+    "slip_while_winning/endgame": 0.06139335236517006,
+    "material/endgame": 0.034707171432465336,
+    "material/opening": 0.02535889726305785,
+    "allowed_mate/middlegame": 0.008167528406041463,
+    "allowed_mate/endgame": 0.002696176868237698,
+    "missed_mate/endgame": 0.0006301733006728683
+  },
+  "largest_cell": {
+    "cell": "other/middlegame",
+    "share": 0.2974074248284666
+  },
+  "one_recurring_cause": false,
+  "blunders_with_model_q": 1778,
+  "blunders_search_did_not_see": 1169,
+  "thrown_wins": 198,
+  "thrown_points_by_result": {
+    "checkmate": 120.0,
+    "ply_cap": 11.0,
+    "draw": 8.5,
+    "draw_claim": 19.5
+  }
+}
