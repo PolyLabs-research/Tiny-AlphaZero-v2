@@ -1,0 +1,25 @@
+{
+  "runs/p2_s_sims": {
+    "rows": 500000,
+    "total_written": 1561484,
+    "book_rows": [
+      [
+        15110,
+        "open_021",
+        20
+      ],
+      [
+        77951,
+        "open_001",
+        11
+      ],
+      [
+        398206,
+        "open_028",
+        17
+      ]
+    ],
+    "rows_at_initial_position": 521,
+    "distinct_positions": 477518
+  }
+}
