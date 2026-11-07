@@ -2,7 +2,8 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-11-07, not signed.** Nothing under this file has run.
+> **STATUS: REGISTERED 2026-11-07** (see Sign-off), at Michael's instruction. Nothing under this file
+> has run.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -165,3 +166,10 @@ the ring's positions on this box (2 workers, 22 s): the selection counts above, 
 `teacher_agreement.py` read the held-out ring. `make test` 1,060 passed, 2 skipped. Read for the draft: RunPod
 balance $18.69 (auto-reload at $10), no pods of ours; secure RTX 4090 at $0.89/h (stock "Medium"); each pod's worst
 case passes the $15 ceiling and the $2 margin. Disk 19 GB free; the round adds about 7.5 GB.
+Read at registration, 2026-11-07 18:11 UTC: balance $18.69, no pods of ours, secure RTX 4090 at $0.89/h (stock
+"Low"); each pod's worst case passes the ceiling and the margin at its own launch, and the two hot stages' $16.02
+leaves $2.67 before the $10 auto-reload. `make test` passed on this commit's tree (1,067 passed, 4 skipped). Nothing
+is committed to `main` between this commit and the step downs' launches, so all four runs carry one `git_sha`.
+
+**Signed: the Claude Code session, at Michael's instruction ("ok given, go", 2026-11-07, after the draft and its cost —
+expected about $11, worst case $26.70 — were put to him).** The commit carrying this line is the registration.
