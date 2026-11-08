@@ -1,0 +1,15 @@
+{
+  "runs/p2_t_teach_down": {
+    "rows": 500000,
+    "total_written": 1039731,
+    "book_rows": [
+      [
+        257338,
+        "open_012",
+        5
+      ]
+    ],
+    "rows_at_initial_position": 512,
+    "distinct_positions": 480698
+  }
+}
