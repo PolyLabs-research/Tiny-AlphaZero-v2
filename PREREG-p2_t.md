@@ -152,6 +152,21 @@ and their original targets; it is not run here.
 
 ---
 
+## Addendum A (2026-11-07 20:50 UTC) — line A's labeller found no Stockfish; rerun with the path given
+
+Line A's first job (`evt16z4uconhhq`, launched 19:43:52, job started 19:54:46) failed at once: `label_teacher.py`
+printed "no Stockfish binary" and exited before labelling a position. The job inherits the container's own `PATH`
+(`pod_job.sh` exports `/proc/1/environ`), which lacks `/usr/games`, where the image's apt package puts the binary; an
+interactive SSH session has it. Stockfish 16 (`16-1build1`, the registered build) was installed. The idle wrapper
+(pid 1953) was stopped by hand at 20:46, its `DONE` and `job.exit` moved aside, and the registered job restarted at
+20:48:07 on the same pod, with one argument added: `--stockfish /usr/games/stockfish`, the same binary. Nothing else
+changed. The selection read 477,229 positions (472,229 train, 5,000 held out), as registered. No data existed when
+this was written. The four guards held throughout: the new wrapper deletes the pod after the final pull, and the
+deadline and the sweeper are unchanged. The idle time cost about $0.80.
+
+This addendum is committed after both step downs have launched, so that all four runs carry the registration's
+`git_sha`. Neither step down calls Stockfish.
+
 ## Sign-off
 
 Checked for the draft, 2026-11-07, on this box: `runs/p2_s_cont`: iteration 30, step 12,000, seed 43, 0 skipped
