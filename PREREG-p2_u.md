@@ -2,7 +2,8 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-11-09.** Not signed. Nothing under this file has run.
+> **STATUS: REGISTERED 2026-11-09** (see Sign-off), at Michael's instruction. Nothing under this file
+> has run.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -179,3 +180,10 @@ scratchpad): pool seeded with all 20 snapshots, ring seeded with 500,000 rows fr
 $0.89/h (stock "Low"); the launch dry run plans $8.90 for 10 h; each pod's worst case passes the $15 ceiling and the
 $2 margin, and the two hot stages' $16.02 leaves $39.89. Disk 116 GB free after the closed rounds' checkpoints moved
 to the external drive (2026-11-09); the round adds about 7.5 GB.
+Read at registration, 2026-11-09 10:12 UTC: balance $55.91, no pods of ours, secure RTX 4090 at $0.89/h (stock
+"Low"); each pod's worst case passes the ceiling and the margin at its own launch. `make test` passed on the draft's
+tree, `3948b03` (1,094 passed, 4 skipped); this commit changes only this file. Nothing is committed to `main` between
+this commit and the step downs' launches, so all four runs carry one `git_sha`.
+
+**Signed: the Claude Code session, at Michael's instruction ("ok given, go", 2026-11-09, after the draft and its cost —
+expected about $13, worst case $26.70 — were put to him).** The commit carrying this line is the registration.
