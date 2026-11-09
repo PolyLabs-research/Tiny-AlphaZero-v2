@@ -726,3 +726,28 @@ def test_p2t_teach_configs_are_the_brief() -> None:
         assert t["teacher_frac"] == 0.25 and t["teacher_dir"] == "runs/p2_t_teach/teacher"
         assert b["teacher_frac"] == 0.0 and t["lr"] == b["lr"] == lr
         assert t["rehearsal_frac"] == b["rehearsal_frac"] == 0.05
+
+
+def test_p2u_fresh_configs_are_the_brief() -> None:
+    """Line A's two stages are line B's (p2_t's teacher configs) with a fresh ring and nothing else (PREREG-p2_u)."""
+    import dataclasses
+
+    for stale_name, fresh_name, lr in (
+        ("p2_t_teach_hot", "p2_u_fresh_hot", 2e-5),
+        ("p2_t_teach_down", "p2_u_fresh_down", 2e-6),
+    ):
+        stale, fresh = (
+            REPO / "configs" / f"{stale_name}.yaml",
+            REPO / "configs" / f"{fresh_name}.yaml",
+        )
+        differences = _config_deltas(stale, fresh, stale_name, fresh_name, allowed={"teacher_dir"})
+        assert not differences, f"{fresh_name} moves more than registered:\n  " + "\n  ".join(
+            differences
+        )
+        f = dataclasses.asdict(load_config(str(fresh)))["train"]
+        s = dataclasses.asdict(load_config(str(stale)))["train"]
+        assert f["teacher_dir"] == "runs/p2_u_fresh/teacher"
+        assert s["teacher_dir"] == "runs/p2_t_teach/teacher"
+        assert f["teacher_frac"] == s["teacher_frac"] == 0.25
+        assert f["lr"] == s["lr"] == lr
+        assert f["rehearsal_frac"] == s["rehearsal_frac"] == 0.05
