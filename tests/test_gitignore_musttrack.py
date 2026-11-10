@@ -152,6 +152,10 @@ MUST_REACH: list[str] = [
     "runs/p2_u_fresh/teacher/teacher.json",
     "runs/p2_u_fresh_down/teacher_agreement_iter0010.json",
     "runs/p2_u_fresh_down/sf5/p2u_verdict_fresh_vs_stale.json",
+    # p2_v (PREREG-p2_v): the agreement readings (held-out and training ring), K1.
+    "runs/p2_v_half_down/teacher_agreement_iter0010.json",
+    "runs/p2_v_half_down/teacher_agreement_train_iter0010.json",
+    "runs/p2_v_half_down/sf5/p2v_verdict_half_vs_quarter.json",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that

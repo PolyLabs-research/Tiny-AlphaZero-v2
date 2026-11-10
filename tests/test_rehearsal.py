@@ -751,3 +751,39 @@ def test_p2u_fresh_configs_are_the_brief() -> None:
         assert f["teacher_frac"] == s["teacher_frac"] == 0.25
         assert f["lr"] == s["lr"] == lr
         assert f["rehearsal_frac"] == s["rehearsal_frac"] == 0.05
+
+
+def test_p2v_half_configs_are_the_brief() -> None:
+    """Line A's two stages are line B's (p2_u's fresh-ring configs) at twice the dose and nothing else (PREREG-p2_v)."""
+    import dataclasses
+
+    from tinyalphazero.rehearsal import plan_mix
+
+    for quarter_name, half_name, lr in (
+        ("p2_u_fresh_hot", "p2_v_half_hot", 2e-5),
+        ("p2_u_fresh_down", "p2_v_half_down", 2e-6),
+    ):
+        quarter, half = (
+            REPO / "configs" / f"{quarter_name}.yaml",
+            REPO / "configs" / f"{half_name}.yaml",
+        )
+        differences = _config_deltas(
+            quarter, half, quarter_name, half_name, allowed={"teacher_frac"}
+        )
+        assert not differences, f"{half_name} moves more than registered:\n  " + "\n  ".join(
+            differences
+        )
+        h = dataclasses.asdict(load_config(str(half)))["train"]
+        q = dataclasses.asdict(load_config(str(quarter)))["train"]
+        assert h["teacher_frac"] == 0.5 and q["teacher_frac"] == 0.25
+        assert h["teacher_dir"] == q["teacher_dir"] == "runs/p2_u_fresh/teacher"
+        assert h["lr"] == q["lr"] == lr
+        assert h["rehearsal_frac"] == q["rehearsal_frac"] == 0.05
+        mix_h = plan_mix(
+            h["batch_size"], h["rehearsal_mate1_frac"], h["rehearsal_mate2_frac"], h["teacher_frac"]
+        )
+        mix_q = plan_mix(
+            q["batch_size"], q["rehearsal_mate1_frac"], q["rehearsal_mate2_frac"], q["teacher_frac"]
+        )
+        assert (mix_h.ring, mix_h.mate1 + mix_h.mate2, mix_h.teacher) == (461, 51, 512)
+        assert (mix_q.ring, mix_q.mate1 + mix_q.mate2, mix_q.teacher) == (717, 51, 256)
