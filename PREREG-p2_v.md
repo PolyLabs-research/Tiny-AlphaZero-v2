@@ -2,7 +2,8 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-11-10.** Not registered. Nothing under this file has run.
+> **STATUS: REGISTERED 2026-11-10** (see Sign-off), at Michael's instruction. Nothing under this file
+> has run.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -175,3 +176,11 @@ registered start (`--iterations 0`, into the session scratchpad): pool seeded wi
 under `gpu hold`). RunPod balance $44.54 (auto-reload at $10), no pods of ours; secure RTX 4090 at $0.89/h, stock
 none at the reading; each pod's worst case passes the $15 ceiling, and the two hot stages' $14.24 leaves $30.30.
 Disk 106 GB free; the round adds about 6.5 GB.
+Read at registration, 2026-11-10 18:27 UTC: balance $44.54, no pods of ours, secure RTX 4090 at $0.89/h (stock
+none: the launches retry until one is offered, as registered); each pod's worst case passes the ceiling and the margin
+at its own launch. `make test` passed on the draft's tree, `5f711a3` (1,127 passed, 4 skipped); this commit changes
+only this file. Nothing is committed to `main` between this commit and the step downs' launches, so all four runs
+carry one `git_sha`.
+
+**Signed: the Claude Code session, at Michael's instruction ("go", 2026-11-10, after the draft and its cost —
+expected about $11, worst case $24.92 — were put to him).** The commit carrying this line is the registration.
