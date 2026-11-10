@@ -1,0 +1,44 @@
+{
+  "excluded_suites": {
+    "tests/suites/mate_in_1.epd": "c465a5074c1183b563eee6ed7972e04d4e1aa59a7767e51b081d954337db6846",
+    "tests/suites/mate_in_2.epd": "d1f0c1c81580ccef3f95a279104e2beab63c5f2aacd1d167b807eed4e1f5ed4e",
+    "tests/suites/mate_in_3.epd": "64f37f893e31761b4030c496a239814adfa4e833948a5d9c04ad994f8c41d788",
+    "tests/suites/openings_4ply.epd": "ce5e9134273404a79f052deeb1c8d66202ce65e0efc5f7c0d1e9d1ef6715eaba",
+    "tests/suites/openings_startpos.epd": "c4a60b9d9d0d4ac10a37ec3c0be1f0da5cd28fae5d4054f43792251a25b5bf97"
+  },
+  "git_sha": "8ae801b",
+  "holdout": {
+    "rows": 5000,
+    "seed": 0
+  },
+  "labelling_seconds": 2242.0,
+  "outcome_model": {
+    "a": 303.3483356977025,
+    "draw_rate": 0.2976,
+    "fitted_here": false,
+    "rows": 5000,
+    "s": 367.35785125952
+  },
+  "root_q_mean_abs": 0.35654928197615887,
+  "rows": 5000,
+  "selection": {
+    "duplicate": 14689,
+    "excluded": 513,
+    "repeated": 4102,
+    "rows": 500000,
+    "selected": 480696
+  },
+  "settings": {
+    "extra": {},
+    "hash_mb": 64,
+    "multipv": 5,
+    "nodes": 100000,
+    "stockfish": "/usr/games/stockfish",
+    "stockfish_version": "Stockfish 16 by the Stockfish developers (see AUTHORS file)",
+    "temperature_cp": 50.0
+  },
+  "source_ring": "runs/p2_t_teach_down/replay",
+  "source_total_written": 1039731,
+  "split": "holdout",
+  "workers": 54
+}

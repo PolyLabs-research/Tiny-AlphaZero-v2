@@ -1,0 +1,30 @@
+{
+  "runs/p2_u_stale": {
+    "rows": 500000,
+    "total_written": 1571722,
+    "book_rows": [
+      [
+        25618,
+        "open_021",
+        20
+      ],
+      [
+        88314,
+        "open_001",
+        11
+      ],
+      [
+        197108,
+        "open_009",
+        13
+      ],
+      [
+        405594,
+        "open_028",
+        17
+      ]
+    ],
+    "rows_at_initial_position": 520,
+    "distinct_positions": 483855
+  }
+}

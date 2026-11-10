@@ -1,0 +1,8 @@
+{
+  "checkpoint": "runs/p2_t_teach_down/ckpt_iter0010.pt",
+  "ring": "runs/p2_u_fresh/teacher_holdout",
+  "rows": 5000,
+  "top1_agreement": 0.355,
+  "teacher_policy_ce": 2.411357373046875,
+  "value_mse_vs_teacher": 0.038589625167846676
+}
