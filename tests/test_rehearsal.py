@@ -787,3 +787,47 @@ def test_p2v_half_configs_are_the_brief() -> None:
         )
         assert (mix_h.ring, mix_h.mate1 + mix_h.mate2, mix_h.teacher) == (461, 51, 512)
         assert (mix_q.ring, mix_q.mate1 + mix_q.mate2, mix_q.teacher) == (717, 51, 256)
+
+
+def test_p2w_wide_configs_are_the_brief() -> None:
+    """Line A's two stages are the quarter line's batch plus 256 teacher rows and nothing else (PREREG-p2_w)."""
+    import dataclasses
+
+    from tinyalphazero.rehearsal import plan_mix
+
+    allowed = {
+        "batch_size",
+        "teacher_frac",
+        "rehearsal_frac",
+        "rehearsal_mate1_frac",
+        "rehearsal_mate2_frac",
+    }
+
+    def rows(t: dict[str, object]) -> tuple[int, int, int, int]:
+        mix = plan_mix(
+            t["batch_size"], t["rehearsal_mate1_frac"], t["rehearsal_mate2_frac"], t["teacher_frac"]
+        )
+        return mix.ring, mix.mate1, mix.mate2, mix.teacher
+
+    for quarter_name, half_name, wide_name, lr in (
+        ("p2_u_fresh_hot", "p2_v_half_hot", "p2_w_wide_hot", 2e-5),
+        ("p2_u_fresh_down", "p2_v_half_down", "p2_w_wide_down", 2e-6),
+    ):
+        quarter, half, wide = (
+            REPO / "configs" / f"{name}.yaml" for name in (quarter_name, half_name, wide_name)
+        )
+        differences = _config_deltas(quarter, wide, quarter_name, wide_name, allowed=allowed)
+        assert not differences, f"{wide_name} moves more than registered:\n  " + "\n  ".join(
+            differences
+        )
+        w = dataclasses.asdict(load_config(str(wide)))["train"]
+        q = dataclasses.asdict(load_config(str(quarter)))["train"]
+        h = dataclasses.asdict(load_config(str(half)))["train"]
+        assert w["batch_size"] == q["batch_size"] + 256 == 1280
+        assert w["teacher_dir"] == q["teacher_dir"] == "runs/p2_u_fresh/teacher"
+        assert w["lr"] == q["lr"] == lr
+        assert w["train_steps_per_iter"] == q["train_steps_per_iter"] == 400
+        # The quarter line's self-play and rehearsal rows, the half line's teacher rows.
+        assert rows(q) == (717, 20, 31, 256)
+        assert rows(h) == (461, 20, 31, 512)
+        assert rows(w) == (717, 20, 31, 512)

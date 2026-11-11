@@ -1,0 +1,151 @@
+# p2_w, line A ("wide"), stage "hot" — the quarter line's batch with 256 more teacher rows on top: 1,280 rows a step,
+# 717 from the self-play ring and 51 of mate rehearsal as at 0.25, 512 from the teacher ring as at 0.5, at 2e-5, the stage before the step down to configs/p2_w_wide_down.yaml
+# (PREREG-p2_w.md, DRAFT).
+#
+# Exactly five fields differ from configs/p2_u_fresh_hot.yaml (tests/test_rehearsal.py::test_p2w_wide_configs_are_the_brief):
+#   train.batch_size: 1280                    1,024 + 256
+#   train.teacher_frac: 0.4                   512 of 1,280
+#   train.rehearsal_mate1_frac: 0.015625      20 of 1,280, the 20 that 0.02 of 1,024 rounds to
+#   train.rehearsal_mate2_frac: 0.02421875    31 of 1,280, the 31 that 0.03 of 1,024 rounds to
+#   train.rehearsal_frac: 0.03984375          their sum, 51 of 1,280
+# The comparison lines are p2_v's, already run from the same start: configs/p2_u_fresh_hot.yaml (717 / 51 / 256) and
+# configs/p2_v_half_hot.yaml (461 / 51 / 512).
+#
+# p2_v, line A ("half"), stage "hot" — the standing teacher at twice its dose: half of every batch from the teacher
+# ring, at 2e-5, the stage before the step down to configs/p2_v_half_down.yaml (PREREG-p2_v.md, DRAFT).
+#
+# Exactly one field differs from configs/p2_u_fresh_hot.yaml (tests/test_rehearsal.py::test_p2v_half_configs_are_the_brief):
+#   train.teacher_frac: 0.5    512 of each 1,024-row batch; the ring takes 461 and the mate rehearsal keeps its 51
+# Line B ("quarter") runs configs/p2_u_fresh_hot.yaml itself: the same ring (runs/p2_u_fresh/teacher) at 0.25.
+#
+# p2_u, line A ("fresh"), stage "hot" — the standing teacher (p2_t) on a ring relabelled from this round's own start:
+# runs/p2_t_teach_down's final ring, labelled by scripts/label_teacher.py exactly as p2_t's was, at 2e-5 before the step
+# down to configs/p2_u_fresh_down.yaml (PREREG-p2_u.md, DRAFT).
+#
+# Exactly one field differs from configs/p2_t_teach_hot.yaml (tests/test_rehearsal.py::test_p2u_fresh_configs_are_the_brief):
+#   train.teacher_dir: runs/p2_u_fresh/teacher    built on line A's first pod before training, from runs/p2_t_teach_down's ring
+# Line B ("stale") runs configs/p2_t_teach_hot.yaml then configs/p2_t_teach_down.yaml themselves: p2_t's ring, as it stands.
+#
+# p2_t, line A, stage "hot" — distillation from Stockfish: a quarter of every batch is drawn from a teacher ring,
+# self-play positions relabelled by Stockfish 16 (scripts/label_teacher.py: policy = softmax over 5 lines at 100,000
+# nodes, T = 50 cp; root_q = the engine's score on our outcome scale), at 2e-5 before the step down to
+# configs/p2_t_teach_down.yaml (PREREG-p2_t.md, DRAFT).
+#
+# Exactly two fields differ from configs/p2_k_lr.yaml (tests/test_rehearsal.py::test_p2t_teach_configs_are_the_brief):
+#   train.teacher_frac: 0.25                     the lever; the ring takes 0.70 and the mate rehearsal keeps its 0.05
+#   train.teacher_dir: runs/p2_t_teach/teacher    built on line A's first pod before training, from runs/p2_s_cont's ring
+# Line B (the control) runs configs/p2_k_lr.yaml then configs/p2_o_lr.yaml themselves: the same schedule, no teacher.
+#
+# p2_k, arm "lr" — p2_g's config with the learning rate stepped down tenfold (PREREG-p2_k.md, registered
+# 6cba16e; closed by RUNLOG-p2_k: K1 +0.117 [+0.093, +0.140] against the continuation arm, so 2e-5 is
+# standing protocol from p2_k_lr/0020).
+#
+# Exactly one field differs from configs/p2_g.yaml (tests/test_rehearsal.py::test_p2k_lr_config_is_the_brief):
+#   train.lr: 2.0e-05   constant, like p2_g's 2e-4; --init starts a fresh AdamW at it. AdamW's
+#                       decoupled weight decay is applied as lr x weight_decay, so it steps down with it.
+# The continuation arm runs configs/p2_g.yaml itself. Both: --iterations 20 at the invocation.
+#
+# p2_g — diverse self-play openings, one long continuous round, trained on RunPod (2026-10-24)
+#
+# Resolves to runs/p2_f/config.yaml with exactly four deltas, asserted by
+# tests/test_rehearsal.py::test_p2g_config_is_the_brief:
+#   selfplay.opening_random_plies: 8   the lever: each game starts k ~ U{0..8} random
+#                                      plies in; the skill-0 rung's book is excluded
+#   selfplay.actor_processes: 20       throughput only (the ring is the same games)
+#   eval.eval_every_n_iters: 0         no inline ladder on the pod; every measurement
+#                                      runs on the local box, on the local instrument
+#   phase2.iterations: 60              one long round, judged on its trajectory
+# Continuity, not levers: --seed-pool and --seed-replay from runs/p2_f.
+# PREREG-p2_g.md is the brief.
+eval:
+  anchor_ckpt: runs/phase1_anchor.pt
+  anchor_digest: 27dcdd05f7d578e7cc3e833d0def0d6e1794d1138144da4f79f6037aa7c84ef5
+  anchor_games: 200
+  bootstrap_resamples: 10000
+  eval_every_n_iters: 0
+  eval_match_max_plies: 300
+  eval_match_sims: 48
+  eval_seed: null
+  ladder_anchors: random,greedy,phase1,stockfish:0
+  openings_path: tests/suites/openings_4ply.epd
+  stockfish_path: ''
+  suite_sims: 128
+mcts:
+  batch_leaves: 512
+  c_puct: 1.25
+  c_scale: 1.0
+  c_visit: 50.0
+  dirichlet_alpha: 0.3
+  dirichlet_frac: 0.25
+  eval_c_scale: null
+  eval_c_visit: null
+  eval_m: null
+  eval_proof_directed_expansion: null
+  gumbel_m: 16
+  promo_prior_from_head: false
+  proof_directed_expansion: false
+  proof_q_threshold: 0.95
+  root_mode: gumbel
+  root_noise: true
+  sims: 48
+  temperature_ply_cutoff: 30
+model:
+  attn_init: torch_default
+  aux_legality: true
+  d_ff: 1024
+  d_model: 256
+  d_policy: 128
+  dropout: 0.0
+  n_heads: 8
+  n_layers: 8
+  seq_len: 72
+phase2:
+  iterations: 60
+  league_opponents_per_iter: 4
+  masked_policy: true
+  nan_abort_frac: 0.01
+  nan_abort_min_steps: 20
+  train_on_pool_moves: true
+seed: 42
+selfplay:
+  actor_processes: 20
+  concurrent_games: 256
+  games_per_iteration: 512
+  league_latest_frac: 0.8
+  league_pool_size: 20
+  max_plies: 160
+  opening_exclude: tests/suites/openings_4ply.epd
+  opening_random_plies: 8
+  resign_consecutive: 8
+  resign_disabled_frac: 0.1
+  resign_threshold: -0.9
+  sims_per_move: 48
+train:
+  batch_size: 1280
+  grad_clip: 1.0
+  legality_loss_weight: 0.0
+  lr: 2.0e-05
+  phase1_anchor_weighting: legacy
+  phase1_epochs: 3
+  phase1_lr_end: 3.0e-05
+  phase1_lr_start: 0.0003
+  phase1_mate1_mix: 0.05
+  phase1_mate2_mix: 0.0
+  phase1_policy_masked: false
+  phase1_value_weight_anchor: 1.0
+  phase1_value_weight_random: 0.25
+  policy_loss_weight: 1.0
+  promo_loss_weight: 1.0
+  rehearsal_frac: 0.03984375
+  rehearsal_mate1_dir: runs/data/mate1_100k_clean
+  rehearsal_mate1_frac: 0.015625
+  rehearsal_mate2_dir: runs/data/mate2_50k_clean
+  rehearsal_mate2_frac: 0.02421875
+  replay_capacity: 500000
+  teacher_dir: runs/p2_u_fresh/teacher
+  teacher_frac: 0.4
+  train_steps_per_iter: 400
+  value_loss_weight: 1.0
+  value_q_blend: batch_mean
+  value_q_mse_weight: 0.5
+  weight_decay: 0.0001
