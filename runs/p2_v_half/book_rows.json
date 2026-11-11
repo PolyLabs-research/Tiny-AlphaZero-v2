@@ -1,0 +1,25 @@
+{
+  "runs/p2_v_half": {
+    "rows": 500000,
+    "total_written": 1585576,
+    "book_rows": [
+      [
+        38338,
+        "open_021",
+        20
+      ],
+      [
+        90422,
+        "open_001",
+        11
+      ],
+      [
+        202791,
+        "open_009",
+        13
+      ]
+    ],
+    "rows_at_initial_position": 510,
+    "distinct_positions": 485284
+  }
+}
