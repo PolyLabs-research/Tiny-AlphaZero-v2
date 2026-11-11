@@ -156,11 +156,15 @@ MUST_REACH: list[str] = [
     "runs/p2_v_half_down/teacher_agreement_iter0010.json",
     "runs/p2_v_half_down/teacher_agreement_train_iter0010.json",
     "runs/p2_v_half_down/sf5/p2v_verdict_half_vs_quarter.json",
-    # p2_w (PREREG-p2_w): the agreement readings (held-out and training ring), K1 and K1b.
+    # p2_w (PREREG-p2_w): the agreement readings (held-out and training ring), K1, K1b, K0 and K0b.
     "runs/p2_w_wide_down/teacher_agreement_iter0010.json",
     "runs/p2_w_wide_down/teacher_agreement_train_iter0010.json",
     "runs/p2_w_wide_down/sf5/p2w_verdict_wide_vs_quarter.json",
     "runs/p2_w_wide_down/sf5/p2w_verdict_wide_vs_half.json",
+    "runs/p2_w_quarter_down/teacher_agreement_iter0010.json",
+    "runs/p2_w_quarter_down/teacher_agreement_train_iter0010.json",
+    "runs/p2_w_quarter_down/sf5/p2w_verdict_quarter_replicate.json",
+    "runs/p2_w_quarter_down/sf5/p2w_verdict_quarter_vs_p2v_half.json",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that
