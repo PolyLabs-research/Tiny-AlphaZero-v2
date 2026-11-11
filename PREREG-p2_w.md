@@ -2,8 +2,8 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-11-11** (second draft: the quarter line is re-run beside wide, at Michael's instruction).
-> Not registered. Nothing under this file has run, and nothing launches until Michael says go.
+> **STATUS: REGISTERED 2026-11-11** (see Sign-off), at Michael's instruction. Nothing under this file
+> has run.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -243,4 +243,12 @@ stages' worst case, $14.24, leaves $19.44; the round's worst case, $24.92, leave
 auto-reload line**, so a round that runs every guard to its deadline triggers a reload; the expected $11.50 leaves
 about $22. Disk 98 GB free; the round adds about 6.5 GB.
 
-**Not signed.** Registration is a later commit that changes only this file, at Michael's instruction.
+Read at registration, 2026-11-11 14:07 UTC: balance $33.68, no pods of ours, secure RTX 4090 at $0.89/h; each pod's
+worst case passes the ceiling and the margin at its own launch. `make lint` and `make test` passed on the draft's
+tree, `e27174b` (1,162 passed, 4 skipped); this commit changes only this file. `git diff 56328bb e27174b -- src
+scripts cloud` is empty. Nothing is committed to `main` between this commit and the step downs' launches, so all
+four runs carry one `git_sha`.
+
+**Signed: the Claude Code session, at Michael's instruction ("go", 2026-11-11, after the second draft and its cost —
+expected about $11.50, worst case $24.92, the worst case passing under the $10 auto-reload line — were put to
+him).** The commit carrying this line is the registration.
