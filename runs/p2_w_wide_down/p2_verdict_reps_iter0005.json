@@ -1,0 +1,22 @@
+{
+  "start_reps": [
+    0.98,
+    0.9775,
+    0.9675
+  ],
+  "p2_w_wide_down_iter0005_reps": [
+    0.9825,
+    0.9925,
+    0.9725
+  ],
+  "start_mean": 0.975,
+  "p2_w_wide_down_iter0005_mean": 0.9825,
+  "paired_difference": 0.007500000000000002,
+  "ci95": [
+    -0.0075,
+    0.023333333333333338
+  ],
+  "se": 0.007925497055237575,
+  "openings": 100,
+  "excludes_zero": false
+}
