@@ -151,3 +151,21 @@ The launch environment is fixed as above, and P1 cuda is re-measured under it as
 repository is licensed **Apache-2.0** at Michael's choice (`LICENSE`, `pyproject.toml` `license = "Apache-2.0"`),
 ahead of publishing the games; the code depends on python-chess (GPL-3.0), which a distributed combination
 would carry, and no third-party code is vendored (`upstream/` holds this repo's own ROCm reproducer).
+
+## Addendum A — 2026-11-12 18:00 UTC, during the run, before K2 has a value
+
+The run (unit `taz-bench-p2_x`, from `1947bc0`) started at 17:20 UTC; 37 games were in `games.jsonl` when this
+was written, and no rating of any kind had been computed from them. K2 says `rating.json` "holds both" intervals.
+It does not: `scripts/gauntlet.py rate` at `1947bc0` writes K1 (with its interval) and each opponent's point
+performance, and no interval for either K2 quantity. Nothing in the run's code is changed for this (tracked code
+is not edited while the run is live; the run's final `rate` step stays as registered). At close, before K2 is
+read, code is added that computes exactly:
+
+- **the Stockfish-only rating**: `bootstrap_rating` over the four Stockfish groups (`sf1400`, `sf1600`, `sf1800`,
+  `sf2000`; each opponent's 100 pairs), 10,000 resamples, seed 0;
+- **HoiChess's performance**: `bootstrap_rating` over the HoiChess group alone, 10,000 resamples, seed 0;
+
+written to `runs/bench/p2_x/k2.json` (negated in `.gitignore` in the same commit). "From the same resamples" in K2
+is read as "by the same procedure": the agreement criterion uses each interval on its own (each point inside the
+other's interval), so the two need not share draws. The criterion, the decision table and every other
+registered quantity are unchanged.
