@@ -232,13 +232,7 @@ class BatchRunner:
         self.stats["leaves"] += len(reqs)
 
         for i, req in enumerate(reqs):
-            policy = np.asarray(policies[i], dtype=np.float32).reshape(64, 64)
-            masked = np.where(req.legal_mask, policy, -np.inf)
-            m = masked.max()
-            probs = np.zeros((64, 64), dtype=np.float32)
-            if np.isfinite(m):
-                e = np.exp(masked - m)
-                probs = (e / e.sum()).astype(np.float32)
+            probs = masked_policy_probs(policies[i], req.legal_mask)
             promo = np.asarray(promos[i], dtype=np.float32).reshape(64, 64, 4)
             self._resume(games[req.game], (probs, promo, float(values[i])))
 
@@ -648,6 +642,24 @@ def uniform_stub_batch(
         np.full((b, 64, 64, 4), 0.25, dtype=np.float32),
         np.zeros(b, dtype=np.float32),
     )
+
+
+def masked_policy_probs(policy_logits: Any, legal_mask: np.ndarray) -> np.ndarray:
+    """Raw ``(64, 64)`` policy logits -> probabilities over the legal cells only.
+
+    The one definition of leaf masking for every driver of a batched evaluator:
+    ``BatchRunner._apply`` and the UCI front end (``tinyalphazero.uci``) both call
+    it, so a move searched for a UCI client sees the leaf priors the ladder saw.
+    No legal cell (a terminal leaf) returns all zeros.
+    """
+    policy = np.asarray(policy_logits, dtype=np.float32).reshape(64, 64)
+    masked = np.where(legal_mask, policy, -np.inf)
+    m = masked.max()
+    probs = np.zeros((64, 64), dtype=np.float32)
+    if np.isfinite(m):
+        e = np.exp(masked - m)
+        probs = (e / e.sum()).astype(np.float32)
+    return probs
 
 
 def torch_evaluate_batch(net: Any, device: Any) -> Any:
