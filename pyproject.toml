@@ -7,6 +7,8 @@ name = "tinyalphazero"
 version = "0.1.0"
 description = "A ground-up rebuild of TinyAlphaZero implementing the AlphaZero loop for chess"
 requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = [
     # >=2.13: earlier ROCm builds drop half of LayerNorm's affine gradients on wave32
     # GPUs such as this gfx1151 (pytorch#199265; BRIDGE-2026-10-25-torch-2.14.1.md).
