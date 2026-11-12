@@ -165,12 +165,21 @@ MUST_REACH: list[str] = [
     "runs/p2_w_quarter_down/teacher_agreement_train_iter0010.json",
     "runs/p2_w_quarter_down/sf5/p2w_verdict_quarter_replicate.json",
     "runs/p2_w_quarter_down/sf5/p2w_verdict_quarter_vs_p2v_half.json",
+    # p2_x (PREREG-p2_x): the gauntlet's games, PGN and rating (K1-K3), and P1's parity reports.
+    "runs/bench/p2_x/games.jsonl",
+    "runs/bench/p2_x/games.pgn",
+    "runs/bench/p2_x/rating.json",
+    "runs/bench/uci_parity_cpu.json",
+    "runs/bench/uci_parity_cuda.json",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that
 # accidentally starts tracking 75 MB checkpoints is the opposite failure.
 MUST_IGNORE: list[str] = [
     "runs/phase1_anchor.pt",
+    # p2_x: opponent binaries extracted from their packages, and tooling smoke games (not data).
+    "runs/bench/engines/hoichess/usr/games/hoichess",
+    "runs/bench/smoke/games.jsonl",
     "runs/phase1_c/final.pt",
     "runs/data/mate2_tune_500/keymoves.dat",  # the .epd negation must not widen to data
     "runs/p2_t_teach/teacher/boards.dat",  # the teacher ring's arrays (about 0.5 GB)

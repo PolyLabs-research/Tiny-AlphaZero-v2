@@ -2,8 +2,9 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-11-12, NOT signed.** Nothing under this file has run. The smoke games named in Sign-off
-> tested the tooling at 10+0.1 and 5+0.05; they are not part of any measurement here.
+> **STATUS: REGISTERED 2026-11-12** (see Sign-off), at Michael's instruction ("Ok given, go"; the network on
+> cuda). Nothing under this file has run. The smoke games named in Sign-off tested the tooling at 10+0.1 and
+> 5+0.05; they are not part of any measurement here.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -35,14 +36,17 @@ This round trains nothing. It plays one checkpoint against five opponents and fi
 | Time control | **60+0.6** (Fischer) for both sides: Stockfish's calibration control. This box's core runs Stockfish 16's `bench 16 1 13` at 1.70 Mnps; it is faster than an i7-4770K, so HoiChess at 60+0.6 here sits nearer CCRL Blitz's 2'+1" there than the clock alone says. The network uses ~0.1–0.5 s a move and cannot be short of time at this control |
 | Game rules | `tinyalphazero.gauntlet.play_game`: mate, stalemate, insufficient material, and threefold repetition or the fifty-move count once it has occurred end a game; a flag fall loses unless the other side cannot mate; an engine 30 s past its own flag is closed and forfeits (`hung`); an illegal move or a crash loses (`error`). Hard stop at 600 plies (a draw, recorded). **No adjudication on engine scores**, no resignation |
 | Runner | `scripts/gauntlet.py play --ckpt runs/p2_w_quarter_down/ckpt_iter0010.pt --device cuda --opponents sf1400,sf1600,sf1800,sf2000,hoichess --openings 100 --tc 60+0.6 --concurrency 3 --out runs/bench/p2_x`, then `scripts/gauntlet.py rate --out runs/bench/p2_x` (10,000 resamples, seed 0). Resumable: finished games in `games.jsonl` are skipped on restart. Every game is also written to `games.pgn` |
-| Where | this box, under a user unit (`taz-bench@p2_x`, to be added), `gpu hold`. **Concurrency 3** games: three single-threaded opponents and three network processes (one core-equivalent between them; torch 1 thread). Not more: all-core load has tripped this box's CPU thermal limit twice (2026-10-27, 2026-11-05) |
+| Where | this box, `runs/p2_x_bench.sh` as the transient user unit `taz-bench-p2_x` (restarts on failure; every step resumes or is skipped once done), under `gpu hold --by tinyalphazero` with `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 PYTHONUNBUFFERED=1`, the environment of every ladder measurement since p2_k. **Concurrency 3** games: three single-threaded opponents and three network processes (one core-equivalent between them; torch 1 thread). Not more: all-core load has tripped this box's CPU thermal limit twice (2026-10-27, 2026-11-05) |
 | Duration and cost | about 65 s a game (the opponent spends most of its 60 s; the network ~10 s), so **about 6 h** for 1,000 games at concurrency 3. No pod, no spend |
 
 ## Registered expectations
 
 ### P1 — the engine is the ladder's network
 Measured at draft (Contract). **The cpu figure must be 1,108 / 1,108** — the gate the wrapper was built to; it
-passed. The cuda figure is reported, not judged: the ladder evaluates bf16 batches of many games and the engine
+passed. The draft's cuda figure was measured without `TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1`, which the ladder's
+measurements set and which selects other attention kernels; **P1 cuda is re-measured under the launch environment
+as the run's first step** (`runs/bench/uci_parity_cuda_launch.json`, same 10 openings) and that figure is the one
+reported beside the rating. The cuda figure is reported, not judged: the ladder evaluates bf16 batches of many games and the engine
 batches of one, so near-ties can fall either way (94.8% at draft). Unmeasured but likely: the ladder's own cuda
 moves move with batch composition in the same way, so the 5% is the precision of "the ladder's network" on cuda,
 not a second engine. It is reported beside the rating. The engine runs on cuda because cpu costs 0.52 s a move
@@ -97,13 +101,16 @@ checkpoint (0.379) beside K1, for the first mapping from the in-house scale to C
 ## Measurement protocol
 
 ```bash
-# At sign-off: the unit and the hold.
-#   taz-bench@p2_x runs, from a clean checkout of main at the registration commit:
+# runs/p2_x_bench.sh, as systemd-run --user --unit taz-bench-p2_x, from main at the registration commit,
+# under gpu hold with the ladder's environment. First, P1 on cuda under that environment:
+.venv/bin/python scripts/uci_parity.py --ckpt runs/p2_w_quarter_down/ckpt_iter0010.pt --device cuda --openings 10 \
+    --out runs/bench/uci_parity_cuda_launch.json
+# Then:
 .venv/bin/python scripts/gauntlet.py play --ckpt runs/p2_w_quarter_down/ckpt_iter0010.pt --device cuda \
     --opponents sf1400,sf1600,sf1800,sf2000,hoichess --openings 100 --tc 60+0.6 --concurrency 3 \
     --out runs/bench/p2_x
 .venv/bin/python scripts/gauntlet.py rate --out runs/bench/p2_x          # K1, K2, K3 -> rating.json
-# Committed at close: runs/bench/p2_x/{games.jsonl,games.pgn,rating.json}, runs/bench/uci_parity_{cpu,cuda}.json
+# Committed at close: runs/bench/p2_x/{games.jsonl,games.pgn,rating.json}, runs/bench/uci_parity_*.json
 ```
 
 The task order interleaves nothing: opponents in the order above, each opening's two games adjacent. A restart
@@ -135,3 +142,12 @@ Tooling smoke games (not data): 8 games at 10+0.1 against UCI_Elo 1320 and HoiCh
 game (the process never exited), fixed, and the second exited cleanly. Stockfish 16 reports `UCI_Elo` 1320–3190.
 Disk 86 GB free; host RAM 15 GB available (three network processes take about 1.2 GB each on cuda). RunPod is not
 used.
+
+**Registered 2026-11-12** at Michael's instruction ("Ok given, go"), the network on **cuda** (his choice of the
+two the draft offered). At registration: the `.gitignore` negations for `runs/bench/p2_x/{games.jsonl,games.pgn,
+rating.json}` and `runs/bench/uci_parity_*.json` are added and red-checked through `MUST_REACH` (all five paths
+failed without them, pass with them); the engine binaries and the smoke games are pinned ignored (`MUST_IGNORE`).
+The launch environment is fixed as above, and P1 cuda is re-measured under it as the run's first step. The
+repository is licensed **Apache-2.0** at Michael's choice (`LICENSE`, `pyproject.toml` `license = "Apache-2.0"`),
+ahead of publishing the games; the code depends on python-chess (GPL-3.0), which a distributed combination
+would carry, and no third-party code is vendored (`upstream/` holds this repo's own ROCm reproducer).

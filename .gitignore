@@ -54,6 +54,11 @@ runs/**
 !runs/**/p2u_verdict_*.json
 !runs/**/p2v_verdict_*.json
 !runs/**/p2w_verdict_*.json
+# p2_x (PREREG-p2_x): the gauntlet's record and P1's parity reports; engine binaries and smoke games stay ignored.
+!runs/bench/p2_x/games.jsonl
+!runs/bench/p2_x/games.pgn
+!runs/bench/p2_x/rating.json
+!runs/bench/uci_parity_*.json
 # p2_t's teacher ring: its settings and outcome fit (the .dat arrays and label shards stay ignored),
 # and the network's agreement with it on the held-out positions.
 !runs/**/teacher.json
