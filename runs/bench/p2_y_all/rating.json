@@ -1,0 +1,152 @@
+{
+  "overall": {
+    "rating": 1554.6772176385348,
+    "clamped": false,
+    "ci95": [
+      1533.8614242547133,
+      1574.1904883813568
+    ],
+    "se": 10.195007368571964,
+    "resamples": 10000,
+    "seed": 0,
+    "games": 1400
+  },
+  "per_opponent": {
+    "sf1400": {
+      "opponent_rating": 1400.0,
+      "games": 200,
+      "score": 0.8,
+      "performance": 1640.823996531185,
+      "clamped": false,
+      "wins": 156,
+      "draws": 8,
+      "losses": 36,
+      "unpaired_games": 0,
+      "terminations": {
+        "checkmate": 192,
+        "threefold_repetition": 5,
+        "insufficient_material": 2,
+        "fifty_moves": 1
+      },
+      "ours_seconds_per_move": 0.126,
+      "theirs_seconds_per_move": 1.888
+    },
+    "shallowblue": {
+      "opponent_rating": 1578.0,
+      "games": 200,
+      "score": 0.08,
+      "performance": 1153.7208638585553,
+      "clamped": false,
+      "wins": 12,
+      "draws": 8,
+      "losses": 180,
+      "unpaired_games": 0,
+      "terminations": {
+        "checkmate": 192,
+        "insufficient_material": 6,
+        "threefold_repetition": 2
+      },
+      "ours_seconds_per_move": 0.121,
+      "theirs_seconds_per_move": 1.574
+    },
+    "sf1600": {
+      "opponent_rating": 1600.0,
+      "games": 200,
+      "score": 0.505,
+      "performance": 1603.474471674037,
+      "clamped": false,
+      "wins": 97,
+      "draws": 8,
+      "losses": 95,
+      "unpaired_games": 0,
+      "terminations": {
+        "checkmate": 192,
+        "insufficient_material": 4,
+        "threefold_repetition": 4
+      },
+      "ours_seconds_per_move": 0.135,
+      "theirs_seconds_per_move": 1.651
+    },
+    "sf1800": {
+      "opponent_rating": 1800.0,
+      "games": 200,
+      "score": 0.3675,
+      "performance": 1705.6787254289434,
+      "clamped": false,
+      "wins": 69,
+      "draws": 9,
+      "losses": 122,
+      "unpaired_games": 0,
+      "terminations": {
+        "checkmate": 191,
+        "threefold_repetition": 7,
+        "insufficient_material": 2
+      },
+      "ours_seconds_per_move": 0.122,
+      "theirs_seconds_per_move": 1.672
+    },
+    "hoichess": {
+      "opponent_rating": 1806.0,
+      "games": 200,
+      "score": 0.15,
+      "performance": 1504.6689333365553,
+      "clamped": false,
+      "wins": 10,
+      "draws": 40,
+      "losses": 150,
+      "unpaired_games": 0,
+      "terminations": {
+        "checkmate": 160,
+        "threefold_repetition": 40
+      },
+      "ours_seconds_per_move": 0.124,
+      "theirs_seconds_per_move": 0.97
+    },
+    "micromax": {
+      "opponent_rating": 1854.0,
+      "games": 200,
+      "score": 0.0975,
+      "performance": 1467.4229620483366,
+      "clamped": false,
+      "wins": 13,
+      "draws": 13,
+      "losses": 174,
+      "unpaired_games": 0,
+      "terminations": {
+        "checkmate": 185,
+        "error": 2,
+        "threefold_repetition": 11,
+        "fifty_moves": 2
+      },
+      "ours_seconds_per_move": 0.122,
+      "theirs_seconds_per_move": 1.085
+    },
+    "sf2000": {
+      "opponent_rating": 2000.0,
+      "games": 200,
+      "score": 0.22,
+      "performance": 1780.1312312526902,
+      "clamped": false,
+      "wins": 40,
+      "draws": 8,
+      "losses": 152,
+      "unpaired_games": 0,
+      "terminations": {
+        "checkmate": 192,
+        "threefold_repetition": 4,
+        "insufficient_material": 4
+      },
+      "ours_seconds_per_move": 0.12,
+      "theirs_seconds_per_move": 1.616
+    }
+  },
+  "checkpoints": [
+    "runs/p2_w_quarter_down/ckpt_iter0010.pt"
+  ],
+  "tc": [
+    "60+0.6"
+  ],
+  "sims": [
+    48
+  ]
+}

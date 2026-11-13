@@ -1,0 +1,36 @@
+{
+  "family_a": {
+    "opponents": [
+      "shallowblue"
+    ],
+    "rating": 1153.7208638585553,
+    "clamped": false,
+    "ci95": [
+      1066.4985596188685,
+      1223.5018278623143
+    ],
+    "se": 41.44300873281344,
+    "resamples": 10000,
+    "seed": 0,
+    "games": 200
+  },
+  "family_b": {
+    "opponents": [
+      "hoichess",
+      "micromax"
+    ],
+    "rating": 1488.720718555412,
+    "clamped": false,
+    "ci95": [
+      1442.0903871113346,
+      1529.210728780412
+    ],
+    "se": 22.36583492618392,
+    "resamples": 10000,
+    "seed": 0,
+    "games": 400
+  },
+  "difference_b_minus_a": 334.9998546968568,
+  "agree": false,
+  "rule": "agree iff each point lies inside the other's 95% interval"
+}
