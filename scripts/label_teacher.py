@@ -10,6 +10,12 @@ their game (``teacher.select_rows``). A seeded ``--holdout`` of them is labelled
 same way but written to a separate ring that training never reads; it measures how far
 a network has moved toward the teacher (``scripts/teacher_agreement.py``).
 
+``--no-holdout`` labels every selected row for training and writes no held-out ring (a
+pool whose held-out positions were excluded upstream, ``scripts/pool_positions.py``).
+``--outcome-model-from RING`` takes the outcome model from another teacher ring's
+``teacher.json`` instead of fitting one, so rows labelled in two runs carry value
+targets from one fit.
+
 Labelling runs one single-threaded Stockfish per worker, as many workers as the cgroup
 allows (``teacher.available_cpus``), each appending to its own shard under
 ``<out>_labels/``; a rerun skips labelled rows. The rings are written once every row is
@@ -77,7 +83,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--ring", required=True, type=Path, help="source self-play ring (read-only)")
     ap.add_argument("--out", required=True, type=Path, help="teacher ring to create")
-    ap.add_argument("--holdout-out", required=True, type=Path)
+    ap.add_argument("--holdout-out", type=Path, default=None)
+    ap.add_argument("--no-holdout", action="store_true", help="label every row for training")
+    ap.add_argument(
+        "--outcome-model-from",
+        type=Path,
+        default=None,
+        help="teacher ring whose fitted outcome model the new rows use",
+    )
     ap.add_argument("--holdout", type=int, default=5000)
     ap.add_argument("--nodes", type=int, default=100_000)
     ap.add_argument("--multipv", type=int, default=5)
@@ -94,8 +107,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stockfish", default="")
     args = ap.parse_args(argv)
 
+    if args.no_holdout == (args.holdout_out is not None):
+        print("give exactly one of --holdout-out and --no-holdout", file=sys.stderr)
+        return 1
     for path in (args.out, args.holdout_out):
-        if (path / "teacher.json").exists():
+        if path is not None and (path / "teacher.json").exists():
             print(f"{path} is already a finished teacher ring", file=sys.stderr)
             return 1
     sf = stockfish_path(args.stockfish)
@@ -115,7 +131,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit:
         rows = np.sort(rng.choice(rows, size=min(args.limit, len(rows)), replace=False))
     hold_mask = np.zeros(len(rows), dtype=bool)
-    hold_mask[rng.choice(len(rows), size=min(args.holdout, len(rows) // 10), replace=False)] = True
+    if not args.no_holdout:
+        size = min(args.holdout, len(rows) // 10)
+        hold_mask[rng.choice(len(rows), size=size, replace=False)] = True
     train_rows, hold_rows = rows[~hold_mask], rows[hold_mask]
     print(
         f"source {args.ring}: {n} rows, total_written {source.total_written}; {counts}", flush=True
@@ -149,18 +167,25 @@ def main(argv: list[str] | None = None) -> int:
         "selection": counts,
         "excluded_suites": {p: sha256_file(REPO / p) for p in EXCLUDE},
         "holdout": {"seed": args.seed, "rows": len(hold_rows)},
+        "outcome_model_from": str(args.outcome_model_from) if args.outcome_model_from else None,
         "git_sha": git_sha(),
         "labelling_seconds": round(time.time() - t0, 1),
         "workers": workers,
     }
+    given = None
+    if args.outcome_model_from is not None:
+        fitted = json.loads((args.outcome_model_from / "teacher.json").read_text())["outcome_model"]
+        given = (float(fitted["a"]), float(fitted["s"]))
     meta = build_teacher_ring(
-        source, labels, train_rows, args.out, settings, {**provenance, "split": "train"}
-    )
-    model = (meta["outcome_model"]["a"], meta["outcome_model"]["s"])
-    build_teacher_ring(
-        source, labels, hold_rows, args.holdout_out, settings,
-        {**provenance, "split": "holdout"}, model=model,
+        source, labels, train_rows, args.out, settings, {**provenance, "split": "train"},
+        model=given,
     )  # fmt: skip
+    model = (meta["outcome_model"]["a"], meta["outcome_model"]["s"])
+    if not args.no_holdout:
+        build_teacher_ring(
+            source, labels, hold_rows, args.holdout_out, settings,
+            {**provenance, "split": "holdout"}, model=model,
+        )  # fmt: skip
     print(json.dumps({"rows": meta["rows"], "outcome_model": meta["outcome_model"]}), flush=True)
     return 0
 

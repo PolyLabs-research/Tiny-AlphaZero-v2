@@ -312,16 +312,22 @@ def exclusion_keys(epd_paths: Sequence[str | Path]) -> set[bytes]:
     return keys
 
 
-def select_rows(boards: np.ndarray, excluded: set[bytes]) -> tuple[np.ndarray, dict[str, int]]:
+def select_rows(
+    boards: np.ndarray, excluded: set[bytes], seen: set[bytes] | None = None
+) -> tuple[np.ndarray, dict[str, int]]:
     """Ring rows to label: first occurrence of each position, none excluded.
 
     Rows whose position had already occurred in its game (repetition token > 0) are
     dropped too: their right value depends on a history a FEN cannot carry, and the
     engine would score them blind to the repetition.
+
+    ``seen`` carries "already taken" across calls: :func:`pool_rows` passes one set
+    through several rings, so a position kept from an earlier ring counts as a
+    duplicate in every later one. It is updated in place.
     """
     from tinyalphazero.encoding import REP_0
 
-    seen: set[bytes] = set()
+    seen = set() if seen is None else seen
     keep: list[int] = []
     counts = {"rows": int(len(boards)), "repeated": 0, "excluded": 0, "duplicate": 0}
     for i in range(len(boards)):
@@ -469,3 +475,120 @@ def build_teacher_ring(
     }
     (Path(out_dir) / "teacher.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
     return meta
+
+
+# ---------------------------------------------------------------------------
+# Pools across rings and agreement with the teacher (DIAG-2026-11-13 capacity-or-data)
+# ---------------------------------------------------------------------------
+
+
+def pool_rows(
+    boards: Sequence[np.ndarray],
+    excluded: set[bytes],
+    seed: int,
+    limit: int | None = None,
+) -> tuple[np.ndarray, list[dict[str, int]]]:
+    """Positions from several rings, each once, as ``(ring, row)`` pairs in a seeded order.
+
+    Each ring's boards go through :func:`select_rows` with one ``seen`` set shared
+    across rings, taken in the order given, so a position kept from an earlier ring is a
+    duplicate in every later one. The kept pairs are then shuffled with ``seed`` and cut
+    to ``limit``: every prefix of the result is a uniform sample of the pool, which is
+    what lets one labelled ring serve as nested training sets.
+    """
+    seen: set[bytes] = set()
+    picks: list[np.ndarray] = []
+    counts: list[dict[str, int]] = []
+    for k, ring_boards in enumerate(boards):
+        rows, c = select_rows(ring_boards, excluded, seen=seen)
+        picks.append(np.stack([np.full(len(rows), k, dtype=np.int64), rows], axis=1))
+        counts.append(c)
+    pairs = np.concatenate(picks) if picks else np.zeros((0, 2), dtype=np.int64)
+    pairs = pairs[np.random.default_rng(seed).permutation(len(pairs))]
+    if limit is not None:
+        pairs = pairs[:limit]
+    return pairs, counts
+
+
+def write_pool(rings: Sequence[Any], pairs: np.ndarray, out_dir: Path, chunk: int = 100_000) -> Any:
+    """Copy the picked rows, every stored field as it is, into a new ring in ``pairs`` order.
+
+    The pool is a source ring for ``scripts/label_teacher.py``: it reads boards, legal
+    masks and game outcomes from it, so those must be the source rows' own, bit for bit.
+    Every source must carry every field the new ring has.
+    """
+    from tinyalphazero.replay import ReplayBuffer
+
+    out = ReplayBuffer.create(out_dir, capacity=max(1, len(pairs)))
+    for k, ring in enumerate(rings):
+        missing = [f for f in out._arr if f not in ring._arr]
+        if missing and np.any(pairs[:, 0] == k):
+            raise ValueError(f"source ring {k} lacks fields {missing}")
+    for lo in range(0, len(pairs), chunk):
+        part = pairs[lo : lo + chunk]
+        for k in np.unique(part[:, 0]):
+            sel = np.flatnonzero(part[:, 0] == k)
+            src = part[sel, 1]
+            for name, arr in out._arr.items():
+                arr[lo + sel] = rings[int(k)]._arr[name][src]
+    out.total_written = len(pairs)
+    out.flush()
+    return out
+
+
+def agreement(
+    net: Any, ring: Any, device: Any, batch: int = 512, rows: np.ndarray | None = None
+) -> dict[str, Any]:
+    """How close ``net``'s prior is to the teacher on ``ring``'s rows (no search).
+
+    The summary (``top1_agreement``, ``teacher_policy_ce``, ``value_mse_vs_teacher``) is
+    computed exactly as ``scripts/teacher_agreement.py`` always has: rows in order,
+    batch sums accumulated in that order, so a T1 reading reproduces. Added for the
+    capacity-or-data diagnostic: ``teacher_entropy`` (the teacher's own entropy, the
+    floor no prior can pass) and, per row, ``ce_rows`` and ``entropy_rows`` for paired
+    comparisons between checkpoints. ``rows`` restricts to those ring rows, in order.
+    """
+    import torch
+
+    from tinyalphazero.model import masked_policy, value_scalar
+    from tinyalphazero.train import unpack_legal_mask
+
+    arr = ring._arr
+    idx_all = np.arange(len(ring)) if rows is None else np.asarray(rows, dtype=np.int64)
+    n = len(idx_all)
+    top1 = 0
+    ce_sum = 0.0
+    se_sum = 0.0
+    ce_rows = np.zeros(n, dtype=np.float64)
+    ent_rows = np.zeros(n, dtype=np.float64)
+    was_training = net.training
+    net.eval()
+    for lo in range(0, n, batch):
+        idx = idx_all[lo : lo + batch]
+        tokens = torch.from_numpy(arr["boards"][idx].astype(np.int64)).to(device)
+        legal = unpack_legal_mask(torch.from_numpy(np.asarray(arr["legals"][idx]))).to(device)
+        target = torch.from_numpy(np.stack([ring.densify_one(int(i)) for i in idx])).to(device)
+        best = torch.from_numpy(arr["moves"][idx].astype(np.int64)).to(device)
+        with torch.no_grad():
+            out = net(tokens)
+            probs = masked_policy(out.policy_ft.float(), legal)
+            value = value_scalar(out.value_wdl.float())
+        top1 += int((probs.argmax(dim=1) == best[:, 0] * 64 + best[:, 1]).sum())
+        per_row = -(target * probs.clamp_min(1e-12).log()).sum(dim=1)
+        ce_sum += float(per_row.sum())
+        root_q = torch.from_numpy(arr["root_q"][idx].astype(np.float32)).to(device)
+        se_sum += float(((value - root_q) ** 2).sum())
+        ent = -(target * target.clamp_min(1e-12).log()).sum(dim=1)
+        ce_rows[lo : lo + len(idx)] = per_row.double().cpu().numpy()
+        ent_rows[lo : lo + len(idx)] = ent.double().cpu().numpy()
+    if was_training:
+        net.train()
+    return {
+        "rows": n,
+        "top1_agreement": top1 / n,
+        "teacher_policy_ce": ce_sum / n,
+        "value_mse_vs_teacher": se_sum / n,
+        "teacher_entropy": float(ent_rows.mean()),
+        "ce_rows": ce_rows,
+        "entropy_rows": ent_rows,
+    }

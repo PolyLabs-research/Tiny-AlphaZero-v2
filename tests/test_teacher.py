@@ -240,3 +240,131 @@ def test_the_labeller_excludes_every_measured_suite() -> None:
 
     suites = {str(p.relative_to(REPO)) for p in (REPO / "tests" / "suites").glob("*.epd")}
     assert set(EXCLUDE) == suites
+
+
+# --- pools across rings and agreement (DIAG-2026-11-13 capacity-or-data) ----------------
+
+
+def _walks(n: int, seed: int) -> list[chess.Board]:
+    rng = np.random.default_rng(seed)
+    boards = []
+    for _ in range(n):
+        b = chess.Board()
+        for _ in range(int(rng.integers(2, 14))):
+            b.push(list(b.legal_moves)[int(rng.integers(0, b.legal_moves.count()))])
+        boards.append(b)
+    return boards
+
+
+def test_select_rows_shares_seen_across_calls(tmp_path: Path) -> None:
+    e4 = chess.Board()
+    e4.push_uci("e2e4")
+    d4 = chess.Board()
+    d4.push_uci("d2d4")
+    a = _ring_with(tmp_path / "a", [e4, d4], [0, 0], [0, 0])
+    b = _ring_with(
+        tmp_path / "b", [d4, e4, chess.Board("4k3/8/8/8/8/8/8/4K2R w K - 0 1")], [0] * 3, [0] * 3
+    )
+    seen: set[bytes] = set()
+    rows_a, _ = select_rows(a._arr["boards"][:2], set(), seen=seen)
+    rows_b, counts_b = select_rows(b._arr["boards"][:3], set(), seen=seen)
+    assert rows_a.tolist() == [0, 1]
+    assert rows_b.tolist() == [2] and counts_b["duplicate"] == 2
+    # Without a shared set each ring stands alone, as before.
+    assert select_rows(b._arr["boards"][:3], set())[0].tolist() == [0, 1, 2]
+
+
+def test_pool_rows_dedupes_across_rings_and_every_prefix_is_the_same_order(tmp_path: Path) -> None:
+    from tinyalphazero.teacher import pool_rows
+
+    boards = _walks(50, 11)
+    a = _ring_with(tmp_path / "a", boards[:30], [0] * 30, [0] * 30)
+    b = _ring_with(tmp_path / "b", boards[20:], [0] * 30, [0] * 30)  # 10 positions shared
+    excluded = {position_key(encode_board(boards[45], 0))}
+    srcs = [a._arr["boards"][:30], b._arr["boards"][:30]]
+    pairs, counts = pool_rows(srcs, excluded, seed=0)
+    keys = [position_key(srcs[k][r]) for k, r in pairs]
+    want = {position_key(encode_board(x, 0)) for x in boards} - excluded
+    assert len(keys) == len(set(keys)) == len(want) and set(keys) == want
+    assert counts[1]["duplicate"] >= 10 - 0 and counts[1]["excluded"] == 1
+    again, _ = pool_rows(srcs, excluded, seed=0, limit=17)
+    assert np.array_equal(again, pairs[:17])  # the limit is a prefix of the seeded order
+    assert not np.array_equal(pool_rows(srcs, excluded, seed=1)[0], pairs)
+
+
+def test_write_pool_copies_every_field_in_pair_order(tmp_path: Path) -> None:
+    from tinyalphazero.teacher import write_pool
+
+    boards = _walks(20, 5)
+    a = _ring_with(tmp_path / "a", boards[:12], [0] * 12, [1, 0, -1] * 4)
+    b = _ring_with(tmp_path / "b", boards[12:], [0] * 8, [-1, 1] * 4)
+    pairs = np.array([[1, 3], [0, 0], [0, 11], [1, 7], [0, 5]], dtype=np.int64)
+    out = write_pool([a, b], pairs, tmp_path / "pool", chunk=2)
+    reopened = ReplayBuffer.open(tmp_path / "pool", readonly=True)
+    assert len(reopened) == len(out) == 5
+    for j, (k, r) in enumerate(pairs):
+        src = (a, b)[k]
+        for name in reopened._arr:
+            assert np.array_equal(reopened._arr[name][j], src._arr[name][r]), (name, j)
+
+
+def _teacher_ring(tmp: Path, boards: list[chess.Board], name: str) -> ReplayBuffer:
+    src = _ring_with(
+        tmp / f"{name}_src",
+        boards,
+        [0] * len(boards),
+        [1, -1, 0] * (len(boards) // 3) + [0] * (len(boards) % 3),
+    )
+    settings = TeacherSettings(nodes=1000, multipv=3)
+    label_rows(
+        src._arr["boards"], range(len(boards)), _fake_analyse, settings, tmp / f"{name}.jsonl"
+    )
+    build_teacher_ring(
+        src, read_labels([tmp / f"{name}.jsonl"]), list(range(len(boards))), tmp / name,
+        settings, {}, model=(60.0, 150.0),
+    )  # fmt: skip
+    return ReplayBuffer.open(tmp / name, readonly=True)
+
+
+def test_agreement_summary_is_the_scripts_arithmetic(tmp_path: Path) -> None:
+    """The T1 numbers must not move: the summary is computed as the script always did."""
+    import torch
+
+    from tinyalphazero.config import ModelConfig
+    from tinyalphazero.model import ChessNet, masked_policy, value_scalar
+    from tinyalphazero.teacher import agreement
+    from tinyalphazero.train import unpack_legal_mask
+
+    ring = _teacher_ring(tmp_path, _walks(23, 2), "t")
+    torch.manual_seed(0)
+    net = ChessNet(
+        ModelConfig(d_model=32, n_layers=1, n_heads=2, d_ff=64, d_policy=16, dropout=0.0)
+    ).eval()
+    dev = torch.device("cpu")
+    got = agreement(net, ring, dev, batch=8)
+
+    arr, n = ring._arr, len(ring)
+    top1, ce_sum, se_sum = 0, 0.0, 0.0
+    for lo in range(0, n, 8):  # the loop scripts/teacher_agreement.py ran before
+        idx = np.arange(lo, min(n, lo + 8))
+        tokens = torch.from_numpy(arr["boards"][idx].astype(np.int64))
+        legal = unpack_legal_mask(torch.from_numpy(np.asarray(arr["legals"][idx])))
+        target = torch.from_numpy(np.stack([ring.densify_one(int(i)) for i in idx]))
+        best = torch.from_numpy(arr["moves"][idx].astype(np.int64))
+        with torch.no_grad():
+            out = net(tokens)
+            probs = masked_policy(out.policy_ft.float(), legal)
+            value = value_scalar(out.value_wdl.float())
+        top1 += int((probs.argmax(dim=1) == best[:, 0] * 64 + best[:, 1]).sum())
+        ce_sum += float(-(target * probs.clamp_min(1e-12).log()).sum(dim=1).sum())
+        root_q = torch.from_numpy(arr["root_q"][idx].astype(np.float32))
+        se_sum += float(((value - root_q) ** 2).sum())
+    assert got["top1_agreement"] == top1 / n
+    assert got["teacher_policy_ce"] == ce_sum / n
+    assert got["value_mse_vs_teacher"] == se_sum / n
+    assert got["ce_rows"].shape == (n,) and got["ce_rows"].mean() == pytest.approx(
+        ce_sum / n, rel=1e-6
+    )
+    assert np.all(got["entropy_rows"] <= got["ce_rows"] + 1e-6)  # Gibbs: CE >= the target's entropy
+    sub = agreement(net, ring, dev, batch=8, rows=np.array([3, 9, 20]))
+    assert sub["rows"] == 3 and np.allclose(sub["ce_rows"], got["ce_rows"][[3, 9, 20]])

@@ -30,10 +30,12 @@ repeat a position of their own game out), pooled and de-duplicated across rings 
 well: every position of the held-out ring below, and every position already in `runs/p2_u_fresh/teacher` (those
 labels are reused, not repeated).
 
-**Labels.** Stockfish 16 at the standing teacher's settings (`TeacherSettings`: 200,000 nodes, multipv 5,
-temperature 50 cp, hash 64 MB), by `scripts/label_teacher.py`, on a RunPod pod as p2_u's labelling ran
-(about 214 positions a second on 54 workers there). Value targets use the outcome model fitted on the training
-rows, as every teacher ring does.
+**Labels.** Stockfish 16 at the standing teacher's settings as `runs/p2_u_fresh/teacher/teacher.json` records
+them (**100,000 nodes**, multipv 5, temperature 50 cp, hash 64 MB; the first draft said 200,000, the
+`TeacherSettings` default, which is not what D1 was labelled at), by `scripts/label_teacher.py --no-holdout
+--outcome-model-from runs/p2_u_fresh/teacher`, on a RunPod pod as p2_u's labelling ran (about 214 positions a
+second on 54 workers there). The value targets of every new row come from D1's fitted outcome model (a 303, s
+367), so all four sets carry one fit.
 
 **Four nested training sets**, each containing the one before:
 
@@ -63,7 +65,7 @@ set's result. Seed 0 for batch order. Run on this box's GPU after p2_y.
 - Held-out top-1 agreement and value MSE against the teacher (reported).
 - The teacher's own entropy on the held-out rows, `H_T`, the floor no network can pass; `C(D) − H_T` is the
   part of the gap that is learnable.
-- `C_train(D)`: the same cross-entropy on a fixed 5,000-row sample of D1 (in every training set), so a
+- `C_train(D)`: the same cross-entropy on a fixed 5,000-row sample of D1 (seed 0; in every training set), so a
   held-out-to-training gap shows whether the network is fitting what it sees.
 
 ## 3. Reading rule (registered here, before any label exists)
@@ -104,10 +106,13 @@ toward the teacher on these positions shows at the board at all.
   launch. Upload: the 14 rings' position files; download: the labelled rows, about 3.8 GB (the box has 86 GB free).
 - **Training:** this box's GPU after p2_y, about 1,200 samples a second (`benchmarks/results.jsonl`): at most
   4 × 16M samples, more likely 15–30M in all with early stopping, so roughly 4–7 hours, no spend.
-- **Code, with tests, before anything runs:** `scripts/label_teacher.py` gains several `--ring`s, de-duplication
-  across them, and exclusion of an existing teacher ring and held-out ring; `scripts/distill_curve.py` (new)
-  builds the nested sets, trains each with the teacher-row loss and early stopping, and writes one JSONL row
-  per measurement; the paired-bootstrap difference and `H_T` are added to `teacher_agreement`.
+- **Code, with tests, before anything runs:** `scripts/pool_positions.py` (new; `teacher.pool_rows`,
+  `teacher.write_pool`) pools the 14 rings into one ring in the seeded order, de-duplicated across rings and
+  without D1's or the held-out ring's positions; `scripts/label_teacher.py` gains `--no-holdout` and
+  `--outcome-model-from`; `scripts/distill_curve.py` (new; `tinyalphazero.distill`) builds the nested sets,
+  trains each with `train_step_phase2` and early stopping, writes one JSONL row per measurement, and applies §3
+  (`distill.read_curve`); `teacher.agreement` (moved out of `scripts/teacher_agreement.py`, its summary
+  arithmetic unchanged and tested to be) adds `H_T` and per-row CE for the paired bootstrap.
 
 ---
 
