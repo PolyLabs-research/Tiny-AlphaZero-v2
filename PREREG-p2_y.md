@@ -2,9 +2,9 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-11-13, revised after S, NOT signed.** Nothing under this file has run. Michael agreed to
-> building and running the two engines and to leaving TSCP out ("Agree on one, leave 2 out"), and chose an
-> adapter for Micro-Max ("A small adapter"); both are built, and S (smoke, not data) is done (Sign-off).
+> **STATUS: REGISTERED 2026-11-13** (see Sign-off), at Michael's instruction ("OK given, go"). Nothing under
+> this file has run beyond S (smoke games, not data). Michael agreed to building and running the two engines and to
+> leaving TSCP out ("Agree on one, leave 2 out"), and chose an adapter for Micro-Max ("A small adapter").
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -163,4 +163,6 @@ complete, network 0/4, Shallow Blue 0.23–0.31 s a move. Micro-Max through the 
 scored as Micro-Max losses; the adapter was extended to complete such moves with `q` (`tests/test_xboard1.py`
 replays that very position). Through the extended adapter: 8 games, all complete, network 0/8, Micro-Max 0.17–0.21
 s a move; it also found `Ra8#` from a `setboard` position and played a legal move from one with all four castling
-rights. **Pending: Michael's sign-off.**
+rights. **Registered 2026-11-13** at Michael's instruction ("OK given, go"). The run is `runs/p2_y_bench.sh` as the
+transient user unit `taz-bench-p2_y` (restarts on failure; `play` resumes from `games.jsonl`), under `gpu hold`
+with the p2_x environment, followed by the registered analysis and U's refit.
