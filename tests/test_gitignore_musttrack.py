@@ -172,6 +172,17 @@ MUST_REACH: list[str] = [
     "runs/bench/p2_x/k2.json",  # Addendum A: K2's two families' fits
     "runs/bench/uci_parity_cpu.json",
     "runs/bench/uci_parity_cuda.json",
+    # p2_y (PREREG-p2_y): the new games, and every fit on the analysis set (K1-K3, the eight-opponent rate).
+    "runs/bench/p2_y/games.jsonl",
+    "runs/bench/p2_y/games.pgn",
+    "runs/bench/p2_y_all/rating.json",
+    "runs/bench/p2_y_all/k3.json",
+    "runs/bench/p2_y_all/k2_hoichess.json",
+    "runs/bench/p2_y_all/k2_micromax.json",
+    "runs/bench/p2_y_all/k2_shallowblue.json",
+    "runs/bench/p2_y_sens/rating.json",  # U: the sensitivity refit
+    "runs/bench/p2_y_sens/k3.json",
+    "runs/bench/p2_y_sens/k2_micromax.json",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that
@@ -181,6 +192,12 @@ MUST_IGNORE: list[str] = [
     # p2_x: opponent binaries extracted from their packages, and tooling smoke games (not data).
     "runs/bench/engines/hoichess/usr/games/hoichess",
     "runs/bench/smoke/games.jsonl",
+    # p2_y: the analysis set is a concatenation of two tracked files, regenerable; engine sources and builds.
+    "runs/bench/p2_y_all/games.jsonl",
+    "runs/bench/p2_y_sens/games.jsonl",
+    "runs/bench/engines/micromax-src/umax4_8w.c",
+    "runs/bench/engines/shallowblue-src/shallow-blue/shallowblue",
+    "runs/bench/smoke_p2_y/games.jsonl",
     "runs/phase1_c/final.pt",
     "runs/data/mate2_tune_500/keymoves.dat",  # the .epd negation must not widen to data
     "runs/p2_t_teach/teacher/boards.dat",  # the teacher ring's arrays (about 0.5 GB)
