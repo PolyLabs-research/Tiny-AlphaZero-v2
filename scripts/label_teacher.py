@@ -14,7 +14,9 @@ a network has moved toward the teacher (``scripts/teacher_agreement.py``).
 pool whose held-out positions were excluded upstream, ``scripts/pool_positions.py``).
 ``--outcome-model-from RING`` takes the outcome model from another teacher ring's
 ``teacher.json`` instead of fitting one, so rows labelled in two runs carry value
-targets from one fit.
+targets from one fit. ``--labels-only`` stops once every row is labelled, building no ring:
+a pod that has only the source's boards labels, and the rings are built where the whole
+source ring is, by the same command rerun there (it finds every row labelled).
 
 Labelling runs one single-threaded Stockfish per worker, as many workers as the cgroup
 allows (``teacher.available_cpus``), each appending to its own shard under
@@ -85,6 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True, type=Path, help="teacher ring to create")
     ap.add_argument("--holdout-out", type=Path, default=None)
     ap.add_argument("--no-holdout", action="store_true", help="label every row for training")
+    ap.add_argument("--labels-only", action="store_true", help="label, then stop: build no ring")
     ap.add_argument(
         "--outcome-model-from",
         type=Path,
@@ -160,6 +163,10 @@ def main(argv: list[str] | None = None) -> int:
             f"{len(missing)} rows unlabelled, e.g. {missing[:5]}; rerun to finish", file=sys.stderr
         )
         return 1
+
+    if args.labels_only:
+        print(f"labels only: all {len(labels)} rows labelled in {labels_dir}", flush=True)
+        return 0
 
     provenance = {
         "source_ring": str(args.ring),
