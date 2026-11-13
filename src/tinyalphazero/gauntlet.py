@@ -298,3 +298,19 @@ def families_agree(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return bool(
         b["ci95"][0] <= a["rating"] <= b["ci95"][1] and a["ci95"][0] <= b["rating"] <= a["ci95"][1]
     )
+
+
+def network_underpromotes(start_fen: str, moves: Sequence[str], ours_white: bool) -> bool:
+    """Did the network promote to anything but a queen in this game? (PREREG-p2_y U)
+
+    Micro-Max 4.8 represents only queen promotions, so a game in which the network
+    under-promotes is not the game Micro-Max believes it is playing.
+    """
+    board = chess.Board(start_fen)
+    ours = chess.WHITE if ours_white else chess.BLACK
+    for text in moves:
+        move = chess.Move.from_uci(text)
+        if board.turn == ours and move.promotion not in (None, chess.QUEEN):
+            return True
+        board.push(move)
+    return False

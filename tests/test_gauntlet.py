@@ -175,3 +175,14 @@ def test_families_agree_needs_each_point_inside_the_other_interval() -> None:
     # b's interval covers a's point, but b's point is outside a's interval: disagree.
     assert not families_agree(a, {"rating": 1600.0, "ci95": [1500.0, 1700.0]})
     assert not families_agree(a, {"rating": 1500.0, "ci95": [1450.0, 1560.0]})
+
+
+def test_network_underpromotes_reads_only_the_networks_promotions() -> None:
+    from tinyalphazero.gauntlet import network_underpromotes
+
+    fen = "4k3/1P6/8/8/8/8/6p1/4K3 w - - 0 1"
+    # White (the network) promotes to a knight; Black's queen promotion is not the network's.
+    moves = ["b7b8n", "g2g1q"]
+    assert network_underpromotes(fen, moves, ours_white=True)
+    assert not network_underpromotes(fen, moves, ours_white=False)
+    assert not network_underpromotes(fen, ["b7b8q", "g2g1n"], ours_white=True)

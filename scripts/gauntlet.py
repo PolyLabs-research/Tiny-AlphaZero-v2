@@ -47,6 +47,7 @@ from tinyalphazero.gauntlet import (
     Clock,
     bootstrap_rating,
     families_agree,
+    network_underpromotes,
     performance,
     play_game,
 )
@@ -386,6 +387,29 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_drop_pairs(args: argparse.Namespace) -> int:
+    """PREREG-p2_y U's sensitivity set: drop an opponent's pairs with a network under-promotion.
+
+    A pair (one opening, both colours) against ``--opponent`` is dropped when either of
+    its games contains one; every other game is copied unchanged, in order.
+    """
+    rows = load_rows(args.src)
+    flagged = {
+        r["opening"]
+        for r in rows
+        if r["opponent"] == args.opponent
+        and network_underpromotes(r["start_fen"], r["moves"], r["ours_white"])
+    }
+    kept = [r for r in rows if not (r["opponent"] == args.opponent and r["opening"] in flagged)]
+    args.dst.mkdir(parents=True, exist_ok=True)
+    (args.dst / "games.jsonl").write_text("".join(json.dumps(r) + "\n" for r in kept))
+    print(
+        f"dropped {len(flagged)} {args.opponent} pairs ({len(rows) - len(kept)} games) with a "
+        f"network under-promotion; {len(kept)} games -> {args.dst}/games.jsonl"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -413,8 +437,20 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--file", default="k2.json", help="written under --out")
     c.add_argument("--resamples", type=int, default=10_000)
     c.add_argument("--seed", type=int, default=0)
+    d = sub.add_parser(
+        "drop-pairs", help="copy games, dropping an opponent's pairs (PREREG-p2_y U)"
+    )
+    d.add_argument("--src", required=True, type=Path, help="directory with games.jsonl")
+    d.add_argument("--dst", required=True, type=Path, help="directory to write games.jsonl")
+    d.add_argument("--opponent", required=True, help="the opponent whose pairs are checked")
     args = ap.parse_args(argv)
-    return {"play": cmd_play, "rate": cmd_rate, "compare": cmd_compare}[args.cmd](args)
+    commands = {
+        "play": cmd_play,
+        "rate": cmd_rate,
+        "compare": cmd_compare,
+        "drop-pairs": cmd_drop_pairs,
+    }
+    return commands[args.cmd](args)
 
 
 if __name__ == "__main__":
