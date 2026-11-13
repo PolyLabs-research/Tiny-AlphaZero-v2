@@ -43,7 +43,13 @@ import chess.engine
 import chess.pgn
 import numpy as np
 
-from tinyalphazero.gauntlet import Clock, bootstrap_rating, performance, play_game
+from tinyalphazero.gauntlet import (
+    Clock,
+    bootstrap_rating,
+    families_agree,
+    performance,
+    play_game,
+)
 
 REPO = Path(__file__).resolve().parent.parent
 HOICHESS = REPO / "runs/bench/engines/hoichess/usr/games/hoichess"
@@ -272,21 +278,35 @@ def cmd_play(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_rate(args: argparse.Namespace) -> int:
-    rows = [json.loads(line) for line in (args.out / "games.jsonl").read_text().splitlines()]
+def load_rows(out: Path) -> list[dict]:
+    return [json.loads(line) for line in (out / "games.jsonl").read_text().splitlines()]
+
+
+def pair_groups(rows: list[dict]) -> dict[str, tuple[float, np.ndarray]]:
+    """Per opponent, ordered by rating: (its rating, the network's mean over each complete pair)."""
     by_opp: dict[str, dict] = {}
     for r in rows:
         o = by_opp.setdefault(r["opponent"], {"rating": r["opponent_rating"], "open": {}})
         o["open"].setdefault(r["opening"], {})[r["ours_white"]] = r["score"]
+    return {
+        name: (
+            o["rating"],
+            np.array([(v[True] + v[False]) / 2 for v in o["open"].values() if len(v) == 2]),
+        )
+        for name, o in sorted(by_opp.items(), key=lambda kv: kv[1]["rating"])
+    }
+
+
+def cmd_rate(args: argparse.Namespace) -> int:
+    rows = load_rows(args.out)
     groups, per_opponent = [], {}
-    for name, o in sorted(by_opp.items(), key=lambda kv: kv[1]["rating"]):
-        pairs = np.array([(v[True] + v[False]) / 2 for v in o["open"].values() if len(v) == 2])
+    for name, (rating, pairs) in pair_groups(rows).items():
         mine = [r for r in rows if r["opponent"] == name]
         terms: dict[str, int] = {}
         for r in mine:
             terms[r["termination"]] = terms.get(r["termination"], 0) + 1
         per_opponent[name] = {
-            **performance(o["rating"], pairs),
+            **performance(rating, pairs),
             "wins": sum(r["score"] == 1.0 for r in mine),
             "draws": sum(r["score"] == 0.5 for r in mine),
             "losses": sum(r["score"] == 0.0 for r in mine),
@@ -302,7 +322,7 @@ def cmd_rate(args: argparse.Namespace) -> int:
             ),
         }
         if len(pairs):
-            groups.append((o["rating"], pairs))
+            groups.append((rating, pairs))
     report = {
         "overall": bootstrap_rating(groups, resamples=args.resamples, seed=args.seed),
         "per_opponent": per_opponent,
@@ -326,6 +346,46 @@ def cmd_rate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compare(args: argparse.Namespace) -> int:
+    """Two anchor families' ratings, each with its own interval (PREREG-p2_x K2, Addendum A).
+
+    Each family is fitted by ``bootstrap_rating`` on its own opponents' pairs alone, with the
+    same resamples and seed as ``rate``. They *agree* when each point lies inside the other's
+    interval.
+    """
+    groups = pair_groups(load_rows(args.out))
+    fams = {"a": args.family_a.split(","), "b": args.family_b.split(",")}
+    for names in fams.values():
+        missing = [n for n in names if n not in groups]
+        if missing:
+            raise SystemExit(f"no games against {missing} in {args.out}/games.jsonl")
+    fits = {
+        k: bootstrap_rating([groups[n] for n in names], resamples=args.resamples, seed=args.seed)
+        for k, names in fams.items()
+    }
+    a, b = fits["a"], fits["b"]
+    agree = families_agree(a, b)
+    report = {
+        "family_a": {"opponents": fams["a"], **a},
+        "family_b": {"opponents": fams["b"], **b},
+        "difference_b_minus_a": b["rating"] - a["rating"],
+        "agree": agree,
+        "rule": "agree iff each point lies inside the other's 95% interval",
+    }
+    path = args.out / args.file
+    path.write_text(json.dumps(report, indent=2) + "\n")
+    for k in ("a", "b"):
+        f = fits[k]
+        print(
+            f"{','.join(fams[k]):>28}: {f['rating']:.0f} [{f['ci95'][0]:.0f}, {f['ci95'][1]:.0f}] "
+            f"over {f['games']} games"
+        )
+    print(
+        f"{'agree' if agree else 'DISAGREE'} (b - a = {report['difference_b_minus_a']:+.0f}) -> {path}"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -346,8 +406,15 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--out", required=True, type=Path)
     r.add_argument("--resamples", type=int, default=10_000)
     r.add_argument("--seed", type=int, default=0)
+    c = sub.add_parser("compare", help="two anchor families' ratings and their agreement")
+    c.add_argument("--out", required=True, type=Path)
+    c.add_argument("--family-a", required=True, help="comma-separated opponents")
+    c.add_argument("--family-b", required=True, help="comma-separated opponents")
+    c.add_argument("--file", default="k2.json", help="written under --out")
+    c.add_argument("--resamples", type=int, default=10_000)
+    c.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
-    return cmd_play(args) if args.cmd == "play" else cmd_rate(args)
+    return {"play": cmd_play, "rate": cmd_rate, "compare": cmd_compare}[args.cmd](args)
 
 
 if __name__ == "__main__":

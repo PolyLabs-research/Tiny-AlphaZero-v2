@@ -169,6 +169,7 @@ MUST_REACH: list[str] = [
     "runs/bench/p2_x/games.jsonl",
     "runs/bench/p2_x/games.pgn",
     "runs/bench/p2_x/rating.json",
+    "runs/bench/p2_x/k2.json",  # Addendum A: K2's two families' fits
     "runs/bench/uci_parity_cpu.json",
     "runs/bench/uci_parity_cuda.json",
 ]

@@ -165,3 +165,13 @@ def test_a_silent_engine_is_closed_and_forfeits() -> None:
     )
     assert silent.closed.is_set()
     assert (rec.result, rec.termination, rec.score) == ("1-0", "hung", 1.0)
+
+
+def test_families_agree_needs_each_point_inside_the_other_interval() -> None:
+    from tinyalphazero.gauntlet import families_agree
+
+    a = {"rating": 1650.0, "ci95": [1620.0, 1680.0]}
+    assert families_agree(a, {"rating": 1640.0, "ci95": [1600.0, 1700.0]})
+    # b's interval covers a's point, but b's point is outside a's interval: disagree.
+    assert not families_agree(a, {"rating": 1600.0, "ci95": [1500.0, 1700.0]})
+    assert not families_agree(a, {"rating": 1500.0, "ci95": [1450.0, 1560.0]})

@@ -58,6 +58,7 @@ runs/**
 !runs/bench/p2_x/games.jsonl
 !runs/bench/p2_x/games.pgn
 !runs/bench/p2_x/rating.json
+!runs/bench/p2_x/k2.json
 !runs/bench/uci_parity_*.json
 # p2_t's teacher ring: its settings and outcome fit (the .dat arrays and label shards stay ignored),
 # and the network's agreement with it on the held-out positions.

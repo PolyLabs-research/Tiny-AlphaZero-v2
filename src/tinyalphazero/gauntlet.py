@@ -288,3 +288,13 @@ def performance(opponent_rating: float, pair_scores: np.ndarray) -> dict[str, An
         "performance": rating,
         "clamped": clamped,
     }
+
+
+def families_agree(a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """PREREG-p2_x K2: two fits agree iff each point lies inside the other's 95% interval.
+
+    ``a`` and ``b`` are :func:`bootstrap_rating` results (``rating``, ``ci95``).
+    """
+    return bool(
+        b["ci95"][0] <= a["rating"] <= b["ci95"][1] and a["ci95"][0] <= b["rating"] <= a["ci95"][1]
+    )
