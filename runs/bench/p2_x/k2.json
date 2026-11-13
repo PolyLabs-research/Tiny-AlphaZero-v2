@@ -1,0 +1,38 @@
+{
+  "family_a": {
+    "opponents": [
+      "sf1400",
+      "sf1600",
+      "sf1800",
+      "sf2000"
+    ],
+    "rating": 1673.9433416497914,
+    "clamped": false,
+    "ci95": [
+      1643.5169745408953,
+      1703.6336323776259
+    ],
+    "se": 15.2613227471734,
+    "resamples": 10000,
+    "seed": 0,
+    "games": 800
+  },
+  "family_b": {
+    "opponents": [
+      "hoichess"
+    ],
+    "rating": 1504.6689333365553,
+    "clamped": false,
+    "ci95": [
+      1447.1936642880996,
+      1554.1074328296718
+    ],
+    "se": 26.785081366092573,
+    "resamples": 10000,
+    "seed": 0,
+    "games": 200
+  },
+  "difference_b_minus_a": -169.2744083132361,
+  "agree": false,
+  "rule": "agree iff each point lies inside the other's 95% interval"
+}

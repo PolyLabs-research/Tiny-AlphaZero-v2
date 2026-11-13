@@ -1,0 +1,16 @@
+{
+  "checkpoint": "runs/p2_w_quarter_down/ckpt_iter0010.pt",
+  "config": "runs/p2_w_quarter_down/config.yaml",
+  "config_fingerprint": "036cd665672a35348bff7ce876011f3350b2c5426780bdc95d1dafd6666e01da",
+  "device": "cpu",
+  "sims": 48,
+  "games": 20,
+  "opponent": "stockfish_s5@10000",
+  "positions": 1108,
+  "agreed": 1108,
+  "agreement": 1.0,
+  "ladder_seconds": 492.0,
+  "uci_seconds": 578.9,
+  "uci_seconds_per_move": 0.522,
+  "mismatches": []
+}
