@@ -1,0 +1,13 @@
+{
+  "top1_agreement": 0.3826,
+  "teacher_policy_ce": 2.2048452880859375,
+  "value_mse_vs_teacher": 0.03422199420928955,
+  "teacher_entropy": 1.188640863678175,
+  "probe_ce": 2.19349111328125,
+  "heldout_rows": 5000,
+  "rows": 4000000,
+  "samples": 15750144,
+  "samples_at_best": 15750144,
+  "samples_run": 16000000,
+  "git_sha": "58c6c11"
+}

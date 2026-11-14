@@ -1,0 +1,64 @@
+{
+  "start": {
+    "teacher_policy_ce": 2.367300341796875,
+    "top1_agreement": 0.3658,
+    "probe_ce": 2.357650048828125
+  },
+  "curve": [
+    {
+      "rows": 475696,
+      "teacher_policy_ce": 2.201215283203125,
+      "top1_agreement": 0.3804,
+      "value_mse_vs_teacher": 0.09433852462768555,
+      "probe_ce": 2.1120372802734373,
+      "samples_at_best": 14000128
+    },
+    {
+      "rows": 1000000,
+      "teacher_policy_ce": 2.193641796875,
+      "top1_agreement": 0.3858,
+      "value_mse_vs_teacher": 0.0562409912109375,
+      "probe_ce": 2.1605135498046875,
+      "samples_at_best": 15750144
+    },
+    {
+      "rows": 2000000,
+      "teacher_policy_ce": 2.1990176025390626,
+      "top1_agreement": 0.3862,
+      "value_mse_vs_teacher": 0.0401281551361084,
+      "probe_ce": 2.181236865234375,
+      "samples_at_best": 16000000
+    },
+    {
+      "rows": 4000000,
+      "teacher_policy_ce": 2.2048452880859375,
+      "top1_agreement": 0.3826,
+      "value_mse_vs_teacher": 0.03422199420928955,
+      "probe_ce": 2.19349111328125,
+      "samples_at_best": 15750144
+    }
+  ],
+  "teacher_entropy": 1.188640863678175,
+  "delta_top": {
+    "from_rows": 2000000,
+    "to_rows": 4000000,
+    "mean": 0.005827606983052101,
+    "ci95": [
+      0.0037992235927213915,
+      0.007897781447500455
+    ],
+    "resamples": 10000,
+    "seed": 0
+  },
+  "delta_first_to_last": {
+    "mean": 0.003629973576113116,
+    "ci95": [
+      -0.0015608231792689185,
+      0.008641258079744002
+    ],
+    "resamples": 10000,
+    "seed": 0
+  },
+  "fit_gap_top": 0.011354174804687478,
+  "reading": "capacity-limited"
+}

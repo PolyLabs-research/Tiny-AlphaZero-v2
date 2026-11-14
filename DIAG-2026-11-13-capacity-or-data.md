@@ -118,7 +118,98 @@ toward the teacher on these positions shows at the board at all.
 
 ## 7. Results
 
-*(Empty until the run.)*
+**Read 2026-11-14 ~19:45 UTC**, after the driver ended (18:39:44) and after Addendum A was committed alone
+(`1b124d6`). Everything below is from the run's files: `runs/diag_cod/pool/pool.json`,
+`runs/diag_cod/teacher/teacher.json`, `runs/diag_cod/curve/summary.json`, `size_*/result.json` and `log.jsonl`,
+`size_*/sf5/diag_verdict_vs_start.json` and the reps beside them, and `runs/diag_cod_driver.console.log`.
+
+### 7.1 What ran
+
+- **Pool** (`598d892`): 5,913,462 distinct positions across the 14 rings after selection, de-duplication and the
+  two excluded rings; 3,524,304 pooled (seed 0). `p2_t_teach_down` contributed none: all its selected positions
+  are D1's or the held-out ring's (495,898 excluded). Pool 3.6 GB.
+- **Labelling**: transient unit `taz-diag-cod` from `58c6c11`, armed 00:22:39 UTC. Pod `1zzvowvgdyhx19` (secure
+  RTX 4090, 64 vCPU, cgroup quota 54.4 CPUs, 54 workers; Stockfish `16-1build1`; `boards.dat` sha256 matched on
+  the pod) launched 00:22:42; job started 00:26:05; `job DONE`, exit 0, at 06:51:42 with all 3,524,304 rows
+  pulled here; `PULLED` written 06:51:44 and the pod deleted itself. About 152 positions a second (23,137 s), below
+  p2_u's 214. **Cost $5.81** (balance $45.38 before launch, $39.57 after; no other pod of ours at either reading;
+  about 6.5 pod-hours at $0.89/h, $5.78, consistent); worst case was $7.12.
+- **Ring**: the same labeller command rerun here, 06:51:44: 0 of 3,524,304 rows to label (a 32 s scan), ring
+  written by 06:53:49 — 3,524,304 rows at 100,000 nodes, multipv 5, temperature 50 cp, outcome model D1's
+  (a 303.35, s 367.36, `fitted_here: false`), draw rate 0.305.
+- **Curve** (`distill_curve.py` under `gpu hold`, lr 2e-5, batch 1,024, measured every ~250,000 samples,
+  patience 4, cap 16,000,000): D1 06:53:52–09:19:25 (15.0M samples), D2 –11:54:30 (16.0M), D3 –14:28:55
+  (16.0M), D4 –17:00:50 (16.0M); about 1,720 samples a second with measurements.
+- **The start's measurement reproduced the registered T1 reading exactly**: top-1 0.3658, cross-entropy
+  2.367300341796875, value MSE 0.037847105026245116, the values in
+  `runs/p2_w_quarter_down/teacher_agreement_iter0010.json` (RUNLOG-p2_w). `teacher.agreement` measures what the
+  script measured. Its training-probe CE at the start: 2.3577.
+- **Strength aside**: six skill-5 reps of each best checkpoint, with the start's `config.yaml`: D1 17:00:52–17:47:01
+  (7.4–8.0 min a rep), D4 17:47:01–18:39:44 (8.3–9.2 min a rep).
+
+### 7.2 The curve
+
+The teacher's own entropy on the held-out rows, `H_T` = **1.1886** nats (the floor).
+
+| Set | Rows | `C(D)` held-out CE | Top-1 | Value MSE | `C_train` (probe) | Held-out − probe | Best at (samples) | Run (samples) | Passes at best |
+|---|---|---|---|---|---|---|---|---|---|
+| start | — | 2.3673 | 0.3658 | 0.0378 | 2.3577 | 0.010 | — | — | — |
+| D1 | 475,696 | **2.2012** | 0.3804 | 0.0943 | 2.1120 | 0.089 | 14,000,128 | 15,000,576 (patience) | 29.4 |
+| D2 | 1,000,000 | **2.1936** | 0.3858 | 0.0562 | 2.1605 | 0.033 | 15,750,144 | 16,000,000 (cap) | 15.8 |
+| D3 | 2,000,000 | **2.1990** | 0.3862 | 0.0401 | 2.1812 | 0.018 | 16,000,000 | 16,000,000 (cap) | 8.0 |
+| D4 | 4,000,000 | **2.2048** | 0.3826 | 0.0342 | 2.1935 | 0.011 | 15,750,144 | 16,000,000 (cap) | 3.9 |
+
+**Δ_top** = `C(D4) − C(D3)` = **+0.0058 [+0.0038, +0.0079]** (paired bootstrap over the 5,000 held-out rows,
+10,000 resamples, seed 0). D4 minus D1: +0.0036 [−0.0016, +0.0086]. **Fit gap at D4** (`C(D4) − C_train(D4)`):
+0.0114.
+
+### 7.3 The reading: **not resolved (compute)**
+
+Under §3 alone, Δ_top's interval lies entirely above −0.01 and the fit gap is under 0.05: the capacity-limited
+row. That is what `summary.json`'s `reading` field says, because `distill.read_curve` applies §3 alone. **Addendum A
+overrides it.** D3's best came at its last measurement (16,000,000 samples) and D4's at 15,750,144: both ran to the
+cap with their best at 15.75M or later, so both *ended at the cap still improving*. Δ_top is not data-limited
+(its interval is above −0.01, not below), so the capacity-limited row does not apply and the reading is **not
+resolved (compute)**: at a 16M-sample cap the larger sets were stopped before converging, and the curve cannot say
+whether the network is at its capacity. Whether to rerun D3 and D4 with a higher cap is Michael's call.
+
+### 7.4 Strength aside (§5; decides nothing)
+
+Six skill-5 reps each against the start's six (`runs/p2_w_quarter_down/sf5/reps_iter0010_r*.jsonl`; start mean
+0.3788), paired bootstrap over the 100 openings:
+
+| Checkpoint | Reps | Mean | Paired difference against the start |
+|---|---|---|---|
+| D1 best (`size_475696/best.pt`) | 0.1125, 0.1125, 0.1025, 0.115, 0.1275, 0.105 | **0.1125** | **−0.266 [−0.297, −0.235]** |
+| D4 best (`size_4000000/best.pt`) | 0.4175, 0.4025, 0.3825, 0.425, 0.425, 0.4425 | **0.4158** | **+0.037 [+0.005, +0.069]** |
+
+D4's interval excludes zero, and 0.4158 is the highest six-rep skill-5 mean the project has measured (RUNLOG-p2_w
+§6 reading 5 gave 0.379 as the best). It is one checkpoint, from an instrument registered here as deciding
+nothing.
+
+### 7.5 Readings the rule does not cover (not registered; hypotheses)
+
+1. **At equal samples, the larger set trails, slightly.** Held-out CE at matched samples (D1 / D2 / D3 / D4): 3.75M
+   2.2226 / 2.2267 / 2.2303 / 2.2314; 7.75M 2.2089 / 2.2122 / 2.2186 / 2.2205; 11.75M 2.2021 / 2.2020 / 2.2090 /
+   2.2122. A row seen less often is learnt more slowly, so under one cap the larger sets were the least converged.
+   This is the effect Addendum A was written for.
+2. **D1 over-fitted, and it played far worse.** Its probe-to-held-out gap grew to 0.089 by its best (0.010 at the
+   start), against 0.033, 0.018 and 0.011 for D2–D4. It ended 0.166 nats closer to the teacher than the start on
+   held-out positions and lost 0.266 at skill 5.
+3. **The value head improved with set size.** Value MSE against the teacher: 0.094, 0.056, 0.040, 0.034 for D1–D4,
+   against the start's 0.038. Only D4 ended below the start. D1's collapse at the board coincides with its worst
+   value head.
+4. **A hypothesis that fits p2_v.** p2_v's half line drew each row of a 475,696-row teacher ring about 12.9 times
+   against the quarter line's 6.5 (PREREG-p2_w) and lost skill while moving closer to the teacher. Here, 29 passes
+   over that ring's positions cost 0.266, and four passes over four million positions gained 0.037. **Hypothesis,
+   not result:** teacher rows hurt when the same rows are repeated many times (over-fitting the policy and the
+   value head) and help when many distinct rows are each seen a few times. That would make the lever "many more
+   labelled positions, each seen rarely", not "more teacher per batch".
+
+### 7.6 Next
+
+Michael agreed (2026-11-14) to a registered training round that tests whether the D4 result replicates, drafted
+separately as PREREG-p2_aa. Rerunning D3 and D4 with a higher cap to resolve §3 is not scheduled.
 
 ## Addendum A — 2026-11-14 13:30 UTC, during the run, before D3 or D4 has a result
 
