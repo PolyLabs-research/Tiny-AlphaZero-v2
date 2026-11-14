@@ -119,3 +119,30 @@ toward the teacher on these positions shows at the board at all.
 ## 7. Results
 
 *(Empty until the run.)*
+
+## Addendum A — 2026-11-14 13:30 UTC, during the run, before D3 or D4 has a result
+
+Written at Michael's OK, while `taz-diag-cod` runs (from `58c6c11`): D1 and D2 had finished, D3 was at 9.75M of
+its 16M samples (held-out CE 2.2116) and D4 had not started. No reading of §3 had been made, no `summary.json`
+existed, and neither D3's nor D4's best was known. Committed after the driver ends, so that nothing tracked changes
+while it runs.
+
+**Why.** §2's cap (16,000,000 samples) gives the larger sets fewer passes over their rows: 16 over D2, 8 over D3,
+4 over D4. Observed so far: at equal samples the larger set trails slightly (each row is seen less often), D1
+stopped on patience at 15.0M (best 2.2012 at 14.0M) and D2 ran to the cap still improving (best 2.1936 at
+15.75M). A set stopped by the cap rather than by patience has not converged, so its `C(D)` overstates where it
+would end, and a flat Δ_top could then be the cap, not the network's size. §3 did not separate the two.
+
+**Rule added.** A set *ended at the cap still improving* if it ran to 16,000,000 samples and its best held-out CE
+came at one of its last two measurements (at 15,750,000 samples or later).
+
+- If D3 or D4 ended at the cap still improving, §3's **capacity-limited** and **in between** rows do not apply:
+  the reading is **not resolved (compute)**. The curve and Δ_top with its interval are reported; whether to rerun
+  D3 and D4 with a higher cap is Michael's call.
+- §3's **data-limited** row stands whatever the cap did: the cap works against the larger sets, so a Δ_top
+  interval entirely below −0.01 under it understates, not overstates, what more data does.
+- §3's **not resolved** row is unchanged.
+
+Everything else in §2–§6 is unchanged. Observed during the run and noted here before any reading, not as a rule:
+the value head's MSE against the teacher rose under teacher-only training (start 0.038; D1's best 0.094, D2's
+0.056), which bears on §5's strength aside, not on the policy curve.
