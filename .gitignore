@@ -67,6 +67,13 @@ runs/**
 !runs/bench/p2_y_all/k*.json
 !runs/bench/p2_y_sens/rating.json
 !runs/bench/p2_y_sens/k*.json
+# DIAG-2026-11-13 capacity-or-data: records only (pool, labels, checkpoints and per-row arrays stay ignored).
+!runs/diag_cod/pool/pool.json
+!runs/diag_cod/teacher/teacher.json
+!runs/diag_cod/curve/summary.json
+!runs/diag_cod/curve/size_*/result.json
+!runs/diag_cod/curve/size_*/log.jsonl
+!runs/diag_cod/curve/size_*/sf5/*.json
 # p2_t's teacher ring: its settings and outcome fit (the .dat arrays and label shards stay ignored),
 # and the network's agreement with it on the held-out positions.
 !runs/**/teacher.json

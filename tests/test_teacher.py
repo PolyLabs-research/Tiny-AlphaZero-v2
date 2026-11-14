@@ -368,3 +368,11 @@ def test_agreement_summary_is_the_scripts_arithmetic(tmp_path: Path) -> None:
     assert np.all(got["entropy_rows"] <= got["ce_rows"] + 1e-6)  # Gibbs: CE >= the target's entropy
     sub = agreement(net, ring, dev, batch=8, rows=np.array([3, 9, 20]))
     assert sub["rows"] == 3 and np.allclose(sub["ce_rows"], got["ce_rows"][[3, 9, 20]])
+
+
+def test_labelled_rows_reads_every_shard_and_skips_a_torn_line(tmp_path: Path) -> None:
+    from tinyalphazero.teacher import labelled_rows
+
+    (tmp_path / "shard_000.jsonl").write_text('{"row": 3, "lines": []}\n{"row": 9, "lines": []}\n')
+    (tmp_path / "shard_001.jsonl").write_text('{"row": 4, "lines": []}\n{"row": 1')  # torn
+    assert labelled_rows(sorted(tmp_path.glob("shard_*.jsonl"))) == {3, 4, 9}

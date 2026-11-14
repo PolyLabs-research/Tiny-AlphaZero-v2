@@ -48,6 +48,7 @@ from tinyalphazero.teacher import (
     engine_analyse,
     exclusion_keys,
     label_rows,
+    labelled_rows,
     open_engine,
     read_labels,
     select_rows,
@@ -146,15 +147,26 @@ def main(argv: list[str] | None = None) -> int:
     workers = args.workers or available_cpus()
     labels_dir = args.out.parent / f"{args.out.name}_labels"
     labels_dir.mkdir(parents=True, exist_ok=True)
+    # Only rows no shard holds are handed out, whatever worker count wrote the shards there.
+    have = labelled_rows(sorted(labels_dir.glob("shard_*.jsonl")))
+    todo = np.asarray([int(r) for r in rows if int(r) not in have], dtype=np.int64)
+    del have
     jobs = [
-        (str(args.ring), [int(r) for r in rows[k::workers]], asdict(settings),
+        (str(args.ring), [int(r) for r in todo[k::workers]], asdict(settings),
          str(labels_dir / f"shard_{k:03d}.jsonl"), k)
         for k in range(workers)
+        if len(todo[k::workers])
     ]  # fmt: skip
     t0 = time.time()
-    print(f"{workers} workers, {settings.nodes} nodes, multipv {settings.multipv}", flush=True)
-    with mp.get_context("spawn").Pool(workers) as pool:
-        done = sum(pool.map(_worker, jobs, chunksize=1))
+    print(
+        f"{workers} workers, {settings.nodes} nodes, multipv {settings.multipv}; "
+        f"{len(todo)} of {len(rows)} rows to label",
+        flush=True,
+    )
+    done = 0
+    if jobs:
+        with mp.get_context("spawn").Pool(min(workers, len(jobs))) as pool:
+            done = sum(pool.map(_worker, jobs, chunksize=1))
     labels = read_labels(sorted(labels_dir.glob("shard_*.jsonl")))
     missing = [int(r) for r in rows if int(r) not in labels]
     print(f"labelled {done} this run in {time.time() - t0:.0f} s; {len(labels)} in all", flush=True)

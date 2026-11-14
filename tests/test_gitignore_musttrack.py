@@ -183,6 +183,13 @@ MUST_REACH: list[str] = [
     "runs/bench/p2_y_sens/rating.json",  # U: the sensitivity refit
     "runs/bench/p2_y_sens/k3.json",
     "runs/bench/p2_y_sens/k2_micromax.json",
+    # DIAG-2026-11-13 capacity-or-data: the pool's record, the curve and the strength aside.
+    "runs/diag_cod/pool/pool.json",
+    "runs/diag_cod/teacher/teacher.json",
+    "runs/diag_cod/curve/summary.json",
+    "runs/diag_cod/curve/size_4000000/result.json",
+    "runs/diag_cod/curve/size_4000000/log.jsonl",
+    "runs/diag_cod/curve/size_4000000/sf5/diag_verdict_vs_start.json",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that
@@ -195,6 +202,10 @@ MUST_IGNORE: list[str] = [
     # p2_y: the analysis set is a concatenation of two tracked files, regenerable; engine sources and builds.
     "runs/bench/p2_y_all/games.jsonl",
     "runs/bench/p2_y_sens/games.jsonl",
+    "runs/diag_cod/pool/boards.dat",  # the pool and its labels are regenerable, gigabytes
+    "runs/diag_cod/teacher_labels/shard_000.jsonl",
+    "runs/diag_cod/curve/size_4000000/best.pt",
+    "runs/diag_cod/curve/size_4000000/ce_rows.npy",
     "runs/bench/engines/micromax-src/umax4_8w.c",
     "runs/bench/engines/shallowblue-src/shallow-blue/shallowblue",
     "runs/bench/smoke_p2_y/games.jsonl",

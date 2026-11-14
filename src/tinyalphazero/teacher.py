@@ -408,6 +408,23 @@ def read_labels(paths: Iterable[Path]) -> dict[int, dict[str, Any]]:
     return labels
 
 
+def labelled_rows(paths: Iterable[Path]) -> set[int]:
+    """The rows any shard already holds a complete label for (``read_labels``'s keys, cheaply).
+
+    The labeller hands out only the rest, so shards written by any number of workers -- a
+    pod's 54, say -- are finished by a rerun with any ``--workers``, which then labels nothing.
+    """
+    rows: set[int] = set()
+    for path in paths:
+        with Path(path).open() as fh:
+            for raw in fh:
+                try:
+                    rows.add(int(json.loads(raw)["row"]))
+                except ValueError:
+                    continue
+    return rows
+
+
 def build_teacher_ring(
     source: Any,
     labels: dict[int, dict[str, Any]],
