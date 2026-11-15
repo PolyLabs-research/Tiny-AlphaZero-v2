@@ -190,6 +190,17 @@ MUST_REACH: list[str] = [
     "runs/diag_cod/curve/size_4000000/result.json",
     "runs/diag_cod/curve/size_4000000/log.jsonl",
     "runs/diag_cod/curve/size_4000000/sf5/diag_verdict_vs_start.json",
+    "runs/diag_cod/curve/size_4000000/sf5/reps_best_r1.jsonl",  # a best.pt's reps (the DIAG's, p2_aa's)
+    # p2_aa (PREREG-p2_aa): R's curve records, the reps, the suite row and the verdicts.
+    "runs/p2_aa/r/size_4000000/result.json",
+    "runs/p2_aa/r/size_4000000/log.jsonl",
+    "runs/p2_aa/r_sf5/reps_best_r12.jsonl",
+    "runs/p2_aa/d4_sf5_more/reps_best_r6.jsonl",
+    "runs/p2_aa/start_sf5_more/reps_iter0010_r6.jsonl",
+    "runs/p2_aa/r_ladder.jsonl",
+    "runs/p2_aa/p2aa_verdict_r_vs_start.json",
+    "runs/p2_aa/p2aa_verdict_d4_vs_start.json",
+    "runs/p2_aa/p2aa_verdict_r_vs_d4.json",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that
@@ -205,6 +216,8 @@ MUST_IGNORE: list[str] = [
     "runs/diag_cod/pool/boards.dat",  # the pool and its labels are regenerable, gigabytes
     "runs/diag_cod/teacher_labels/shard_000.jsonl",
     "runs/diag_cod/curve/size_4000000/best.pt",
+    "runs/p2_aa/r/size_4000000/best.pt",
+    "runs/p2_aa/r/size_4000000/ce_rows.npy",
     "runs/diag_cod/curve/size_4000000/ce_rows.npy",
     "runs/bench/engines/micromax-src/umax4_8w.c",
     "runs/bench/engines/shallowblue-src/shallow-blue/shallowblue",

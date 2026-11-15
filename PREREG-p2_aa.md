@@ -2,8 +2,9 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-11-14, NOT signed.** Nothing under this file has run. (p2_z is the benchmark track's
-> clock-scaled gauntlet, registered next in RUNLOG-p2_y and not scheduled; this is the training track's next round.)
+> **STATUS: REGISTERED 2026-11-15** (see Sign-off), at Michael's instruction ("Ok given, go"). Nothing under
+> this file has run. (p2_z is the benchmark track's clock-scaled gauntlet, registered next in RUNLOG-p2_y and not
+> scheduled; this is the training track's next round.)
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -119,5 +120,9 @@ of six, which is reported.
 
 Checked for the draft, 2026-11-14: the DIAG's records are committed (see its §7); `runs/diag_cod/teacher` holds
 3,524,304 rows and `runs/p2_u_fresh/teacher` 475,696, so the 4,000,000-row set is the same rows D4 trained on.
-D4's checkpoint sha256 `7f827f086b28e2b8…`; the start's `43494548987cedcc…`. Pending: the `runs/p2_aa/` negations
-and `MUST_REACH`, the run script, Michael's sign-off.
+D4's checkpoint sha256 `7f827f086b28e2b8…`; the start's `43494548987cedcc…`. **Registered 2026-11-15** at Michael's instruction ("Ok given, go"). The `runs/p2_aa/` records (R's
+`result.json` and `log.jsonl`, the suite row, the three verdicts) and every `reps_best_r*.jsonl` (the DIAG's six
+D4 reps were untracked until now, RUNLOG of the DIAG §7) are negated in `.gitignore` and red-checked through
+`MUST_REACH` (9 of the 10 new paths failed without the negations; the start's new reps were already reachable);
+R's checkpoint stays ignored. The run is `runs/p2_aa_run.sh` as the transient user unit `taz-p2aa`, each step
+skipped once its output exists.
