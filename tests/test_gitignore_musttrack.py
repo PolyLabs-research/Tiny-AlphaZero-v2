@@ -201,6 +201,17 @@ MUST_REACH: list[str] = [
     "runs/p2_aa/p2aa_verdict_r_vs_start.json",
     "runs/p2_aa/p2aa_verdict_d4_vs_start.json",
     "runs/p2_aa/p2aa_verdict_r_vs_d4.json",
+    # p2_ab (PREREG-p2_ab): pool 2's record, its ring's record, E8's curve, reps, suite row and verdicts.
+    "runs/p2_ab/pool/pool.json",
+    "runs/p2_ab/pool/meta.json",
+    "runs/p2_ab/teacher/teacher.json",
+    "runs/p2_ab/teacher/meta.json",
+    "runs/p2_ab/e8/size_8000000/result.json",
+    "runs/p2_ab/e8/size_8000000/log.jsonl",
+    "runs/p2_ab/e8_sf5/reps_best_r12.jsonl",
+    "runs/p2_ab/e8_ladder.jsonl",
+    "runs/p2_ab/p2ab_verdict_e8_vs_4m.json",
+    "runs/p2_ab/p2ab_verdict_e8_vs_start.json",
 ]
 
 # The counterpart: things that must STAY ignored. A well-meant negation that
@@ -217,6 +228,13 @@ MUST_IGNORE: list[str] = [
     "runs/diag_cod/teacher_labels/shard_000.jsonl",
     "runs/diag_cod/curve/size_4000000/best.pt",
     "runs/p2_aa/r/size_4000000/best.pt",
+    "runs/p2_ab/pool/boards.dat",
+    "runs/p2_ab/teacher_labels/shard_000.jsonl",
+    "runs/p2_ab/e8/size_8000000/best.pt",
+    # Views and staging copies: a meta.json there is a copy, never a record.
+    "runs/_ringview/p2_q/meta.json",
+    "runs/diag_cod/pool_stage/meta.json",
+    "runs/p2_ab/pool_stage/meta.json",
     "runs/p2_aa/r/size_4000000/ce_rows.npy",
     "runs/diag_cod/curve/size_4000000/ce_rows.npy",
     "runs/bench/engines/micromax-src/umax4_8w.c",

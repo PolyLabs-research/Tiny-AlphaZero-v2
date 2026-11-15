@@ -2,7 +2,8 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-11-15, NOT signed.** Nothing under this file has run.
+> **STATUS: REGISTERED 2026-11-15** (see Sign-off), at Michael's instruction ("Ok given, go"). Nothing under
+> this file has run.
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -126,4 +127,10 @@ Checked for the draft, 2026-11-15, on this box: the counts in the Contract (a re
 over the 15 local and 22 archived v4 rings with the exclusions above, 31 s; all 22 archived v4 rings together hold
 12,845,607 such positions); `distill_curve.py` takes several `--new` rings, read whole and in order
 (`distill.prefix_plan`, tested; the end-to-end test runs two). Disk: 44 GB free; pool 2, its labels and its ring
-take about 9 GB. Pending: the run driver, the `runs/p2_ab/` negations and `MUST_REACH`, Michael's sign-off.
+take about 9 GB. **Registered 2026-11-15** at Michael's instruction ("Ok given, go"). The run is
+`runs/p2_ab_driver.sh` as the transient user unit `taz-p2ab` (the DIAG's pod and pull phases with this round's
+pool, rows and a 10 h deadline; each phase skipped once its output exists; verdict steps read `eval_reps verdict`'s
+exit 1 as an interval that includes zero, not a failure). The round's records (pool 2's `pool.json`, the ring's
+`teacher.json` and `meta.json`, E8's `result.json` and `log.jsonl`, the reps, the suite row, the verdicts) are
+reachable and red-checked through `MUST_REACH`; the ring-view directories and pod staging copies are pinned
+ignored (their `meta.json` is a copy). Balance before launch is recorded in the driver's log.
