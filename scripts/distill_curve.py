@@ -5,7 +5,8 @@
         --d1 runs/p2_u_fresh/teacher --new runs/diag_cod/teacher \\
         --holdout runs/p2_u_fresh/teacher_holdout --out runs/diag_cod/curve
 
-Each size is D1 (whole) plus the first ``size - len(D1)`` rows of ``--new``, trained from
+Each size is D1 (whole) plus the first ``size - len(D1)`` rows of ``--new`` (several ``--new``
+rings are read in the order given, each whole before the next: ``distill.prefix_plan``), trained from
 ``--start`` with a fresh AdamW at ``--lr`` (weight decay and loss weights from the start's
 ``config.yaml``), teacher rows only, by ``distill.train_to_best``: the held-out ring is
 measured at the start and every ``--eval-every`` samples, and training stops after
@@ -37,7 +38,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--start", required=True, type=Path)
     ap.add_argument("--config", default=None, help="Default: config.yaml beside --start")
     ap.add_argument("--d1", required=True, type=Path, help="existing teacher ring, used whole")
-    ap.add_argument("--new", required=True, type=Path, help="pooled teacher ring, used as prefixes")
+    ap.add_argument(
+        "--new",
+        required=True,
+        type=Path,
+        action="append",
+        help="pooled teacher ring, used as prefixes; repeat for several, in pooling order",
+    )
     ap.add_argument("--holdout", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--sizes", default="475696,1000000,2000000,4000000")
@@ -58,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     from tinyalphazero.distill import (
         open_prefix,
         paired_mean_diff,
+        prefix_plan,
         read_curve,
         train_to_best,
     )
@@ -76,12 +84,12 @@ def main(argv: list[str] | None = None) -> int:
     sha = git_sha()
 
     d1 = open_prefix(args.d1, None)
-    new_ring = ReplayBuffer.open(args.new, readonly=True)
+    new_lengths = [len(ReplayBuffer.open(p, readonly=True)) for p in args.new]
     holdout = ReplayBuffer.open(args.holdout, readonly=True)
     probe = np.sort(
         np.random.default_rng(args.seed).choice(len(d1), size=args.probe_rows, replace=False)
     )
-    available = len(d1) + len(new_ring)
+    available = len(d1) + sum(new_lengths)
     sizes = sorted({min(int(s), available) for s in args.sizes.split(",")})
     if sizes[0] < len(d1):
         print(f"every size must hold D1 ({len(d1)} rows)", file=sys.stderr)
@@ -109,7 +117,8 @@ def main(argv: list[str] | None = None) -> int:
         optimizer = torch.optim.AdamW(
             net.parameters(), lr=args.lr, weight_decay=cfg.train.weight_decay
         )
-        parts = [d1] if size == len(d1) else [d1, open_prefix(args.new, size - len(d1))]
+        plan = prefix_plan(new_lengths, size - len(d1))
+        parts = [d1] + [open_prefix(p, k) for p, k in zip(args.new, plan, strict=True) if k > 0]
 
         def measure(model: object) -> dict:
             h = agreement(model, holdout, device)

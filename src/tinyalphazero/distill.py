@@ -168,3 +168,22 @@ def read_curve(delta_top: dict[str, Any], fit_gap: float) -> str:
     if lo > DELTA_TOP_THRESHOLD:
         return "capacity-limited" if fit_gap < FIT_GAP_THRESHOLD else "in between"
     return "not resolved"
+
+
+def prefix_plan(lengths: Sequence[int], extra: int) -> list[int]:
+    """How many rows of each ring, in order, make ``extra`` rows (p2_ab: several pooled rings).
+
+    Each ring is used whole before the next is touched, so a size's rows are the
+    previous size's plus more: the nested property one pooled ring had, kept across
+    rings given in the order they were pooled. Raises if the rings hold too few rows.
+    """
+    if extra < 0:
+        raise ValueError("extra must be >= 0")
+    plan: list[int] = []
+    for n in lengths:
+        take = min(n, extra)
+        plan.append(take)
+        extra -= take
+    if extra > 0:
+        raise ValueError(f"the rings hold {sum(lengths)} rows, {extra} short")
+    return plan

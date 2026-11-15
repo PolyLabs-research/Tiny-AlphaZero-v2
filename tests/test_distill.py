@@ -114,7 +114,8 @@ def test_distill_curve_runs_end_to_end_on_a_tiny_net(tmp_path: Path) -> None:
     from tinyalphazero.train import save_checkpoint
 
     _teacher_ring(tmp_path, _walks(24, 1), "d1")
-    _teacher_ring(tmp_path, _walks(36, 2), "new")
+    _teacher_ring(tmp_path, _walks(20, 2), "new")
+    _teacher_ring(tmp_path, _walks(16, 4), "new2")  # two pooled rings, read in order
     _teacher_ring(tmp_path, _walks(12, 3), "hold")
     cfg = load_config(str(REPO / "configs" / "mini.yaml"))
     torch.manual_seed(0)
@@ -125,7 +126,7 @@ def test_distill_curve_runs_end_to_end_on_a_tiny_net(tmp_path: Path) -> None:
     out = tmp_path / "curve"
     cmd = [
         sys.executable, str(REPO / "scripts/distill_curve.py"), "--start", str(start),
-        "--d1", str(tmp_path / "d1"), "--new", str(tmp_path / "new"),
+        "--d1", str(tmp_path / "d1"), "--new", str(tmp_path / "new"), "--new", str(tmp_path / "new2"),
         "--holdout", str(tmp_path / "hold"), "--out", str(out), "--sizes", "24,40,60",
         "--batch", "8", "--eval-every", "16", "--patience", "2", "--max-samples", "64",
         "--probe-rows", "6", "--resamples", "100", "--device", "cpu",
@@ -140,3 +141,16 @@ def test_distill_curve_runs_end_to_end_on_a_tiny_net(tmp_path: Path) -> None:
     # Rerun: every size is done, nothing retrains, the summary is the same.
     subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=600)
     assert json.loads((out / "summary.json").read_text()) == summary
+
+
+def test_prefix_plan_fills_rings_in_order_and_nests() -> None:
+    from tinyalphazero.distill import prefix_plan
+
+    assert prefix_plan([100, 50], 0) == [0, 0]
+    assert prefix_plan([100, 50], 70) == [70, 0]
+    assert prefix_plan([100, 50], 120) == [100, 20]
+    assert prefix_plan([100, 50], 150) == [100, 50]
+    with pytest.raises(ValueError):
+        prefix_plan([100, 50], 151)
+    small, large = prefix_plan([100, 50], 90), prefix_plan([100, 50], 130)
+    assert all(a <= b for a, b in zip(small, large, strict=True))  # nested
