@@ -88,6 +88,18 @@ runs/**
 !runs/p2_ab/e8/size_*/log.jsonl
 !runs/p2_ab/e8_ladder.jsonl
 !runs/p2_ab/p2ab_verdict_*.json
+# p2_ac (PREREG-p2_ac): pool 3's record, source list, build log and checks, the Lichess ring's record (a copy; the
+# ring is on the expansion drive), E32's curve records, the suite row and the verdicts.
+!runs/p2_ac/pool/pool.json
+!runs/p2_ac/pool_sources.txt
+!runs/p2_ac/pool_build.log
+!runs/p2_ac/pool_l1_check.txt
+!runs/p2_ac/legals_check.txt
+!runs/p2_ac/lichess.json
+!runs/p2_ac/e32/size_*/result.json
+!runs/p2_ac/e32/size_*/log.jsonl
+!runs/p2_ac/e32_ladder.jsonl
+!runs/p2_ac/p2ac_verdict_*.json
 # p2_t's teacher ring: its settings and outcome fit (the .dat arrays and label shards stay ignored),
 # and the network's agreement with it on the held-out positions.
 !runs/**/teacher.json

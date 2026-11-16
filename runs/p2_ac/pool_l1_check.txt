@@ -1,0 +1,7 @@
+pool 3: 23892957 rows, 23892957 distinct positions
+runs/p2_u_fresh/teacher: 475696 rows, 475696 distinct; shared with pool 3: 0
+runs/p2_u_fresh/teacher_holdout: 5000 rows, 5000 distinct; shared with pool 3: 0
+runs/diag_cod/pool: 3524304 rows, 3524304 distinct; shared with pool 3: 0
+runs/p2_ab/pool: 4000000 rows, 4000000 distinct; shared with pool 3: 0
+rows tagged Lichess (iteration -3): 15047350; self-play (>= 0): 8845607; other: 0
+pool.json: Lichess taken 15047350, self-play taken 8845607

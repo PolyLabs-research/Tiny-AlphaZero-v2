@@ -1,0 +1,29 @@
+{
+  "sources": [
+    {
+      "file": "/media/michael/expansion/chess-p2ac-lichess/lichess_db_standard_rated_2016-01.pgn.zst",
+      "sha256": "faad7775d5da5c579eb7e5243bedd9a2c8c377362a7465988cd036238a3258d1"
+    },
+    {
+      "file": "/media/michael/expansion/chess-p2ac-lichess/lichess_db_standard_rated_2016-02.pgn.zst",
+      "sha256": "ea4eb457bbbb39e5287a197c4109c6efaf90ca6b8cb9e1cd264d164a22f9681e"
+    }
+  ],
+  "filters": {
+    "min_elo": 1600,
+    "min_base_s": 180,
+    "min_plies": 30,
+    "first_ply": 10,
+    "per_game": 10
+  },
+  "seed": 0,
+  "max_rows": 16000000,
+  "stopped_at_max_rows": true,
+  "games_read": 7151004,
+  "games_kept": 1723136,
+  "games_with_rows": 1600000,
+  "rows": 16000000,
+  "iteration_tag": -3,
+  "seconds": 903.1,
+  "git_sha": "4d13f0c"
+}
