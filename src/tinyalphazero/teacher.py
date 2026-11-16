@@ -364,11 +364,14 @@ def label_rows(
     analyse: Analyse,
     settings: TeacherSettings,
     out: Path,
+    row_offset: int = 0,
 ) -> int:
     """Append one JSON line per ring row to ``out``; rows already there are skipped.
 
     Restartable: a worker killed mid-shard resumes after the last complete line.
-    Returns the number of rows labelled by this call.
+    Returns the number of rows labelled by this call. ``row_offset`` is added to every
+    row number written (and read back for the skip): a pod given one slice of a large
+    pool labels its local rows and records the pool's own row numbers (p2_ac).
     """
     from tinyalphazero.encoding import decode_board
 
@@ -384,11 +387,11 @@ def label_rows(
     n = 0
     with out.open("a") as fh:
         for row in rows:
-            if int(row) in done:
+            if int(row) + row_offset in done:
                 continue
             board = decode_board(np.asarray(boards[int(row)]))
             reading = analyse(board, settings.nodes, settings.multipv)
-            fh.write(json.dumps(reading_to_json(int(row), reading)) + "\n")
+            fh.write(json.dumps(reading_to_json(int(row) + row_offset, reading)) + "\n")
             fh.flush()
             n += 1
     return n
@@ -425,6 +428,31 @@ def labelled_rows(paths: Iterable[Path]) -> set[int]:
     return rows
 
 
+def _add_teacher_row(
+    ring: Any, arr: Any, r: int, lines: list[Line], z: int, probs: np.ndarray, temperature_cp: float
+) -> None:
+    """Append source row ``r`` with the teacher's targets: the one row-writing path of both builds."""
+    from tinyalphazero.encoding import encode_move
+
+    policy = []
+    for uci, p in policy_from_lines(lines, temperature_cp):
+        f, t, promo = encode_move(chess.Move.from_uci(uci))
+        policy.append((f * 64 + t, promo, float(p)))
+    f, t, promo = encode_move(chess.Move.from_uci(lines[0].move))
+    ring.add(
+        tokens=np.asarray(arr["boards"][r]),
+        legals=np.asarray(arr["legals"][r]),
+        move_ft=f * 64 + t,
+        promo=promo,
+        outcome=z,
+        improved_policy=policy,
+        iteration=TEACHER_ITERATION,
+        resign_disabled=False,
+        mover_is_latest=False,
+        root_q=float(probs[0] - probs[2]),
+    )
+
+
 def build_teacher_ring(
     source: Any,
     labels: dict[int, dict[str, Any]],
@@ -441,7 +469,6 @@ def build_teacher_ring(
     row's (engine score, game outcome); each row's ``root_q`` is then
     ``P(win) - P(loss)`` under it. A held-out ring passes the training ring's fit.
     """
-    from tinyalphazero.encoding import encode_move
     from tinyalphazero.replay import ReplayBuffer
 
     rows = [int(r) for r in rows if int(r) in labels]
@@ -456,24 +483,7 @@ def build_teacher_ring(
     ring = ReplayBuffer.create(out_dir, capacity=len(rows))
     for k, r in enumerate(rows):
         lines = [Line(m, int(c)) for m, c in labels[r]["lines"]]
-        policy = []
-        for uci, p in policy_from_lines(lines, settings.temperature_cp):
-            f, t, promo = encode_move(chess.Move.from_uci(uci))
-            policy.append((f * 64 + t, promo, float(p)))
-        best = chess.Move.from_uci(lines[0].move)
-        f, t, promo = encode_move(best)
-        ring.add(
-            tokens=np.asarray(arr["boards"][r]),
-            legals=np.asarray(arr["legals"][r]),
-            move_ft=f * 64 + t,
-            promo=promo,
-            outcome=int(z[k]),
-            improved_policy=policy,
-            iteration=TEACHER_ITERATION,
-            resign_disabled=False,
-            mover_is_latest=False,
-            root_q=float(probs[k, 0] - probs[k, 2]),
-        )
+        _add_teacher_row(ring, arr, r, lines, int(z[k]), probs[k], settings.temperature_cp)
     ring.flush()
 
     draws = float(np.mean(z == 0))
@@ -609,3 +619,90 @@ def agreement(
         "ce_rows": ce_rows,
         "entropy_rows": ent_rows,
     }
+
+
+def build_teacher_ring_from_shards(
+    source: Any,
+    label_paths: Sequence[Path],
+    rows: Sequence[int],
+    out_dir: Path,
+    settings: TeacherSettings,
+    provenance: dict[str, Any],
+    model: tuple[float, float],
+) -> dict[str, Any]:
+    """``build_teacher_ring`` for pools too large for ``read_labels``' dictionaries (p2_ac: 24M).
+
+    One pass parses every shard into compact arrays indexed by source row (the label lines'
+    moves as from/to/promotion and their centipawns: about 36 bytes a row, against about
+    1.2 KB a row as dictionaries); a second writes the ring in ``rows`` order through the
+    same row writer, reading the source in order. The outcome model must be given (nothing
+    is fitted), and every row of ``rows`` must be labelled. A row labelled twice keeps its
+    first complete line. Byte-identical to ``build_teacher_ring`` on the same labels
+    (``tests/test_teacher.py``).
+    """
+    from tinyalphazero.encoding import decode_move, encode_move
+    from tinyalphazero.replay import ReplayBuffer
+
+    n_src = len(source)
+    width = 8  # more than any multipv this project uses; checked below
+    ft = np.zeros((n_src, width), dtype=np.int16)
+    pr = np.zeros((n_src, width), dtype=np.int8)
+    cp = np.zeros((n_src, width), dtype=np.int32)
+    nl = np.zeros(n_src, dtype=np.int8)
+    for path in label_paths:
+        with Path(path).open() as fh:
+            for raw in fh:
+                try:
+                    item = json.loads(raw)
+                except ValueError:
+                    continue  # a torn line
+                r = int(item["row"])
+                if not 0 <= r < n_src or nl[r]:
+                    continue
+                lines = item["lines"]
+                if not 0 < len(lines) <= width:
+                    raise ValueError(f"row {r}: {len(lines)} label lines")
+                for j, (uci, c) in enumerate(lines):
+                    f, t, p = encode_move(chess.Move.from_uci(uci))
+                    ft[r, j], pr[r, j], cp[r, j] = f * 64 + t, p, int(c)
+                nl[r] = len(lines)
+    rows = [int(r) for r in rows]
+    missing = [r for r in rows if not nl[r]]
+    if missing:
+        raise ValueError(f"{len(missing)} rows unlabelled, e.g. {missing[:5]}")
+    if not rows:
+        raise ValueError("no labelled rows to write")
+    arr = source._arr
+    a, s = model
+    ring = ReplayBuffer.create(out_dir, capacity=len(rows))
+    draws = 0
+    abs_q = 0.0
+    for r in rows:
+        lines = [
+            Line(
+                decode_move(int(ft[r, j]) // 64, int(ft[r, j]) % 64, int(pr[r, j])).uci(),
+                int(cp[r, j]),
+            )
+            for j in range(int(nl[r]))
+        ]
+        z = int(arr["outcomes"][r])
+        probs = outcome_probs(np.array([float(lines[0].cp)]), a, s)[0]
+        _add_teacher_row(ring, arr, r, lines, z, probs, settings.temperature_cp)
+        draws += z == 0
+        abs_q += abs(float(probs[0] - probs[2]))
+    ring.flush()
+    meta = {
+        "settings": asdict(settings),
+        "outcome_model": {
+            "a": a,
+            "s": s,
+            "fitted_here": False,
+            "rows": len(rows),
+            "draw_rate": draws / len(rows),
+        },  # fmt: skip
+        "rows": len(rows),
+        "root_q_mean_abs": abs_q / len(rows),
+        **provenance,
+    }
+    (Path(out_dir) / "teacher.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
+    return meta

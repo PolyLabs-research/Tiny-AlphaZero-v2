@@ -11,7 +11,8 @@ each position once), with one "already taken" set across all rings, in the order
 Every position of an ``--exclude-ring`` is out as well. The kept rows are shuffled with
 ``--seed`` and cut to ``--limit``, and written, every field copied, to ``--out`` in that
 order: any prefix of the pool is a uniform sample of it (``teacher.pool_rows``,
-``teacher.write_pool``). ``pool.json`` beside it records the sources and the counts.
+``teacher.write_pool``). ``pool.json`` beside it records the sources, what each offered and
+how many of its rows the pool took.
 """
 
 from __future__ import annotations
@@ -63,10 +64,13 @@ def main(argv: list[str] | None = None) -> int:
     available = sum(c["selected"] for c in counts)
     print(f"{available} distinct positions across {len(rings)} rings; pooling {len(pairs)}")
     write_pool(rings, pairs, args.out)
+    import numpy as np
+
+    taken = np.bincount(pairs[:, 0], minlength=len(rings)) if len(pairs) else np.zeros(len(rings))
     record = {
         "sources": [
-            {"ring": str(p), "total_written": int(r.total_written), **c}
-            for p, r, c in zip(args.ring, rings, counts, strict=True)
+            {"ring": str(p), "total_written": int(r.total_written), **c, "taken": int(t)}
+            for p, r, c, t in zip(args.ring, rings, counts, taken, strict=True)
         ],
         "exclude_rings": [str(p) for p in args.exclude_ring],
         "excluded_suites": {p: sha256_file(REPO / p) for p in SUITES},

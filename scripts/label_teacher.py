@@ -14,7 +14,9 @@ a network has moved toward the teacher (``scripts/teacher_agreement.py``).
 pool whose held-out positions were excluded upstream, ``scripts/pool_positions.py``).
 ``--outcome-model-from RING`` takes the outcome model from another teacher ring's
 ``teacher.json`` instead of fitting one, so rows labelled in two runs carry value
-targets from one fit. ``--labels-only`` stops once every row is labelled, building no ring:
+targets from one fit. ``--row-offset`` and ``--shard-prefix`` let several pods each label a
+slice of one large pool (staged as its own small ring) under the pool's row numbers, into
+shards whose names do not collide (p2_ac). ``--labels-only`` stops once every row is labelled, building no ring:
 a pod that has only the source's boards labels, and the rings are built where the whole
 source ring is, by the same command rerun there (it finds every row labelled).
 
@@ -45,6 +47,7 @@ from tinyalphazero.teacher import (
     TeacherSettings,
     available_cpus,
     build_teacher_ring,
+    build_teacher_ring_from_shards,
     engine_analyse,
     exclusion_keys,
     label_rows,
@@ -64,13 +67,15 @@ EXCLUDE = [
 ]
 
 
-def _worker(job: tuple[str, list[int], dict, str, int]) -> int:
-    ring_dir, rows, settings_d, shard, k = job
+def _worker(job: tuple[str, list[int], dict, str, int, int]) -> int:
+    ring_dir, rows, settings_d, shard, k, offset = job
     settings = TeacherSettings(**settings_d)
     ring = ReplayBuffer.open(ring_dir, readonly=True)
     engine = open_engine(settings.stockfish, settings.hash_mb)
     try:
-        return label_rows(ring._arr["boards"], rows, engine_analyse(engine), settings, Path(shard))
+        return label_rows(
+            ring._arr["boards"], rows, engine_analyse(engine), settings, Path(shard), offset
+        )
     finally:
         engine.quit()
 
@@ -89,6 +94,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--holdout-out", type=Path, default=None)
     ap.add_argument("--no-holdout", action="store_true", help="label every row for training")
     ap.add_argument("--labels-only", action="store_true", help="label, then stop: build no ring")
+    ap.add_argument(
+        "--row-offset",
+        type=int,
+        default=0,
+        help="added to every row number recorded: a slice of a pool, labelled with its rows",
+    )
+    ap.add_argument("--shard-prefix", default="", help="shard files shard_<prefix><k>.jsonl")
     ap.add_argument(
         "--outcome-model-from",
         type=Path,
@@ -111,6 +123,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stockfish", default="")
     args = ap.parse_args(argv)
 
+    if args.row_offset and not args.labels_only:
+        print("--row-offset labels a slice; build the ring from the whole pool", file=sys.stderr)
+        return 1
     if args.no_holdout == (args.holdout_out is not None):
         print("give exactly one of --holdout-out and --no-holdout", file=sys.stderr)
         return 1
@@ -148,12 +163,13 @@ def main(argv: list[str] | None = None) -> int:
     labels_dir = args.out.parent / f"{args.out.name}_labels"
     labels_dir.mkdir(parents=True, exist_ok=True)
     # Only rows no shard holds are handed out, whatever worker count wrote the shards there.
+    off = args.row_offset
     have = labelled_rows(sorted(labels_dir.glob("shard_*.jsonl")))
-    todo = np.asarray([int(r) for r in rows if int(r) not in have], dtype=np.int64)
+    todo = np.asarray([int(r) for r in rows if int(r) + off not in have], dtype=np.int64)
     del have
     jobs = [
         (str(args.ring), [int(r) for r in todo[k::workers]], asdict(settings),
-         str(labels_dir / f"shard_{k:03d}.jsonl"), k)
+         str(labels_dir / f"shard_{args.shard_prefix}{k:03d}.jsonl"), k, off)
         for k in range(workers)
         if len(todo[k::workers])
     ]  # fmt: skip
@@ -167,9 +183,10 @@ def main(argv: list[str] | None = None) -> int:
     if jobs:
         with mp.get_context("spawn").Pool(min(workers, len(jobs))) as pool:
             done = sum(pool.map(_worker, jobs, chunksize=1))
-    labels = read_labels(sorted(labels_dir.glob("shard_*.jsonl")))
-    missing = [int(r) for r in rows if int(r) not in labels]
-    print(f"labelled {done} this run in {time.time() - t0:.0f} s; {len(labels)} in all", flush=True)
+    shards = sorted(labels_dir.glob("shard_*.jsonl"))
+    have = labelled_rows(shards)
+    missing = [int(r) + off for r in rows if int(r) + off not in have]
+    print(f"labelled {done} this run in {time.time() - t0:.0f} s; {len(have)} in all", flush=True)
     if missing:
         print(
             f"{len(missing)} rows unlabelled, e.g. {missing[:5]}; rerun to finish", file=sys.stderr
@@ -177,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.labels_only:
-        print(f"labels only: all {len(labels)} rows labelled in {labels_dir}", flush=True)
+        print(f"labels only: all {len(have)} rows labelled in {labels_dir}", flush=True)
         return 0
 
     provenance = {
@@ -195,6 +212,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.outcome_model_from is not None:
         fitted = json.loads((args.outcome_model_from / "teacher.json").read_text())["outcome_model"]
         given = (float(fitted["a"]), float(fitted["s"]))
+    if given is not None and args.no_holdout:
+        # A pool's every row, one fixed fit: the compact build, which scales to tens of millions
+        # of rows where read_labels' dictionaries would not fit in memory (p2_ac).
+        meta = build_teacher_ring_from_shards(
+            source, shards, train_rows, args.out, settings, {**provenance, "split": "train"}, given
+        )
+        print(
+            json.dumps({"rows": meta["rows"], "outcome_model": meta["outcome_model"]}), flush=True
+        )
+        return 0
+    labels = read_labels(shards)
     meta = build_teacher_ring(
         source, labels, train_rows, args.out, settings, {**provenance, "split": "train"},
         model=given,

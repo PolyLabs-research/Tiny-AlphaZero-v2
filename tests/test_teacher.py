@@ -376,3 +376,67 @@ def test_labelled_rows_reads_every_shard_and_skips_a_torn_line(tmp_path: Path) -
     (tmp_path / "shard_000.jsonl").write_text('{"row": 3, "lines": []}\n{"row": 9, "lines": []}\n')
     (tmp_path / "shard_001.jsonl").write_text('{"row": 4, "lines": []}\n{"row": 1')  # torn
     assert labelled_rows(sorted(tmp_path.glob("shard_*.jsonl"))) == {3, 4, 9}
+
+
+def test_label_rows_records_and_resumes_by_global_row_with_an_offset(tmp_path: Path) -> None:
+    from tinyalphazero.teacher import labelled_rows
+
+    boards = [
+        chess.Board(),
+        chess.Board("4k3/8/8/8/8/8/8/R3K3 w - - 0 1"),
+        chess.Board("4k3/8/8/8/8/8/8/4K2R w K - 0 1"),
+    ]
+    ring = _ring_with(
+        tmp_path / "slice", boards, [0, 0, 0], [1, -1, 0]
+    )  # a pod's slice: local rows 0..2
+    out = tmp_path / "shard_p3_000.jsonl"
+    settings = TeacherSettings(nodes=1000, multipv=2)
+    arr = ring._arr["boards"]
+    assert label_rows(arr, [0, 2], _fake_analyse, settings, out, row_offset=500) == 2
+    assert labelled_rows([out]) == {500, 502}  # the pool's row numbers
+    assert label_rows(arr, [0, 1, 2], _fake_analyse, settings, out, row_offset=500) == 1  # resumes
+    labels = read_labels([out])
+    assert sorted(labels) == [500, 501, 502]
+    assert labels[501]["lines"][0][0] in {
+        m.uci() for m in boards[1].legal_moves
+    }  # local row 1's board
+
+
+def test_the_shard_build_is_byte_identical_to_the_dictionary_build(tmp_path: Path) -> None:
+    from tinyalphazero.teacher import build_teacher_ring_from_shards
+
+    boards = _walks(40, 9)
+    z = [1, -1, 0, 1, 0] * 8
+    src = _ring_with(tmp_path / "src", boards, [0] * 40, z)
+    settings = TeacherSettings(nodes=1000, multipv=3, temperature_cp=50.0)
+    arr = src._arr["boards"]
+    # Two shards, rows interleaved, as workers write them; one row labelled twice, one torn line.
+    label_rows(arr, list(range(0, 40, 2)), _fake_analyse, settings, tmp_path / "shard_a.jsonl")
+    label_rows(arr, list(range(1, 40, 2)), _fake_analyse, settings, tmp_path / "shard_b.jsonl")
+    with (tmp_path / "shard_b.jsonl").open("a") as fh:
+        fh.write('{"row": 3, "lines": [["a2a3", 999]]}\n{"row": 5, "li')
+    shards = sorted(tmp_path.glob("shard_*.jsonl"))
+    rows = list(range(40))
+    model = (60.0, 150.0)
+    # read_labels keeps the LAST line for a row; drop the duplicate so both builds see row 3's first.
+    labels = read_labels(shards)
+    first3 = json.loads((tmp_path / "shard_b.jsonl").read_text().splitlines()[1])
+    labels[3] = first3
+    want = build_teacher_ring(src, labels, rows, tmp_path / "dict", settings, {}, model=model)
+    got = build_teacher_ring_from_shards(
+        src, shards, rows, tmp_path / "shards", settings, {}, model
+    )
+    a = ReplayBuffer.open(tmp_path / "dict", readonly=True)
+    b = ReplayBuffer.open(tmp_path / "shards", readonly=True)
+    assert len(a) == len(b) == 40
+    for name in a._arr:
+        assert np.array_equal(a._arr[name], b._arr[name]), name
+    assert (
+        got["rows"] == want["rows"]
+        and got["outcome_model"]["draw_rate"] == want["outcome_model"]["draw_rate"]
+    )
+    assert got["root_q_mean_abs"] == pytest.approx(want["root_q_mean_abs"], rel=1e-9)
+    with pytest.raises(ValueError, match="unlabelled"):
+        build_teacher_ring_from_shards(
+            src, shards[:1], rows, tmp_path / "short", settings, {}, model
+        )
