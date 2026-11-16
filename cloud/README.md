@@ -63,8 +63,17 @@ stage's `runs/RUN/.remote_done`.
 - **The API's `allowedCudaVersions` filter matched no host** for 12.8+, though the host
   we got ran driver 595.91 / CUDA 13.2. It is opt-in (`--cuda`); the image's own
   `NVIDIA_REQUIRE_CUDA` is what binds.
-- **`rest.runpod.io` refuses urllib's default User-Agent** (Cloudflare 1010); every
+- **RunPod's API refuses urllib's default User-Agent** (Cloudflare 1010); every
   client here sends `taz-cloud/1.0`.
+- **REST v1 (`rest.runpod.io/v1`) was retired on 2026-11-15** (its DNS name is gone: the
+  sweeper failed from 17:09 UTC on 11-16 until the move). Everything here uses REST v2,
+  `api.runpod.io/v2`: the create body is nested (`gpu: {id, count, minVcpuCountPerGpu,
+  minRamPerGpu}`, `image`, `disk`, `cmd`, `cloud`; unknown fields are a 422; no `mounts` means
+  no volume), SSH needs `startSsh: true` plus `22/tcp` and is read from `ssh.direct` (the
+  `ssh.proxy` endpoint carries a shell only, no rsync), lists come as `{"pods": [...],
+  "pagination": ...}`, `desiredStatus` is now `status` (with `TERMINATED` for a deleted pod),
+  `costPerHr` is `cost`. The pods delete themselves with `DELETE /v2/pods/$RUNPOD_POD_ID`.
+  Availability per GPU type: `GET /v2/catalog/gpus?include=AVAILABILITY&product=POD&cloud=SECURE`.
 - **`nproc` reports the host (96), not the pod**: the cgroup quota was 7.65 CPUs for a
   pod RunPod called 9 vCPU. Actor counts must be set from `RUNPOD_CPU_COUNT` / the
   quota, never from the CPU count.

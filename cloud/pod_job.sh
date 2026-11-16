@@ -25,7 +25,7 @@ log() { echo "$(date -Is) $*" >> "$WORK/lifecycle.log"; }
 
 delete_self() {
     for _ in 1 2 3 4 5 6; do
-        curl -fsS -X DELETE "https://rest.runpod.io/v1/pods/$POD_ID" \
+        curl -fsS -X DELETE "https://api.runpod.io/v2/pods/$POD_ID" \
             -H "Authorization: Bearer $POD_KEY" -A "taz-cloud/1.0 (+tinyalphazero)" \
             >> "$WORK/lifecycle.log" 2>&1 && return 0
         RUNPOD_API_KEY=$POD_KEY runpodctl remove pod "$POD_ID" >> "$WORK/lifecycle.log" 2>&1 && return 0

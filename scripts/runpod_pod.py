@@ -89,7 +89,7 @@ def cmd_launch(rp: cloud.RunPod, args: argparse.Namespace) -> int:
     cloud.ledger(
         "launch", pod_id=pod["id"], name=body["name"], deadline=deadline, spec=cloud.as_dict(spec)
     )
-    actual = float(pod.get("costPerHr") or listed)
+    actual = float(pod.get("cost") or listed)
     try:
         cloud.plan(actual, args.hours, account["balance"], limits)
     except cloud.BudgetError as e:
@@ -100,7 +100,8 @@ def cmd_launch(rp: cloud.RunPod, args: argparse.Namespace) -> int:
         )
         return 2
     print(
-        f"launched {pod['id']} {body['name']} at ${actual:.3f}/h (vCPU {pod.get('vcpuCount')}, RAM {pod.get('memoryInGb')} GB)"
+        f"launched {pod['id']} {body['name']} at ${actual:.3f}/h "
+        f"(vCPU {(pod.get('gpu') or {}).get('vcpuCount')}, RAM {(pod.get('gpu') or {}).get('memory')} GB)"
     )
     return 0
 
@@ -161,7 +162,7 @@ def cmd_status(rp: cloud.RunPod, args: argparse.Namespace) -> int:
     for p in ours:
         dl = cloud.parse_deadline(p["name"])
         left = f"{(dl - now) / 60:+.0f} min to deadline" if dl else "NO DEADLINE"
-        print(f"{p['id']}  {p['name']}  {p.get('desiredStatus')}  ${p.get('costPerHr')}/h  {left}")
+        print(f"{p['id']}  {p['name']}  {p.get('status')}  ${p.get('cost')}/h  {left}")
     print(f"{len(ours)} pod(s) of ours; account {json.dumps(rp.balance())}")
     return 0
 

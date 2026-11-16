@@ -31,12 +31,14 @@ import os
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-REST = "https://rest.runpod.io/v1"
+# REST v2 (RunPod retired v1, rest.runpod.io/v1, on 2026-11-15); GraphQL serves the account and prices.
+REST = "https://api.runpod.io/v2"
 GRAPHQL = "https://api.runpod.io/graphql"
 KEY_FILE = Path("~/.config/runpod/api_key").expanduser()
 STATE_DIR = Path("~/.local/state/taz-cloud").expanduser()
@@ -148,8 +150,8 @@ def sweep_decisions(
 def watchdog_start_cmd(enabled: bool = True) -> list[str]:
     """The pod's start command: the deadline watchdog in the background, then the image's CMD.
 
-    At ``TAZ_DEADLINE`` the watchdog deletes its own pod, retrying, by the pod-scoped
-    ``runpodctl`` first and the REST API second. ``enabled=False`` exists for one
+    At ``TAZ_DEADLINE`` the watchdog deletes its own pod, retrying, by the REST API (v2)
+    with the pod's own key first and the pod-scoped ``runpodctl`` second. ``enabled=False`` exists for one
     purpose: proving the sweeper catches a pod whose own watchdog never fires.
     """
     if not enabled:
@@ -159,10 +161,10 @@ def watchdog_start_cmd(enabled: bool = True) -> list[str]:
         'while [ "$(date +%s)" -lt "$deadline" ]; do sleep 20; done; '
         'echo "$(date -Is) deadline reached: deleting pod $RUNPOD_POD_ID" >> /taz-watchdog.log; '
         "for i in 1 2 3 4 5 6; do "
-        'runpodctl remove pod "$RUNPOD_POD_ID" >> /taz-watchdog.log 2>&1 && break; '
-        'curl -fsS -X DELETE "https://rest.runpod.io/v1/pods/$RUNPOD_POD_ID" '
+        f'curl -fsS -X DELETE "{REST}/pods/$RUNPOD_POD_ID" '
         '-H "Authorization: Bearer $RUNPOD_API_KEY" -A "taz-cloud/1.0 (+tinyalphazero)" '
         ">> /taz-watchdog.log 2>&1 && break; "
+        'runpodctl remove pod "$RUNPOD_POD_ID" >> /taz-watchdog.log 2>&1 && break; '
         "sleep 30; done"
     )
     return ["bash", "-c", f"( {watchdog} ) & exec {IMAGE_CMD}"]
@@ -189,7 +191,7 @@ class RunPod:
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {self._key}",
-                # rest.runpod.io sits behind Cloudflare, which refuses urllib's default
+                # RunPod's API sits behind Cloudflare, which refuses urllib's default
                 # User-Agent outright (403, error code 1010).
                 "User-Agent": "taz-cloud/1.0 (+tinyalphazero)",
             },
@@ -226,28 +228,43 @@ class RunPod:
 
     # -- pods --------------------------------------------------------------
     def list_pods(self) -> list[dict[str, Any]]:
-        status, d = self._request("GET", f"{REST}/pods")
-        if status != 200 or not isinstance(d, list):
-            raise CloudError(f"GET /pods {status}: {d}")
-        return d
+        """Every pod on the account that still exists, all pages (v2 pages them, 1,000 a page).
+
+        A ``TERMINATED`` pod is gone: it bills nothing and cannot be deleted again, so it is
+        left out (the sweeper would otherwise "terminate" it on every run).
+        """
+        pods: list[dict[str, Any]] = []
+        cursor: str | None = None
+        for _ in range(100):
+            url = f"{REST}/pods" + (f"?cursor={urllib.parse.quote(cursor)}" if cursor else "")
+            status, d = self._request("GET", url)
+            if status != 200 or not isinstance(d, dict) or not isinstance(d.get("pods"), list):
+                raise CloudError(f"GET /pods {status}: {d}")
+            pods += [p for p in d["pods"] if p.get("status") != "TERMINATED"]
+            page = d.get("pagination") or {}
+            cursor = page.get("nextCursor")
+            if not page.get("hasNextPage") or not cursor:
+                return pods
+        raise CloudError("GET /pods: more than 100 pages")
 
     def get_pod(self, pod_id: str) -> dict[str, Any] | None:
-        status, d = self._request("GET", f"{REST}/pods/{pod_id}")
+        """The pod, or None if it is gone (404, or ``TERMINATED``)."""
+        status, d = self._request("GET", f"{REST}/pods/{urllib.parse.quote(pod_id)}")
         if status == 404:
             return None
-        if status != 200:
+        if status != 200 or not isinstance(d, dict):
             raise CloudError(f"GET /pods/{pod_id} {status}: {d}")
-        return d
+        return None if d.get("status") == "TERMINATED" else d
 
     def create_pod(self, body: dict[str, Any]) -> dict[str, Any]:
         status, d = self._request("POST", f"{REST}/pods", body)
-        if status not in (200, 201) or not isinstance(d, dict) or "id" not in d:
+        if status != 201 or not isinstance(d, dict) or "id" not in d:
             raise CloudError(f"POST /pods {status}: {d}")
         return d
 
     def terminate_pod(self, pod_id: str) -> bool:
         """Delete a pod. True if it was deleted or was already gone."""
-        status, d = self._request("DELETE", f"{REST}/pods/{pod_id}")
+        status, d = self._request("DELETE", f"{REST}/pods/{urllib.parse.quote(pod_id)}")
         if status in (200, 204, 404):
             return True
         raise CloudError(f"DELETE /pods/{pod_id} {status}: {d}")
@@ -267,10 +284,11 @@ def ledger(event: str, **fields: Any) -> None:
 
 
 def ssh_target(pod: dict[str, Any]) -> tuple[str, int] | None:
-    """(public ip, port) for full SSH, or None while the pod is still coming up."""
-    ip = pod.get("publicIp") or ""
-    port = (pod.get("portMappings") or {}).get("22")
-    return (ip, int(port)) if ip and port else None
+    """(host, port) for full SSH (rsync needs it: the proxy carries a shell only), or None
+    while the pod is still coming up. v2's ``ssh.direct``: the published ``22/tcp``."""
+    direct = (pod.get("ssh") or {}).get("direct") or {}
+    host, port = direct.get("host") or "", direct.get("port")
+    return (host, int(port)) if host and port else None
 
 
 def ssh_base(ip: str, port: int) -> list[str]:
@@ -315,22 +333,26 @@ class LaunchSpec:
     allowed_cuda: tuple[str, ...] | None = None
 
     def body(self, deadline: int) -> dict[str, Any]:
+        """The v2 ``CreatePodRequest``."""
+        gpu: dict[str, Any] = {
+            "id": self.gpu_type,
+            "count": 1,
+            "minVcpuCountPerGpu": self.vcpu_per_gpu,
+            "minRamPerGpu": self.ram_per_gpu,
+        }
+        if self.allowed_cuda:
+            gpu["allowedCudaVersions"] = list(self.allowed_cuda)
         return {
             "name": pod_name(self.tag, deadline),
-            "imageName": self.image,
-            "gpuTypeIds": [self.gpu_type],
-            "gpuCount": 1,
-            "cloudType": self.cloud,
-            "computeType": "GPU",
-            "containerDiskInGb": self.container_disk_gb,
-            "volumeInGb": 0,  # no pod volume: it would bill after a stop, and we never stop
-            "minVCPUPerGPU": self.vcpu_per_gpu,
-            "minRAMPerGPU": self.ram_per_gpu,
-            "ports": ["22/tcp"],
-            "supportPublicIp": True,  # full SSH (rsync) needs a public IP, not the proxy
-            "dockerStartCmd": watchdog_start_cmd(self.watchdog),
+            "image": self.image,
+            "cloud": self.cloud,
+            "gpu": gpu,
+            "disk": self.container_disk_gb,
+            # No ``mounts``: no volume, nothing that bills after a stop (and we never stop).
+            "ports": ["22/tcp"],  # ssh.direct, the full SSH rsync needs, publishes 22/tcp
+            "startSsh": True,  # the account's registered SSH keys reach the pod's sshd
+            "cmd": watchdog_start_cmd(self.watchdog),
             "env": {"TAZ_DEADLINE": str(deadline)},
-            **({"allowedCudaVersions": list(self.allowed_cuda)} if self.allowed_cuda else {}),
         }
 
 
