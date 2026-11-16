@@ -2,8 +2,9 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT 2026-11-16, NOT signed.** Nothing under this file has run beyond the data preparation the
-> Sign-off lists (the Lichess ring and pool 3 built and checked; no label taken, no pod launched).
+> **STATUS: REGISTERED 2026-11-16** at Michael's instruction ("ok given, go"). Before registration only the data
+> preparation the Sign-off lists had run (the Lichess ring and pool 3 built and checked; no label taken, no pod
+> launched).
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -134,4 +135,6 @@ apart, with its slice incomplete is left for a human; verdict steps read `eval_r
 interval that includes zero). The round's records (pool 3's `pool.json`, `pool_sources.txt`, the build log and
 the two checks, a copy of the Lichess ring's `lichess.json`, the ring's `teacher.json` and `meta.json`, E32's
 `result.json` and `log.jsonl`, the reps, the suite row, the verdicts) are reachable and red-checked through
-`MUST_REACH`; the pool's arrays, the labels, the pod staging copies and E32's checkpoint stay ignored.
+`MUST_REACH`; the pool's arrays, the labels, the pod staging copies and E32's checkpoint stay ignored. Michael
+accepted 31,892,957 for the planned 32,000,000 ("close enough"). **Registered 2026-11-16** at his instruction ("ok
+given, go"); the balance at launch is recorded in the driver's log.
