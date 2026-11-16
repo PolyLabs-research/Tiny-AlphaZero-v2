@@ -96,6 +96,7 @@ runs/**
 !runs/p2_ac/pool_l1_check.txt
 !runs/p2_ac/legals_check.txt
 !runs/p2_ac/lichess.json
+!runs/p2_ac/launch_watch.log
 !runs/p2_ac/e32/size_*/result.json
 !runs/p2_ac/e32/size_*/log.jsonl
 !runs/p2_ac/e32_ladder.jsonl

@@ -138,3 +138,15 @@ the two checks, a copy of the Lichess ring's `lichess.json`, the ring's `teacher
 `MUST_REACH`; the pool's arrays, the labels, the pod staging copies and E32's checkpoint stay ignored. Michael
 accepted 31,892,957 for the planned 32,000,000 ("close enough"). **Registered 2026-11-16** at his instruction ("ok
 given, go"); the balance at launch is recorded in the driver's log.
+
+## Addendum A — 2026-11-16, before launch: RunPod's REST v1 is gone
+
+At registration the pod tooling still called RunPod's REST v1, which RunPod retired on 2026-11-15 (its host no
+longer resolves). The tooling was moved to REST v2 at `b1031db` (create body, SSH endpoint, lists, the pods'
+self-delete; `cloud/README.md`), changing nothing this file measures: the labels, the ring, E32 and every reading
+are as registered. The run is from `main` at this addendum's commit, not the registration commit. Before the six
+pods, one short pod of the same spec goes through the v2 lifecycle (create, SSH, staging, self-delete after
+PULLED); the run starts only if it passes. At the time of writing RunPod lists no secure RTX 4090 capacity (an
+emergency maintenance across regions), so the launch waits for capacity (`runs/p2_ac_when_ready.sh`, as the
+transient user unit `taz-p2ac-wait`, checking every 10 minutes); the driver retries each pod's launch for up
+to 6 hours.

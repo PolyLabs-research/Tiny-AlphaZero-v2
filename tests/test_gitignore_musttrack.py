@@ -221,6 +221,7 @@ MUST_REACH: list[str] = [
     "runs/p2_ac/pool_l1_check.txt",
     "runs/p2_ac/legals_check.txt",
     "runs/p2_ac/lichess.json",
+    "runs/p2_ac/launch_watch.log",
     "runs/p2_ac/teacher/teacher.json",
     "runs/p2_ac/teacher/meta.json",
     "runs/p2_ac/e32/size_31892957/result.json",
