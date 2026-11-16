@@ -11,8 +11,10 @@ each position once), with one "already taken" set across all rings, in the order
 Every position of an ``--exclude-ring`` is out as well. The kept rows are shuffled with
 ``--seed`` and cut to ``--limit``, and written, every field copied, to ``--out`` in that
 order: any prefix of the pool is a uniform sample of it (``teacher.pool_rows``,
-``teacher.write_pool``). ``pool.json`` beside it records the sources, what each offered and
-how many of its rows the pool took.
+``teacher.write_pool``). ``--fields`` copies only those fields (p2_ac: ``boards,outcomes,iteration``,
+the rest left zero; the ring build then rebuilds the legal masks from the boards,
+``label_teacher.py --legals-from-boards``). ``pool.json`` beside it records the sources, what
+each offered, how many of its rows the pool took and the fields copied.
 """
 
 from __future__ import annotations
@@ -43,7 +45,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--fields", default=None, help="comma-separated fields to copy (default: every field)"
+    )
     args = ap.parse_args(argv)
+    fields = args.fields.split(",") if args.fields else None
 
     from tinyalphazero.provenance import git_sha, sha256_file
     from tinyalphazero.replay import ReplayBuffer
@@ -63,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     available = sum(c["selected"] for c in counts)
     print(f"{available} distinct positions across {len(rings)} rings; pooling {len(pairs)}")
-    write_pool(rings, pairs, args.out)
+    out = write_pool(rings, pairs, args.out, fields=fields)
     import numpy as np
 
     taken = np.bincount(pairs[:, 0], minlength=len(rings)) if len(pairs) else np.zeros(len(rings))
@@ -78,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
         "rows": int(len(pairs)),
         "seed": args.seed,
         "limit": args.limit,
+        "fields": fields if fields is not None else sorted(out._arr),
         "git_sha": git_sha(),
     }
     (args.out / "pool.json").write_text(json.dumps(record, indent=2) + "\n")

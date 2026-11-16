@@ -440,3 +440,88 @@ def test_the_shard_build_is_byte_identical_to_the_dictionary_build(tmp_path: Pat
         build_teacher_ring_from_shards(
             src, shards[:1], rows, tmp_path / "short", settings, {}, model
         )
+
+
+def _awkward_boards() -> list[chess.Board]:
+    """Positions whose masks depend on more than the pieces: en passant, castling, promotion."""
+    ep = chess.Board()
+    for m in ("e2e4", "a7a6", "e4e5", "d7d5"):
+        ep.push_uci(m)  # exd6 en passant is legal
+    ep_dead = chess.Board()
+    for m in ("e2e4", "a7a6", "e4e5", "h7h5"):
+        ep_dead.push_uci(m)  # a double push nothing can take
+    castles = chess.Board("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1")
+    some = chess.Board("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b Kq - 7 9")
+    through_check = chess.Board("r3k2r/8/8/8/8/8/5r2/R3K2R w KQkq - 0 1")
+    promo = chess.Board("8/1P4k1/8/8/8/8/6p1/K7 w - - 0 1")
+    promo_b = chess.Board("8/1P4k1/8/8/8/8/6p1/1K6 b - - 0 1")
+    return [ep, ep_dead, castles, some, through_check, promo, promo_b]
+
+
+def test_write_pool_copies_only_the_fields_asked_and_leaves_the_rest_zero(tmp_path: Path) -> None:
+    from tinyalphazero.teacher import write_pool
+
+    boards = _walks(10, 3)
+    a = _ring_with(tmp_path / "a", boards, [0] * 10, [1, 0, -1, 1, 0] * 2)
+    pairs = np.array([[0, 4], [0, 1], [0, 9]], dtype=np.int64)
+    fields = ["boards", "outcomes", "iteration"]
+    write_pool([a], pairs, tmp_path / "pool", chunk=2, fields=fields)
+    pool = ReplayBuffer.open(tmp_path / "pool", readonly=True)
+    assert len(pool) == 3
+    for name in pool._arr:
+        for j, (_, r) in enumerate(pairs):
+            if name in fields:
+                assert np.array_equal(pool._arr[name][j], a._arr[name][r]), (name, j)
+            else:
+                assert not np.any(pool._arr[name][j]), (name, j)
+    with pytest.raises(ValueError, match="no such ring fields"):
+        write_pool([a], pairs, tmp_path / "pool2", fields=["boards", "nope"])
+
+
+def test_masks_rebuilt_from_boards_are_the_stored_masks_byte_for_byte(tmp_path: Path) -> None:
+    """A pool written without masks builds the same ring as the pool written with them."""
+    from tinyalphazero.encoding import decode_board
+    from tinyalphazero.teacher import build_teacher_ring_from_shards, write_pool
+
+    boards = _walks(40, 21) + _awkward_boards()
+    n = len(boards)
+    full = _ring_with(tmp_path / "src", boards, [0] * n, ([1, -1, 0] * n)[:n])
+    for i in range(n):  # the encoding round trip keeps every legal move
+        assert np.array_equal(
+            legal_moves_packed(decode_board(full._arr["boards"][i])), full._arr["legals"][i]
+        ), i
+    pairs = np.stack([np.zeros(n, dtype=np.int64), np.arange(n)[::-1]], axis=1)
+    write_pool([full], pairs, tmp_path / "fat")
+    write_pool([full], pairs, tmp_path / "slim", fields=["boards", "outcomes", "iteration"])
+    fat = ReplayBuffer.open(tmp_path / "fat", readonly=True)
+    slim = ReplayBuffer.open(tmp_path / "slim", readonly=True)
+    assert not np.any(slim._arr["legals"][:n])
+    settings = TeacherSettings(nodes=1000, multipv=3, temperature_cp=50.0)
+    label_rows(fat._arr["boards"], range(n), _fake_analyse, settings, tmp_path / "shard_0.jsonl")
+    shards = [tmp_path / "shard_0.jsonl"]
+    model = (60.0, 150.0)
+    want = build_teacher_ring_from_shards(
+        fat, shards, range(n), tmp_path / "a", settings, {}, model
+    )
+    got = build_teacher_ring_from_shards(
+        slim, shards, range(n), tmp_path / "b", settings, {}, model, legals_from_boards=True
+    )
+    a = ReplayBuffer.open(tmp_path / "a", readonly=True)
+    b = ReplayBuffer.open(tmp_path / "b", readonly=True)
+    for name in a._arr:
+        assert np.array_equal(a._arr[name], b._arr[name]), name
+    assert want["legals_from_boards"] is False and got["legals_from_boards"] is True
+
+
+def test_the_build_refuses_a_maskless_pool_without_the_flag(tmp_path: Path, capsys) -> None:
+    from scripts.label_teacher import main
+
+    (tmp_path / "pool").mkdir()
+    (tmp_path / "pool" / "pool.json").write_text(json.dumps({"fields": ["boards", "outcomes"]}))
+    argv = ["--ring", str(tmp_path / "pool"), "--out", str(tmp_path / "t"), "--no-holdout"]
+    assert main(argv) == 1
+    assert "give --legals-from-boards" in capsys.readouterr().err
+    assert (
+        main([*argv, "--legals-from-boards"]) == 1
+    )  # the flag is the fixed-model pool build's only
+    assert "--outcome-model-from" in capsys.readouterr().err

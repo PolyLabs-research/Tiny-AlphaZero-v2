@@ -19,6 +19,9 @@ slice of one large pool (staged as its own small ring) under the pool's row numb
 shards whose names do not collide (p2_ac). ``--labels-only`` stops once every row is labelled, building no ring:
 a pod that has only the source's boards labels, and the rings are built where the whole
 source ring is, by the same command rerun there (it finds every row labelled).
+``--legals-from-boards`` builds the ring's legal masks from its boards, for a pool written
+without them (``pool_positions.py --fields``); such a pool's ``pool.json`` says so, and the
+build refuses it without the flag.
 
 Labelling runs one single-threaded Stockfish per worker, as many workers as the cgroup
 allows (``teacher.available_cpus``), each appending to its own shard under
@@ -102,6 +105,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--shard-prefix", default="", help="shard files shard_<prefix><k>.jsonl")
     ap.add_argument(
+        "--legals-from-boards",
+        action="store_true",
+        help="write each row's legal mask from its board (a pool written without masks)",
+    )
+    ap.add_argument(
         "--outcome-model-from",
         type=Path,
         default=None,
@@ -125,6 +133,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.row_offset and not args.labels_only:
         print("--row-offset labels a slice; build the ring from the whole pool", file=sys.stderr)
+        return 1
+    pool_record = args.ring / "pool.json"
+    copied = json.loads(pool_record.read_text()).get("fields") if pool_record.exists() else None
+    maskless = copied is not None and "legals" not in copied
+    if maskless and not args.labels_only and not args.legals_from_boards:
+        print(f"{args.ring} holds no legal masks ({copied}); give --legals-from-boards",
+              file=sys.stderr)  # fmt: skip
+        return 1
+    if args.legals_from_boards and not (args.no_holdout and args.outcome_model_from):
+        print("--legals-from-boards is the pool build's: --no-holdout and --outcome-model-from",
+              file=sys.stderr)  # fmt: skip
         return 1
     if args.no_holdout == (args.holdout_out is not None):
         print("give exactly one of --holdout-out and --no-holdout", file=sys.stderr)
@@ -216,8 +235,9 @@ def main(argv: list[str] | None = None) -> int:
         # A pool's every row, one fixed fit: the compact build, which scales to tens of millions
         # of rows where read_labels' dictionaries would not fit in memory (p2_ac).
         meta = build_teacher_ring_from_shards(
-            source, shards, train_rows, args.out, settings, {**provenance, "split": "train"}, given
-        )
+            source, shards, train_rows, args.out, settings, {**provenance, "split": "train"}, given,
+            legals_from_boards=args.legals_from_boards,
+        )  # fmt: skip
         print(
             json.dumps({"rows": meta["rows"], "outcome_model": meta["outcome_model"]}), flush=True
         )

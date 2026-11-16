@@ -429,9 +429,19 @@ def labelled_rows(paths: Iterable[Path]) -> set[int]:
 
 
 def _add_teacher_row(
-    ring: Any, arr: Any, r: int, lines: list[Line], z: int, probs: np.ndarray, temperature_cp: float
+    ring: Any,
+    arr: Any,
+    r: int,
+    lines: list[Line],
+    z: int,
+    probs: np.ndarray,
+    temperature_cp: float,
+    legals: np.ndarray | None = None,
 ) -> None:
-    """Append source row ``r`` with the teacher's targets: the one row-writing path of both builds."""
+    """Append source row ``r`` with the teacher's targets: the one row-writing path of both builds.
+
+    ``legals`` replaces the source row's stored mask when given (a pool written without masks).
+    """
     from tinyalphazero.encoding import encode_move
 
     policy = []
@@ -441,7 +451,7 @@ def _add_teacher_row(
     f, t, promo = encode_move(chess.Move.from_uci(lines[0].move))
     ring.add(
         tokens=np.asarray(arr["boards"][r]),
-        legals=np.asarray(arr["legals"][r]),
+        legals=np.asarray(arr["legals"][r]) if legals is None else legals,
         move_ft=f * 64 + t,
         promo=promo,
         outcome=z,
@@ -537,27 +547,46 @@ def pool_rows(
     return pairs, counts
 
 
-def write_pool(rings: Sequence[Any], pairs: np.ndarray, out_dir: Path, chunk: int = 100_000) -> Any:
+def write_pool(
+    rings: Sequence[Any],
+    pairs: np.ndarray,
+    out_dir: Path,
+    chunk: int = 100_000,
+    fields: Sequence[str] | None = None,
+) -> Any:
     """Copy the picked rows, every stored field as it is, into a new ring in ``pairs`` order.
 
     The pool is a source ring for ``scripts/label_teacher.py``: it reads boards, legal
     masks and game outcomes from it, so those must be the source rows' own, bit for bit.
-    Every source must carry every field the new ring has.
+    Every source must carry every field copied. ``fields`` copies only those (p2_ac's 24M
+    rows: boards, outcomes and iteration, about 77 bytes a row against about 1.1 KB); the
+    rest stay zero, so such a pool's masks are rebuilt from its boards when the ring is
+    built (``build_teacher_ring_from_shards(..., legals_from_boards=True)``).
+
+    Each source is read once, in increasing row order, ``chunk`` rows at a time, and its rows
+    scattered to their places in the pool: sources on a slow disk (the archived rings, the
+    Lichess ring) are read nearly sequentially instead of at random.
     """
     from tinyalphazero.replay import ReplayBuffer
 
     out = ReplayBuffer.create(out_dir, capacity=max(1, len(pairs)))
+    names = list(out._arr) if fields is None else list(fields)
+    unknown = [f for f in names if f not in out._arr]
+    if unknown:
+        raise ValueError(f"no such ring fields {unknown}")
     for k, ring in enumerate(rings):
-        missing = [f for f in out._arr if f not in ring._arr]
+        missing = [f for f in names if f not in ring._arr]
         if missing and np.any(pairs[:, 0] == k):
             raise ValueError(f"source ring {k} lacks fields {missing}")
-    for lo in range(0, len(pairs), chunk):
-        part = pairs[lo : lo + chunk]
-        for k in np.unique(part[:, 0]):
-            sel = np.flatnonzero(part[:, 0] == k)
-            src = part[sel, 1]
-            for name, arr in out._arr.items():
-                arr[lo + sel] = rings[int(k)]._arr[name][src]
+    for k in np.unique(pairs[:, 0]):
+        dest = np.flatnonzero(pairs[:, 0] == k)
+        order = np.argsort(pairs[dest, 1], kind="stable")
+        dest = dest[order]
+        src = pairs[dest, 1]
+        for name in names:
+            into, source = out._arr[name], rings[int(k)]._arr[name]
+            for lo in range(0, len(src), chunk):
+                into[dest[lo : lo + chunk]] = source[src[lo : lo + chunk]]
     out.total_written = len(pairs)
     out.flush()
     return out
@@ -629,6 +658,7 @@ def build_teacher_ring_from_shards(
     settings: TeacherSettings,
     provenance: dict[str, Any],
     model: tuple[float, float],
+    legals_from_boards: bool = False,
 ) -> dict[str, Any]:
     """``build_teacher_ring`` for pools too large for ``read_labels``' dictionaries (p2_ac: 24M).
 
@@ -638,9 +668,13 @@ def build_teacher_ring_from_shards(
     same row writer, reading the source in order. The outcome model must be given (nothing
     is fitted), and every row of ``rows`` must be labelled. A row labelled twice keeps its
     first complete line. Byte-identical to ``build_teacher_ring`` on the same labels
-    (``tests/test_teacher.py``).
+    (``tests/test_teacher.py``). ``legals_from_boards`` writes each row's legal mask from
+    its board (``legal_moves_packed(decode_board(...))``) instead of the source's stored one,
+    for a pool written without masks (``write_pool(..., fields=...)``); on rings that do
+    store them the two are byte-identical (``tests/test_teacher.py``, and checked on real
+    self-play and Lichess rows before p2_ac).
     """
-    from tinyalphazero.encoding import decode_move, encode_move
+    from tinyalphazero.encoding import decode_board, decode_move, encode_move, legal_moves_packed
     from tinyalphazero.replay import ReplayBuffer
 
     n_src = len(source)
@@ -687,7 +721,8 @@ def build_teacher_ring_from_shards(
         ]
         z = int(arr["outcomes"][r])
         probs = outcome_probs(np.array([float(lines[0].cp)]), a, s)[0]
-        _add_teacher_row(ring, arr, r, lines, z, probs, settings.temperature_cp)
+        legals = legal_moves_packed(decode_board(arr["boards"][r])) if legals_from_boards else None
+        _add_teacher_row(ring, arr, r, lines, z, probs, settings.temperature_cp, legals)
         draws += z == 0
         abs_q += abs(float(probs[0] - probs[2]))
     ring.flush()
@@ -702,6 +737,7 @@ def build_teacher_ring_from_shards(
         },  # fmt: skip
         "rows": len(rows),
         "root_q_mean_abs": abs_q / len(rows),
+        "legals_from_boards": legals_from_boards,
         **provenance,
     }
     (Path(out_dir) / "teacher.json").write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n")
