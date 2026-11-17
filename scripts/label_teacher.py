@@ -205,7 +205,11 @@ def main(argv: list[str] | None = None) -> int:
     shards = sorted(labels_dir.glob("shard_*.jsonl"))
     have = labelled_rows(shards)
     missing = [int(r) + off for r in rows if int(r) + off not in have]
-    print(f"labelled {done} this run in {time.time() - t0:.0f} s; {len(have)} in all", flush=True)
+    n_have = len(have)
+    del (
+        have
+    )  # ~1.7 GB as a set at 24M rows, and nothing below needs it (p2_ac's build was OOM-killed)
+    print(f"labelled {done} this run in {time.time() - t0:.0f} s; {n_have} in all", flush=True)
     if missing:
         print(
             f"{len(missing)} rows unlabelled, e.g. {missing[:5]}; rerun to finish", file=sys.stderr
@@ -213,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.labels_only:
-        print(f"labels only: all {len(have)} rows labelled in {labels_dir}", flush=True)
+        print(f"labels only: all {n_have} rows labelled in {labels_dir}", flush=True)
         return 0
 
     provenance = {
