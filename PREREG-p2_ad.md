@@ -2,8 +2,9 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT, not signed.** Before registration only the data preparation the Sign-off lists has run (the two
-> rings built and checked from rows already labelled; nothing trained, no rep played).
+> **STATUS: REGISTERED 2026-11-18** at Michael's instruction ("ok given, go"). Before registration only the data
+> preparation the Sign-off lists had run (the two rings built and checked from rows already labelled; nothing
+> trained, no rep played).
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -145,4 +146,6 @@ so the arms' only random input is the draw `--seed 4` makes, the same in both. T
 Disk: 45 GB free here after the rings. RunPod: not used (balance $14.16, unchanged). At registration: the round's
 records (both `subset.json`, the build log, the L1 check, each arm's `result.json` and `log.jsonl`, the reps, the suite
 rows, the verdicts) whitelisted in `.gitignore` and red-checked through `MUST_REACH`; the rings' arrays and the
-checkpoints stay ignored.
+checkpoints stay ignored. **Registered 2026-11-18** at Michael's instruction ("ok given, go"); the run is
+`runs/p2_ad_driver.sh` as the transient user unit `taz-p2ad`, from `main` at this registration commit. Test suite at
+registration, with the whitelist and `MUST_REACH` rows: 1,362 passed, 9 skipped.

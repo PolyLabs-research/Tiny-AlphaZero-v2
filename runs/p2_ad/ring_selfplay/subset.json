@@ -1,0 +1,15 @@
+{
+  "ring": "runs/p2_ac/teacher",
+  "tags": "runs/p2_ac/pool",
+  "source": "selfplay",
+  "rule": "iteration >= 0",
+  "available": 8845607,
+  "limit": null,
+  "rows": 8845607,
+  "first_slot": 5,
+  "last_slot": 23892952,
+  "slots_sha256": "6489c3c10db02c9bf28efdfd6558718b78986fd89e7bf781d7813ebff7f356d6",
+  "boards_aligned": true,
+  "git_sha": "f0c598c",
+  "seconds": 133.3
+}

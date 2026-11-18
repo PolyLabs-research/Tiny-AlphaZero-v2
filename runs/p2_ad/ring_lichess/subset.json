@@ -1,0 +1,15 @@
+{
+  "ring": "runs/p2_ac/teacher",
+  "tags": "runs/p2_ac/pool",
+  "source": "lichess",
+  "rule": "iteration == -3",
+  "available": 15047350,
+  "limit": 8845607,
+  "rows": 8845607,
+  "first_slot": 0,
+  "last_slot": 14043773,
+  "slots_sha256": "9b4b26e62db24ad707136e947194eda43a86f38eb321bdf9909cb9688609a560",
+  "boards_aligned": true,
+  "git_sha": "f0c598c",
+  "seconds": 96.5
+}

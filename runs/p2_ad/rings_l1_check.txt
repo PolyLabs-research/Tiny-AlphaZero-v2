@@ -1,0 +1,9 @@
+source ring runs/p2_ac/teacher: 23892957 rows; pool 3 tags: 23892957
+pool 3: 15047350 tagged -3 (Lichess), 8845607 not; of those, tags in [1, 60]
+runs/p2_ad/ring_selfplay: 8845607 rows (capacity 8845607); expected 8845607; slots 5..23892952; slot sha256 matches subset.json: True
+  every field of every row equals the source ring's at its slot (13 fields, byte-compared)
+  distinct boards: 8845607 of 8845607
+runs/p2_ad/ring_lichess: 8845607 rows (capacity 8845607); expected 8845607; slots 0..14043773; slot sha256 matches subset.json: True
+  every field of every row equals the source ring's at its slot (13 fields, byte-compared)
+  distinct boards: 8845607 of 8845607
+rings share 0 slots of pool 3

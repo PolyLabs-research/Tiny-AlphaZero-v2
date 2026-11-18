@@ -101,6 +101,15 @@ runs/**
 !runs/p2_ac/e32/size_*/log.jsonl
 !runs/p2_ac/e32_ladder.jsonl
 !runs/p2_ac/p2ac_verdict_*.json
+# p2_ad (PREREG-p2_ad): the two rings' selection records, their build log and L1 check (the rings' meta.json and
+# teacher.json are reached by the rules above), each arm's curve records, the suite rows and the verdicts.
+!runs/p2_ad/ring_*/subset.json
+!runs/p2_ad/rings_build.log
+!runs/p2_ad/rings_l1_check.txt
+!runs/p2_ad/*/size_*/result.json
+!runs/p2_ad/*/size_*/log.jsonl
+!runs/p2_ad/*_ladder.jsonl
+!runs/p2_ad/p2ad_verdict_*.json
 # p2_t's teacher ring: its settings and outcome fit (the .dat arrays and label shards stay ignored),
 # and the network's agreement with it on the held-out positions.
 !runs/**/teacher.json
