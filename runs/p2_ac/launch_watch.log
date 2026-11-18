@@ -1,0 +1,85 @@
+2026-11-16T21:48:32+00:00 watching for secure RTX 4090 capacity (pid 268548) at 2cc25d5
+2026-11-16T21:48:33+00:00 availability NONE; waiting
+2026-11-16T22:08:35+00:00 availability LOW: smoke pod
+plan: NVIDIA GeForce RTX 4090 (SECURE) at listed $0.890/h, 0.25 h cap -> worst case $0.22; balance $42.57
+      name taz-v2smoke-dl1794867816  deadline 22:23:36 GMT  vCPU>=48 RAM>=32GB disk 40GB  watchdog=on
+      image runpod/pytorch:1.4.1-cu1281-torch2121-ubuntu2404  cuda filter none
+error: POST /pods 400: {'detail': 'There are no longer any instances available with the requested specifications. Please refresh and try again.', 'status': 400, 'title': 'Bad Request'}
+SMOKE: no capacity
+2026-11-16T22:08:37+00:00 no capacity after all; waiting
+2026-11-16T22:18:38+00:00 availability LOW: smoke pod
+plan: NVIDIA GeForce RTX 4090 (SECURE) at listed $0.890/h, 0.25 h cap -> worst case $0.22; balance $42.57
+      name taz-v2smoke-dl1794868419  deadline 22:33:39 GMT  vCPU>=48 RAM>=32GB disk 40GB  watchdog=on
+      image runpod/pytorch:1.4.1-cu1281-torch2121-ubuntu2404  cuda filter none
+error: POST /pods 400: {'detail': 'There are no longer any instances available with the requested specifications. Please refresh and try again.', 'status': 400, 'title': 'Bad Request'}
+SMOKE: no capacity
+2026-11-16T22:18:39+00:00 no capacity after all; waiting
+2026-11-16T22:38:41+00:00 availability LOW: smoke pod
+plan: NVIDIA GeForce RTX 4090 (SECURE) at listed $0.890/h, 0.25 h cap -> worst case $0.22; balance $42.57
+      name taz-v2smoke-dl1794869622  deadline 22:53:42 GMT  vCPU>=48 RAM>=32GB disk 40GB  watchdog=on
+      image runpod/pytorch:1.4.1-cu1281-torch2121-ubuntu2404  cuda filter none
+error: POST /pods 400: {'detail': 'There are no longer any instances available with the requested specifications. Please refresh and try again.', 'status': 400, 'title': 'Bad Request'}
+SMOKE: no capacity
+2026-11-16T22:38:43+00:00 no capacity after all; waiting
+2026-11-16T22:48:44+00:00 availability LOW: smoke pod
+plan: NVIDIA GeForce RTX 4090 (SECURE) at listed $0.890/h, 0.25 h cap -> worst case $0.22; balance $42.57
+      name taz-v2smoke-dl1794870225  deadline 23:03:45 GMT  vCPU>=48 RAM>=32GB disk 40GB  watchdog=on
+      image runpod/pytorch:1.4.1-cu1281-torch2121-ubuntu2404  cuda filter none
+launched zymoufrr3y4vm4 taz-v2smoke-dl1794870225 at $0.890/h (vCPU 64, RAM 125 GB)
+Traceback (most recent call last):
+  File "/home/michael/Documents/dev/chess/scripts/runpod_pod.py", line 255, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/home/michael/Documents/dev/chess/scripts/runpod_pod.py", line 248, in main
+    return globals()[f"cmd_{args.cmd.replace('-', '_')}"](rp, args)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/michael/Documents/dev/chess/scripts/runpod_pod.py", line 166, in cmd_status
+    print(f"{len(ours)} pod(s) of ours; account {json.dumps(rp.balance())}")
+BrokenPipeError: [Errno 32] Broken pipe
+SMOKE FAIL: status does not list zymoufrr3y4vm4
+terminated zymoufrr3y4vm4
+2026-11-16T22:48:49+00:00 SMOKE FAILED (rc 1): stopping for a human
+2026-11-16T22:53:42+00:00 diagnosed: the smoke pod was created, listed and terminated fine; the check failed on its own pipe (status | grep -q under pipefail with unbuffered output: BrokenPipe). Fixed in the smoke script and the driver's alive(); restarting the watch
+2026-11-16T22:53:42+00:00 watching for secure RTX 4090 capacity (pid 310704) at 2cc25d5
+2026-11-16T22:53:43+00:00 availability NONE; waiting
+2026-11-16T23:43:48+00:00 availability LOW: smoke pod
+plan: NVIDIA GeForce RTX 4090 (SECURE) at listed $0.890/h, 0.25 h cap -> worst case $0.22; balance $42.57
+      name taz-v2smoke-dl1794873529  deadline 23:58:49 GMT  vCPU>=48 RAM>=32GB disk 40GB  watchdog=on
+      image runpod/pytorch:1.4.1-cu1281-torch2121-ubuntu2404  cuda filter none
+error: POST /pods 400: {'detail': 'There are no longer any instances available with the requested specifications. Please refresh and try again.', 'status': 400, 'title': 'Bad Request'}
+SMOKE: no capacity
+2026-11-16T23:43:50+00:00 no capacity after all; waiting
+2026-11-16T23:53:51+00:00 availability LOW: smoke pod
+plan: NVIDIA GeForce RTX 4090 (SECURE) at listed $0.890/h, 0.25 h cap -> worst case $0.22; balance $42.57
+      name taz-v2smoke-dl1794874132  deadline 00:08:52 GMT  vCPU>=48 RAM>=32GB disk 40GB  watchdog=on
+      image runpod/pytorch:1.4.1-cu1281-torch2121-ubuntu2404  cuda filter none
+error: POST /pods 400: {'detail': 'There are no longer any instances available with the requested specifications. Please refresh and try again.', 'status': 400, 'title': 'Bad Request'}
+SMOKE: no capacity
+2026-11-16T23:53:52+00:00 no capacity after all; waiting
+2026-11-17T00:03:53+00:00 availability LOW: smoke pod
+plan: NVIDIA GeForce RTX 4090 (SECURE) at listed $0.890/h, 0.25 h cap -> worst case $0.22; balance $42.57
+      name taz-v2smoke-dl1794874734  deadline 00:18:54 GMT  vCPU>=48 RAM>=32GB disk 40GB  watchdog=on
+      image runpod/pytorch:1.4.1-cu1281-torch2121-ubuntu2404  cuda filter none
+launched s5a41eh2fezdul taz-v2smoke-dl1794874734 at $0.890/h (vCPU 64, RAM 125 GB)
+s5a41eh2fezdul  taz-v2smoke-dl1794874734  RUNNING  $0.89/h  +15 min to deadline
+1 pod(s) of ours; account {"balance": 42.571261176, "spend_per_hr": 0.0}
+ssh ready: ssh -i /home/michael/.ssh/runpod_ed25519 -p 32696 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/home/michael/.local/state/taz-cloud/known_hosts -o ConnectTimeout=15 -o ServerAliveInterval=30 -o BatchMode=yes -o ForwardAgent=no root@157.157.221.29
+pod RUNNING cost 0.89 gpu {"count": 1, "id": "NVIDIA GeForce RTX 4090", "memory": 125, "vcpuCount": 64} direct {"command": "ssh root@157.157.221.29 -p 32696", "host": "157.157.221.29", "port": 32696, "username": "root"} dc EUR-IS-1
+code:      2cc25d5
+stack:     3.12.3 2.12.1+cu129 cuda 12.9 NVIDIA GeForce RTX 4090
+stockfish: 16-1build1 /usr/games/stockfish
+cpu:       quota '5440000 100000'  RUNPOD_CPU_COUNT=64  RAM 125 GB
+inputs: 1 path(s) in 4 s
+pod id: set key: set
+pod-key GET v2: 200
+watchdog: 3 process(es)
+inputs: 38 lines
+stockfish: Stockfish 16 by the Stockfish developers (see AUTHORS file)
+job ran
+SMOKE PASS: s5a41eh2fezdul deleted itself ~10 s after PULLED
+0 pod(s) of ours; account {"balance": 42.5463437325, "spend_per_hr": 0.0}
+2026-11-17T00:09:11+00:00 smoke passed; balance {"balance": 42.5463437325, "spend_per_hr": 0.0}; starting taz-p2ac
+Failed to find executable /home/michael/Documents/dev/chess/runs/p2_ac_driver.sh: Permission denied
+2026-11-17T00:09:11+00:00 taz-p2ac FAILED to start
+2026-11-17T00:57:14+00:00 taz-p2ac had failed to start (driver not executable); chmod +x, starting by hand after the 00:09 smoke pass
+2026-11-17T00:57:14+00:00 taz-p2ac started
