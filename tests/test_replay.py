@@ -393,3 +393,27 @@ def test_seed_from_never_writes_the_donor(tmp_path: Path) -> None:
     assert {p.name: p.read_bytes() for p in sorted((tmp_path / "d").iterdir())} == before
     with pytest.raises(ValueError):
         donor._arr["boards"][0] = 1  # read-only map
+
+
+def test_from_rows_copies_every_field_of_the_rows_in_the_order_given(tmp_path: Path) -> None:
+    src = ReplayBuffer.create(tmp_path / "src", capacity=40)
+    for i in range(30):
+        src.add(**_row(i))
+    src.flush()
+    rows = np.array([3, 29, 0, 17, 17, 8])
+    out = ReplayBuffer.from_rows(src, rows, tmp_path / "out", chunk=4)
+    again = ReplayBuffer.open(tmp_path / "out", readonly=True)
+    assert len(out) == len(again) == 6 and again.capacity == 6
+    for name, arr in src._arr.items():
+        assert np.array_equal(np.asarray(again._arr[name]), np.asarray(arr[rows])), name
+    assert [int(v) for v in again._arr["iteration"]] == rows.tolist()
+
+
+def test_from_rows_refuses_rows_outside_the_source(tmp_path: Path) -> None:
+    src = ReplayBuffer.create(tmp_path / "src", capacity=40)
+    for i in range(10):
+        src.add(**_row(i))
+    src.flush()
+    for bad in (np.array([0, 10]), np.array([-1]), np.array([], dtype=np.int64), np.array([0.5])):
+        with pytest.raises(ValueError):
+            ReplayBuffer.from_rows(src, bad, tmp_path / "out")

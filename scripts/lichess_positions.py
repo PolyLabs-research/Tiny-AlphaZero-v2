@@ -29,9 +29,6 @@ from dataclasses import asdict
 from pathlib import Path
 
 HEADER = re.compile(r'^\[(\w+) "(.*)"\]\s*$')
-# Rows from human games are tagged in the ring's iteration field: self-play rows are >= 0, rehearsal
-# anchors -1, teacher rows -2 (teacher.TEACHER_ITERATION).
-LICHESS_ITERATION = -3
 
 _FILTERS = None
 
@@ -97,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--per-game", type=int, default=defaults.per_game)
     args = ap.parse_args(argv)
 
-    from tinyalphazero.lichess import header_ok
+    from tinyalphazero.lichess import LICHESS_ITERATION, header_ok
     from tinyalphazero.provenance import git_sha
     from tinyalphazero.replay import ReplayBuffer
 

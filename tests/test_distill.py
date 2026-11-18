@@ -154,3 +154,65 @@ def test_prefix_plan_fills_rings_in_order_and_nests() -> None:
         prefix_plan([100, 50], 151)
     small, large = prefix_plan([100, 50], 90), prefix_plan([100, 50], 130)
     assert all(a <= b for a, b in zip(small, large, strict=True))  # nested
+
+
+def test_sample_union_draws_the_same_slots_from_parts_of_the_same_sizes() -> None:
+    """PREREG-p2_ad's pairing: two arms whose parts differ in content but not in size, run at
+    one seed, draw the same slots of every part, so the shared parts' rows come in the same
+    order and the differing part is read at the same slots."""
+    import torch
+
+    class Part:
+        def __init__(self, n: int, tag: int) -> None:
+            self.n, self.tag = n, tag
+
+        def __len__(self) -> int:
+            return self.n
+
+        def sample(self, c: int, rng: np.random.Generator) -> dict:
+            return {"slot": torch.from_numpy(rng.integers(0, self.n, size=c)),
+                    "tag": torch.full((c,), self.tag)}  # fmt: skip
+
+    shared = [Part(50, 0), Part(70, 1)]
+    a_rng, b_rng = np.random.default_rng(4), np.random.default_rng(4)
+    for _ in range(20):
+        a = sample_union([*shared, Part(90, 2)], 256, a_rng)
+        b = sample_union([*shared, Part(90, 3)], 256, b_rng)
+        assert torch.equal(a["slot"], b["slot"])
+        assert torch.equal(a["tag"] == 2, b["tag"] == 3)
+
+
+def test_ring_by_source_copies_one_sources_rows_after_checking_the_boards(tmp_path: Path) -> None:
+    from tinyalphazero.lichess import LICHESS_ITERATION
+    from tinyalphazero.replay import ReplayBuffer
+
+    ring = _teacher_ring(tmp_path, _walks(12, 3), "t")
+    tags = [LICHESS_ITERATION if i % 3 else i for i in range(12)]  # slots 0, 3, 6, 9 self-play
+    pool = ReplayBuffer.create(tmp_path / "pool", capacity=12)
+    for i in range(12):
+        pool._arr["boards"][i] = ring._arr["boards"][i]
+        pool._arr["iteration"][i] = tags[i]
+    pool.total_written = 12
+    pool.flush()
+    script = str(REPO / "scripts/ring_by_source.py")
+    base = [sys.executable, script, "--ring", str(tmp_path / "t"), "--tags", str(tmp_path / "pool")]
+    subprocess.run([*base, "--source", "selfplay", "--out", str(tmp_path / "sp")], check=True,
+                   capture_output=True, text=True, timeout=120)  # fmt: skip
+    subprocess.run([*base, "--source", "lichess", "--limit", "5", "--out", str(tmp_path / "li")],
+                   check=True, capture_output=True, text=True, timeout=120)  # fmt: skip
+    for name, want in (("sp", [0, 3, 6, 9]), ("li", [1, 2, 4, 5, 7])):
+        out = ReplayBuffer.open(tmp_path / name, readonly=True)
+        record = json.loads((tmp_path / name / "subset.json").read_text())
+        assert len(out) == record["rows"] == len(want)
+        assert (record["first_slot"], record["last_slot"]) == (want[0], want[-1])
+        for field, arr in ring._arr.items():
+            assert np.array_equal(np.asarray(out._arr[field]), np.asarray(arr[want])), field
+        assert (tmp_path / name / "teacher.json").read_bytes() == (
+            tmp_path / "t" / "teacher.json"
+        ).read_bytes()
+    pool._arr["boards"][7, 0] += 1  # a pool whose rows are not the ring's
+    pool.flush()
+    bad = subprocess.run([*base, "--source", "selfplay", "--out", str(tmp_path / "bad")],
+                         capture_output=True, text=True, timeout=120)  # fmt: skip
+    assert bad.returncode == 1 and "boards differ" in bad.stderr
+    assert not (tmp_path / "bad" / "meta.json").exists()

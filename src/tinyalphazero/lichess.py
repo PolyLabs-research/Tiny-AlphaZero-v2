@@ -27,6 +27,35 @@ import numpy as np
 
 RESULTS = {"1-0": 1, "0-1": -1, "1/2-1/2": 0}
 
+# Rows from human games are tagged in the ring's iteration field: self-play rows are >= 0, rehearsal
+# anchors -1, teacher rows -2 (teacher.TEACHER_ITERATION).
+LICHESS_ITERATION = -3
+SOURCES = ("lichess", "selfplay")
+
+
+def source_rows(tags: np.ndarray, source: str, limit: int | None = None) -> np.ndarray:
+    """The slots of a pooled ring whose rows came from ``source``, in ring order (PREREG-p2_ad).
+
+    ``tags`` is the ring's ``iteration`` field as pooled (``pool_positions`` keeps each
+    row's source tag): ``LICHESS_ITERATION`` for a human-game row, an iteration ``>= 0``
+    for a self-play row. Any other tag raises: such a ring is not a pool of these two
+    sources. ``limit`` takes the first ``limit`` such slots and raises if there are fewer.
+    """
+    tags = np.asarray(tags)
+    lichess = tags == LICHESS_ITERATION
+    selfplay = tags >= 0
+    other = int(len(tags) - lichess.sum() - selfplay.sum())
+    if other:
+        raise ValueError(f"{other} rows carry a tag that is neither Lichess nor self-play")
+    if source not in SOURCES:
+        raise ValueError(f"source must be one of {SOURCES}, not {source!r}")
+    rows = np.flatnonzero(lichess if source == "lichess" else selfplay)
+    if limit is not None:
+        if limit > len(rows):
+            raise ValueError(f"{source}: {len(rows)} rows, fewer than the limit {limit}")
+        rows = rows[:limit]
+    return rows
+
 
 @dataclass(frozen=True)
 class Filters:

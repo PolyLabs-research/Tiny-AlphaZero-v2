@@ -91,3 +91,20 @@ def test_short_or_broken_games_give_nothing() -> None:
     f = Filters(min_plies=60)
     assert sample_positions(_pgn(), f, seed=0) == []
     assert sample_positions('[Result "1-0"]\n\n1. e4 e9 1-0\n', Filters(), seed=0) == []
+
+
+def test_source_rows_selects_by_tag_in_ring_order_and_refuses_other_tags() -> None:
+    import pytest
+
+    from tinyalphazero.lichess import LICHESS_ITERATION, source_rows
+
+    tags = np.array([LICHESS_ITERATION, 0, 5, LICHESS_ITERATION, 60, LICHESS_ITERATION])
+    assert source_rows(tags, "lichess").tolist() == [0, 3, 5]
+    assert source_rows(tags, "selfplay").tolist() == [1, 2, 4]
+    assert source_rows(tags, "lichess", limit=2).tolist() == [0, 3]
+    with pytest.raises(ValueError):
+        source_rows(tags, "selfplay", limit=4)  # only three
+    with pytest.raises(ValueError):
+        source_rows(np.append(tags, -2), "lichess")  # a teacher tag: not a pool of these sources
+    with pytest.raises(ValueError):
+        source_rows(tags, "human")

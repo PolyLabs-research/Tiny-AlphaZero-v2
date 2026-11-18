@@ -234,6 +234,34 @@ class ReplayBuffer:
     def open_or_create(cls, path: str | Path, capacity: int = 500_000) -> ReplayBuffer:
         return cls.open(path) if (Path(path) / "meta.json").exists() else cls.create(path, capacity)
 
+    @classmethod
+    def from_rows(
+        cls, src: ReplayBuffer, rows: np.ndarray, path: str | Path, chunk: int = 500_000
+    ) -> ReplayBuffer:
+        """A new ring holding ``src``'s ``rows``, every field, in the order given (PREREG-p2_ad).
+
+        ``rows`` index ``src``'s storage slots and must lie below ``len(src)``. The head
+        (``meta.json``'s ``total_written``) is written last, after every field's bytes, so
+        a ring killed mid-copy opens empty rather than half-filled.
+        """
+        rows = np.asarray(rows)
+        if rows.ndim != 1 or not np.issubdtype(rows.dtype, np.integer):
+            raise ValueError("rows must be a 1-d integer array")
+        if len(rows) == 0:
+            raise ValueError("rows is empty")
+        if rows.min() < 0 or rows.max() >= len(src):
+            raise ValueError(f"rows must lie in [0, {len(src)}); got {rows.min()}..{rows.max()}")
+        if src.version != VERSION:
+            raise ValueError(f"source ring is version {src.version}; this copies {VERSION} only")
+        out = cls.create(path, capacity=len(rows))
+        for name, arr in out._arr.items():
+            for s in range(0, len(rows), chunk):
+                arr[s : s + chunk] = src._arr[name][rows[s : s + chunk]]
+            arr.flush()
+        out.total_written = len(rows)
+        out._write_meta()
+        return out
+
     def _write_meta(self) -> None:
         """Move the durable head — atomically.
 
