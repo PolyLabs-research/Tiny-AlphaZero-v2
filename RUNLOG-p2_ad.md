@@ -56,13 +56,26 @@ share no position with D1, the held-out ring, pool 1 or pool 2 (p2_ac's L1). Bui
 | E8 | 2.2028 | 18.75M | 19.75M | 2.47 | 0.3844 | 0.0319 |
 | E32 | 2.1892 | 24.75M | 25.75M | 0.81 | 0.3912 | 0.0280 |
 
-Neither arm reached the cap. S17's 2.1770 is the lowest held-out cross-entropy this project has recorded, and its
-value MSE the lowest. At matched samples (unregistered), S17 tracked E8 to about 8M samples and then fell between E8
-and E32 (4M: 2.2304 / E8 2.2308 / E32 2.2319; 8M: 2.2190 / 2.2201 / 2.2187; 16M: 2.2050 / 2.2078 / 2.2027; 24M:
-2.1962 / — / 2.1911), and kept improving past 28M. **At 20M samples the two arms stood level, S17 2.2012 and H17
-2.2014;** H17 then set no new best on the self-play held-out ring and patience stopped it, while S17, whose fourth
-ring is the held-out ring's kind, went on to 45.0M. So the arms' training lengths differ because of their source,
-through the selection rule.
+Neither arm reached the cap (S17 181 measurements, H17 84). S17's 2.1770 is the lowest held-out cross-entropy this
+project has recorded, and its value MSE the lowest. Training-probe CE at the best: S17 2.1721, H17 2.1951. At matched
+samples (unregistered):
+
+| samples | S17 | H17 | E8 | E32 |
+|---|---|---|---|---|
+| 4M | 2.2304 | 2.2323 | 2.2308 | 2.2319 |
+| 8M | 2.2190 | 2.2220 | 2.2201 | 2.2187 |
+| 12M | 2.2122 | 2.2139 | 2.2145 | 2.2110 |
+| 16M | 2.2050 | 2.2063 | 2.2078 | 2.2027 |
+| 20M | 2.2012 | 2.2014 | — | 2.1957 |
+| 24M | 2.1962 | — | — | 2.1911 |
+| 32M | 2.1872 | — | — | — |
+| 40M | 2.1807 | — | — | — |
+| 44M (S17's best) | 2.1770 | — | — | — |
+
+H17 sat 0.001–0.003 above S17 on the self-play held-out ring to 16M and **level with it at 20M (2.2014 against
+2.2012)**; then it set no new best (2.2010, 2.2006, 2.2014, 2.2014, 2.2012, 2.2008 over its last six measurements) and
+patience stopped it, while S17, whose fourth ring is the held-out ring's kind, went on falling to 45.0M. So the arms'
+training lengths differ because of their source, through the selection rule.
 
 ## 4. K — skill 5
 
