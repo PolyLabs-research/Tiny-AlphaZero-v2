@@ -110,6 +110,19 @@ runs/**
 !runs/p2_ad/*/size_*/log.jsonl
 !runs/p2_ad/*_ladder.jsonl
 !runs/p2_ad/p2ad_verdict_*.json
+# p2_ae (PREREG-p2_ae): each generation ring's state, provenance, per-chunk log and job log; pool 4's record and
+# its check (the rings' and pool's meta.json and the ring's teacher.json are reached by the rules above); each arm's
+# curve records, the suite rows and the verdicts.
+!runs/p2_ae/gen*/state.json
+!runs/p2_ae/gen*/provenance.json
+!runs/p2_ae/gen*/generate.jsonl
+!runs/p2_ae/gen*/job.log
+!runs/p2_ae/pool/pool.json
+!runs/p2_ae/pool_l1_check.txt
+!runs/p2_ae/*/size_*/result.json
+!runs/p2_ae/*/size_*/log.jsonl
+!runs/p2_ae/*_ladder.jsonl
+!runs/p2_ae/p2ae_verdict_*.json
 # p2_t's teacher ring: its settings and outcome fit (the .dat arrays and label shards stay ignored),
 # and the network's agreement with it on the held-out positions.
 !runs/**/teacher.json

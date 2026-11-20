@@ -2,8 +2,9 @@
 
 **Written before launch. Not edited after, except by dated addendum.**
 
-> **STATUS: DRAFT, not signed.** Nothing has run for it but the tooling's tests and a 16-game local smoke of the
-> generator (a scratch directory, not data of this round).
+> **STATUS: REGISTERED 2026-11-19** at Michael's instruction ("ok given, go"). Before registration nothing had run
+> for it but the tooling's tests and a 16-game local smoke of the generator (a scratch directory, not data of this
+> round).
 
 **Amendment policy.** As PREREG-p2_h: a rule may be added after launch only for a measurement that has
 not yet produced data, by dated addendum; never added, weakened or reworded for one already taken.
@@ -128,7 +129,17 @@ K3 is the source at equal size; size alone is not separated.
 
 ## Sign-off
 
-*To be completed at registration.* Draft checks: `tests/test_generate.py` (resume, pod split and actor count store
+**Registered 2026-11-20** at Michael's instruction ("ok given, go", 2026-11-19; the session dropped before the
+registration commit, and nothing had run or been spent). The run is `runs/p2_ae_driver.sh` as the transient user unit
+`taz-p2ae`, from `main` at this registration commit. L1 is checked by `runs/p2_ae_l1_check.py`, which the driver runs
+after pool 4 and before any label is bought, and which stops the run on a failure: each generation ring's state and
+provenance against this file; pool 4's rows, its positions distinct and its tags 0–179; no position shared with D1,
+the held-out ring or pools 1–3 (keys `tokens[:70]` as `teacher.position_key`, through a 64-bit splitmix hash with every
+hit confirmed byte for byte; the hash gives 4,000,000 distinct values on 4,000,000 distinct positions of pool 3 and
+finds planted repeats). The round's records (generation state, provenance, chunk logs and job logs; pool 4's record and
+check; the ring's record; each arm's curve; the reps; the suite rows; the verdicts) are whitelisted and red-checked
+through `MUST_REACH`; the rings, the pool's arrays, the labels and the checkpoints stay ignored. Test suite at
+registration 1,394 passed, 13 skipped. RunPod balance at registration $14.16. Draft checks: `tests/test_generate.py` (resume, pod split and actor count store
 identical rows; parameters checked on resume); a 16-game local smoke of E32 under the start's config (2 actors): 1,762
 positions, 110.1 plies a game, 1,625 simulations a second on this box, 1,757 of 1,762 kept by pooling; pooling from
 the three pulled fields byte-identical to pooling from the full ring. RunPod balance at draft $14.16; Michael's auto
